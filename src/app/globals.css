@@ -1,0 +1,194 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────
+   mnestic — "lab notebook for machine memory"
+   near-black scientific dark · warm off-white ink ·
+   one electric synapse-lime accent · cool slate secondary
+   ───────────────────────────────────────────────────────────── */
+
+@theme {
+  --color-ink: #0a0b0d;
+  --color-ink-2: #101216;
+  --color-ink-3: #15181d;
+  --color-line: #232830;
+  --color-line-bright: #313742;
+
+  --color-paper: #ece7dc; /* warm off-white primary text */
+  --color-paper-dim: #b8b3a8;
+  --color-paper-faint: #6f6e69;
+
+  --color-synapse: #c8f24a; /* electric lime accent */
+  --color-synapse-deep: #9bc415;
+  --color-slate: #6fb3c4; /* cool secondary (data) */
+  --color-amber: #e8a13c; /* warm tertiary (warnings/fork tags) */
+
+  --font-serif: var(--font-serif);
+  --font-mono: var(--font-mono);
+  --font-sans: var(--font-sans);
+}
+
+* {
+  border-color: var(--color-line);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--color-ink);
+  color: var(--color-paper);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: var(--color-synapse);
+  color: var(--color-ink);
+}
+
+/* ── Atmosphere: a faint synaptic dot-grid with a soft glow ── */
+.field {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background-color: var(--color-ink);
+  background-image:
+    radial-gradient(circle at 18% 12%, rgba(200, 242, 74, 0.08), transparent 38%),
+    radial-gradient(circle at 82% 78%, rgba(111, 179, 196, 0.07), transparent 42%),
+    radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 26px 26px;
+}
+
+/* fine top hairline that signals "instrument panel" */
+.field::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    transparent 70%,
+    rgba(10, 11, 13, 0.7) 100%
+  );
+}
+
+/* grain overlay for tactile, non-digital feel */
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ── Typographic helpers ── */
+.font-serif {
+  font-family: var(--font-serif), ui-serif, Georgia, serif;
+}
+.font-mono {
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+
+.label {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-paper-faint);
+}
+
+.rule {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-line-bright),
+    transparent
+  );
+}
+
+/* glow used sparingly on the primary CTA + accent marks */
+.synapse-glow {
+  box-shadow:
+    0 0 0 1px rgba(200, 242, 74, 0.4),
+    0 0 28px -6px rgba(200, 242, 74, 0.55);
+}
+
+/* ── Reveal-on-load: staggered, orchestrated entrance ── */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.rise {
+  opacity: 0;
+  animation: rise 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes pulse-node {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise {
+    animation: none;
+    opacity: 1;
+  }
+  html {
+    scroll-behavior: auto;
+  }
+  .pulse-node,
+  .draw-path {
+    animation: none !important;
+  }
+}
+
+.pulse-node {
+  animation: pulse-node 4s ease-in-out infinite;
+}
+.draw-path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: draw 2.4s ease-out forwards;
+}
+
+/* link underline that grows from the left */
+.link-grow {
+  position: relative;
+}
+.link-grow::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  height: 1px;
+  width: 100%;
+  background: var(--color-synapse);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.link-grow:hover::after {
+  transform: scaleX(1);
+}
