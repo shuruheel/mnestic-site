@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Logo, Mark } from "./logo";
 
 /* ──────────────────────────────────────────────────────────────
    Links
@@ -317,11 +318,8 @@ export default function Home() {
       {/* ── Nav ─────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 border-b border-[var(--color-line)]/60 bg-[var(--color-ink)]/70 backdrop-blur-md">
         <nav className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <a href="#top" className="flex items-baseline gap-2">
-            <span className="font-serif text-xl font-medium tracking-tight">
-              mnestic
-            </span>
-            <span className="hidden h-1.5 w-1.5 rounded-full bg-[var(--color-synapse)] sm:block" />
+          <a href="#top" className="transition-opacity hover:opacity-80">
+            <Logo />
           </a>
           <div className="flex items-center gap-6">
             <a href="#capabilities" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
@@ -677,9 +675,10 @@ db.run_default("?[x] := x in [1, 2, 3]")?;`}
       {/* ── Footer ──────────────────────────────────────── */}
       <footer className="border-t border-[var(--color-line)]">
         <div className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-12 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-baseline gap-2">
+          <div className="flex items-center gap-3">
+            <Mark size={22} />
             <span className="font-serif text-lg font-medium">mnestic</span>
-            <span className="font-mono text-xs text-[var(--color-paper-faint)]">
+            <span className="hidden font-mono text-xs text-[var(--color-paper-faint)] sm:inline">
               the hippocampus for AI, maintained
             </span>
           </div>
