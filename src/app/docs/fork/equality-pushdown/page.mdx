@@ -1,0 +1,89 @@
+export const metadata = {
+  title: "Equality pushdown",
+  description:
+    "mnestic compiles equality post-filters on stored relations into keyed prefix lookups, making single-row primary-key lookups ~28-29x faster.",
+};
+
+# Equality pushdown
+
+<Callout type="fork">
+  Specific to mnestic 0.8.0. A pure optimization — result sets are unchanged.
+</Callout>
+
+## The problem
+
+In CozoScript there are two ways to pin a stored relation's key to a value, and
+they used to compile very differently:
+
+```prolog
+# binding-first — compiles to a keyed prefix lookup (fast)
+?[v] := k = $key, *rel{ key: k, val: v }
+
+# equality post-filter — used to compile to a FULL SCAN + filter (slow)
+?[v] := *rel{ key: k, val: v }, k == $key
+```
+
+The engine has **no cost-based optimizer**: plans are deterministic, and the
+human is expected to be the optimizer. Upstream left the post-filter form as a
+full `load_stored` scan followed by an `eq(..)` filter — so the two queries
+above, semantically identical, differed by orders of magnitude on a large
+relation.
+
+## What changed
+
+mnestic adds a pre-pass, `push_equality_filters_to_bindings`, in
+`query/reorder.rs`. It converts qualifying `eq(var, ground)` post-filters on a
+stored relation into unifications and hoists only those converted unifications
+ahead of the relation that produces the variable. The existing well-ordering
+logic then emits a keyed `stored_prefix_join` — identical to the binding-first
+form.
+
+Both the positional and brace forms are covered:
+
+```prolog
+*rel[k, ..], k == <ground>     # now a prefix lookup
+*rel{ k, .. }, k == <ground>   # now a prefix lookup
+```
+
+<Callout type="note">
+  This is the equality-pushdown pre-pass, not secondary-index selection. (Index
+  matching is prefix-only and handled separately.)
+</Callout>
+
+## Measured
+
+Criterion, SQLite backend, 5,000-row relation, single-row primary-key lookup:
+
+| Query shape | Before | After | Speedup |
+| --- | --- | --- | --- |
+| Positional post-filter `*rel[k,..], k == $p` | 1.746 ms | 61.1 µs | ~28.6× |
+| Brace post-filter `*rel{k,..}, k == $p` | 1.756 ms | 59.4 µs | ~29.5× |
+| Binding-first `k = $p, *rel{..}` | ~48–51 µs | unchanged | — |
+
+The speedup scales with row count, as the plan moves from an `O(N)` scan to an
+`O(log N)` lookup.
+
+## Correctness boundary: numeric grounds are not pushed
+
+`op_eq` treats `Int(n) == Float(n)` as equal across types, but a keyed lookup
+uses the index's strict `Num` ordering, where `Int(n) != Float(n)`. Converting a
+numeric equality could silently drop cross-type matches, so the conversion is
+**gated to non-numeric ground values** (string, uuid, bytes, bool, null).
+Numeric `==` keeps full `op_eq` post-filter semantics, and user-written
+unifications are never reordered.
+
+## Inspecting plans
+
+Because plans are deterministic, you can confirm the lookup with `::explain`:
+
+```prolog
+::explain { ?[v] := *rel{ key: k, val: v }, k == $key }
+```
+
+The plan should show a `stored_prefix_join` rather than a full scan.
+
+## See also
+
+- [Query execution](/docs/query-execution) — how atom ordering and plans are
+  decided (inherited engine behavior).
+- [Tips for writing queries](/docs/tips)

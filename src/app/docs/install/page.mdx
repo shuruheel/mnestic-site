@@ -1,0 +1,82 @@
+export const metadata = {
+  title: "Installation",
+  description:
+    "Add mnestic to a Rust project, choose a storage backend, and run your first query.",
+};
+
+# Installation
+
+mnestic is published to crates.io as **`mnestic`**, but its importable library
+name stays **`cozo`**. That means every `use cozo::…` in existing CozoDB-based
+code keeps working unchanged — adopting the fork is a dependency swap, not a
+rewrite.
+
+## Add the crate
+
+```bash
+# default features = in-memory + SQLite backends
+cargo add mnestic
+```
+
+Because the library name is `cozo`, you import it as:
+
+```rust
+use cozo::DbInstance;
+```
+
+<Callout type="fork">
+  If you are migrating an existing CozoDB project, you can keep the dependency
+  key as `cozo` using Cargo's rename idiom — see
+  [Migrating from CozoDB](/docs/fork/migrating).
+</Callout>
+
+## Choosing a backend
+
+mnestic inherits CozoDB's storage backends. Select them with Cargo features:
+
+| Backend | Feature | Persistence | Notes |
+| --- | --- | --- | --- |
+| In-memory | `compact` (default) | None | Fastest; great for tests and ephemeral graphs. |
+| SQLite | `compact` (default) | File | Single-file, portable, no native build step. |
+| RocksDB | `storage-rocksdb` | Directory | Highest throughput and concurrency; the fork's non-blocking HNSW build path is RocksDB-only. |
+
+```toml
+# Cargo.toml — enable the RocksDB backend
+mnestic = { version = "0.8", features = ["storage-rocksdb"] }
+```
+
+<Callout type="note">
+  RocksDB compiles a C++ dependency, so the first build is slow. The in-memory
+  and SQLite backends need no native toolchain.
+</Callout>
+
+## Your first query
+
+```rust
+use cozo::DbInstance;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // engine, path, options — "mem" needs no path
+    let db = DbInstance::new("mem", "", "")?;
+
+    let result = db.run_default("?[x] := x in [1, 2, 3]")?;
+    println!("{:?}", result.rows);
+    Ok(())
+}
+```
+
+To open a persistent store, pass the backend and a path:
+
+```rust
+// SQLite file
+let db = DbInstance::new("sqlite", "mnestic.db", "")?;
+
+// RocksDB directory (requires the storage-rocksdb feature)
+let db = DbInstance::new("rocksdb", "mnestic.rocksdb", "")?;
+```
+
+## Where to next
+
+- Learn the query language in the **[Tutorial](/docs/tutorial)**.
+- See what the fork adds in **[What mnestic adds](/docs/fork/overview)**.
+- Build a recall pipeline with **[Hybrid retrieval](/docs/fork/hybrid-retrieval)**.

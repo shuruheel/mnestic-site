@@ -5,7 +5,7 @@ import { Logo, Mark } from "./logo";
    Links
    ────────────────────────────────────────────────────────────── */
 const GITHUB = "https://github.com/shuruheel/mnestic";
-const DOCS = "https://docs.cozodb.org/en/latest/index.html";
+const DOCS = "/docs";
 const CRATE = "https://crates.io/crates/mnestic";
 const UPSTREAM = "https://github.com/cozodb/cozo";
 
@@ -331,8 +331,8 @@ export default function Home() {
             <a href="#perf" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
               Speed
             </a>
-            <a href={DOCS} target="_blank" rel="noreferrer" className="label link-grow hover:text-[var(--color-paper)]">
-              Docs ↗
+            <a href={DOCS} className="label link-grow hover:text-[var(--color-paper)]">
+              Docs
             </a>
             <a
               href={GITHUB}
@@ -402,11 +402,9 @@ export default function Home() {
               </a>
               <a
                 href={DOCS}
-                target="_blank"
-                rel="noreferrer"
                 className="rounded-md border border-[var(--color-line-bright)] px-6 py-3 font-mono text-sm text-[var(--color-paper)] transition-colors hover:border-[var(--color-paper-dim)]"
               >
-                Read the docs ↗
+                Read the docs →
               </a>
             </div>
 
@@ -689,15 +687,16 @@ db.run_default("?[x] := x in [1, 2, 3]")?;`}
             <a href={CRATE} target="_blank" rel="noreferrer" className="label link-grow hover:text-[var(--color-paper)]">
               crates.io
             </a>
-            <a href={DOCS} target="_blank" rel="noreferrer" className="label link-grow hover:text-[var(--color-paper)]">
-              Docs ↗
+            <a href={DOCS} className="label link-grow hover:text-[var(--color-paper)]">
+              Docs
             </a>
             <span className="label">MPL-2.0</span>
           </div>
         </div>
         <p className="mx-auto max-w-6xl px-6 pb-10 font-mono text-[0.68rem] leading-relaxed text-[var(--color-paper-faint)]">
-          Documentation currently points to the original CozoDB docs — the query
-          language is unchanged. A mnestic-specific docs site is on the way.
+          Documentation adapted from the original CozoDB docs (CC-BY-SA-4.0),
+          with original pages for the fork&apos;s additions. The query language is
+          unchanged.
         </p>
       </footer>
     </>

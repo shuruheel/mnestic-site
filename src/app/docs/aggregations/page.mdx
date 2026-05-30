@@ -1,0 +1,208 @@
+export const metadata = {
+  title: "Aggregations",
+  description:
+    "Reference for CozoScript aggregation operators: semi-lattice aggregations usable in recursion, and ordinary and statistical aggregations.",
+};
+
+# Aggregations
+
+Aggregations in Cozo can be thought of as a function that acts on a stream of
+values and produces a single value (the aggregate).
+
+There are two kinds of aggregations in Cozo, _ordinary aggregations_ and
+_semi-lattice aggregations_. They are implemented differently in Cozo, with
+semi-lattice aggregations more powerful (only the latter can be used
+recursively).
+
+The power of semi-lattice aggregations derive from the additional properties
+they satisfy: a [semilattice](https://en.wikipedia.org/wiki/Semilattice):
+
+- **idempotency**: the aggregate of a single value `a` is `a` itself,
+- **commutativity**: the aggregate of `a` then `b` is equal to the aggregate of
+  `b` then `a`,
+- **associativity**: it is immaterial where we put the parentheses in an
+  aggregate application.
+
+In auto-recursive semi-lattice aggregations, there are soundness constraints on
+what can be done on the bindings coming from the auto-recursive parts within the
+body of the rule. Usually you do not need to worry about this at all since the
+obvious ways of using this functionality are all sound, but as for
+non-termination due to fresh variables introduced by function applications, Cozo
+does not (and cannot) check for unsoundness in this case.
+
+## Semi-lattice aggregations
+
+### min(x)
+
+`min(x)`
+
+Aggregate the minimum value of all `x`.
+
+### max(x)
+
+`max(x)`
+
+Aggregate the maximum value of all `x`.
+
+### and(var)
+
+`and(var)`
+
+Aggregate the logical conjunction of the variable passed in.
+
+### or(var)
+
+`or(var)`
+
+Aggregate the logical disjunction of the variable passed in.
+
+### union(var)
+
+`union(var)`
+
+Aggregate the unions of `var`, which must be a list.
+
+### intersection(var)
+
+`intersection(var)`
+
+Aggregate the intersections of `var`, which must be a list.
+
+### choice(var)
+
+`choice(var)`
+
+Returns a non-null value. If all values are null, returns `null`. Which one is
+returned is deterministic but implementation-dependent and may change from
+version to version.
+
+### min_cost([data, cost])
+
+`min_cost([data, cost])`
+
+The argument should be a list of two elements and this aggregation chooses the
+list of the minimum `cost`.
+
+### shortest(var)
+
+`shortest(var)`
+
+`var` must be a list. Returns the shortest list among all values. Ties will be
+broken non-deterministically.
+
+### bit_and(var)
+
+`bit_and(var)`
+
+`var` must be bytes. Returns the bitwise 'and' of the values.
+
+### bit_or(var)
+
+`bit_or(var)`
+
+`var` must be bytes. Returns the bitwise 'or' of the values.
+
+## Ordinary aggregations
+
+### count(var)
+
+`count(var)`
+
+Count how many values are generated for `var` (using bag instead of set
+semantics).
+
+### count_unique(var)
+
+`count_unique(var)`
+
+Count how many unique values there are for `var`.
+
+### collect(var)
+
+`collect(var)`
+
+Collect all values for `var` into a list.
+
+### unique(var)
+
+`unique(var)`
+
+Collect `var` into a list, keeping each unique value only once.
+
+### group_count(var)
+
+`group_count(var)`
+
+Count the occurrence of unique values of `var`, putting the result into a list
+of lists, e.g. when applied to `'a'`, `'b'`, `'c'`, `'c'`, `'a'`, `'c'`, the
+results is `[['a', 2], ['b', 1], ['c', 3]]`.
+
+### bit_xor(var)
+
+`bit_xor(var)`
+
+`var` must be bytes. Returns the bitwise 'xor' of the values.
+
+### latest_by([data, time])
+
+`latest_by([data, time])`
+
+The argument should be a list of two elements and this aggregation returns the
+`data` of the maximum `time`. This is very similar to `min_cost`, the
+differences being that maximum instead of minimum is used, and non-numerical
+costs are allowed. Only `data` is returned.
+
+### smallest_by([data, cost])
+
+`smallest_by([data, cost])`
+
+The argument should be a list of two elements and this aggregation returns the
+`data` of the minimum `cost`. Non-numerical costs are allowed, unlike
+`min_cost`. The value `null` for `cost` are ignored when comparing.
+
+### choice_rand(var)
+
+`choice_rand(var)`
+
+Non-deterministically chooses one of the values of `var` as the aggregate. Each
+value the aggregation encounters has the same probability of being chosen.
+
+<Callout type="note">
+  This version of `choice` is not a semi-lattice aggregation since it is
+  impossible to satisfy the uniform sampling requirement while maintaining no
+  state, which is an implementation restriction unlikely to be lifted.
+</Callout>
+
+### Statistical aggregations
+
+### mean(x)
+
+`mean(x)`
+
+The mean value of `x`.
+
+### sum(x)
+
+`sum(x)`
+
+The sum of `x`.
+
+### product(x)
+
+`product(x)`
+
+The product of `x`.
+
+### variance(x)
+
+`variance(x)`
+
+The sample variance of `x`.
+
+### std_dev(x)
+
+`std_dev(x)`
+
+The sample standard deviation of `x`.
+
+<Attribution page="aggregations.html" />

@@ -1,0 +1,70 @@
+export const metadata = {
+  title: "Migrating from CozoDB",
+  description:
+    "How to move a CozoDB project to mnestic: a dependency swap that leaves your CozoScript and your use cozo:: imports untouched.",
+};
+
+# Migrating from CozoDB
+
+Moving from CozoDB to mnestic is a dependency change. The query language
+(CozoScript) and the engine semantics are unchanged, and the importable library
+name stays `cozo`, so your application code does not change.
+
+<Callout type="fork">
+  mnestic forks CozoDB at upstream `481af05` (2024-12-04). Your data files,
+  schemas, and queries are compatible.
+</Callout>
+
+## Swap the dependency
+
+The published crate is `mnestic`, but its `[lib] name` is `cozo`. Use Cargo's
+rename idiom so the dependency **key stays `cozo`** — that keeps both
+`cozo/feature` references and `use cozo::…` working unchanged:
+
+```toml
+# Cargo.toml
+[dependencies]
+cozo = { package = "mnestic", version = "0.8" }
+
+# with the RocksDB backend:
+# cozo = { package = "mnestic", version = "0.8", features = ["storage-rocksdb"] }
+```
+
+If you depend on a local checkout instead of crates.io:
+
+```toml
+cozo = { package = "mnestic", path = "../mnestic/cozo-core" }
+```
+
+No source changes are required — `use cozo::DbInstance;` and friends resolve to
+mnestic.
+
+## What you get immediately
+
+- **Unreleased upstream fixes for free.** The fork point is 30 commits ahead of
+  the published 0.7.6 crate, including the `stored_prefix_join` correctness fix.
+- **Faster lookups.** Equality post-filters on stored relations now compile to
+  keyed prefix lookups — see [Equality pushdown](/docs/fork/equality-pushdown).
+- **Faster, non-blocking HNSW builds** on RocksDB — see
+  [Non-blocking HNSW builds](/docs/fork/non-blocking-hnsw).
+- **A keyword-prefixed identifier parser fix** (`nullable_column`, `trueValue`,
+  `falsey` now parse in value positions).
+
+## What is new (opt-in)
+
+These are additive — existing code is unaffected until you call them:
+
+- [`hybrid_search`](/docs/fork/hybrid-retrieval) and the `RRF` / `MMR` fixed
+  rules for hybrid retrieval.
+- [`rand_ulid()` / `ulid_timestamp()`](/docs/fork/ulid) for time-ordered keys.
+
+## What stays the same
+
+- CozoScript syntax and semantics.
+- The storage backends (in-memory, SQLite, RocksDB) and their on-disk formats.
+- The `DbInstance` / `Db` API surface you already use.
+
+<Callout type="note">
+  mnestic is an independent fork and is not affiliated with or endorsed by the
+  original CozoDB authors. See [License & attribution](/docs/license).
+</Callout>

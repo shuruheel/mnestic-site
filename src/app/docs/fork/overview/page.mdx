@@ -1,0 +1,71 @@
+export const metadata = {
+  title: "What mnestic adds",
+  description:
+    "An overview of how mnestic diverges from CozoDB: faster builds, non-blocking HNSW, equality pushdown, one-call hybrid retrieval, and ULID keys.",
+};
+
+# What mnestic adds
+
+mnestic is a maintained fork of [CozoDB](https://github.com/cozodb/cozo),
+continued under MPL-2.0 from upstream commit `481af05` (the last upstream commit,
+2024-12-04). The query language (CozoScript) and engine semantics are
+**unchanged** unless noted here — what changed is performance, correctness, and
+the primitives an agentic-memory workload actually needs.
+
+<Callout type="fork">
+  The pages in this section document behavior that is specific to mnestic. Pages
+  elsewhere in these docs describe the engine inherited from CozoDB and apply to
+  both.
+</Callout>
+
+## Lineage
+
+The fork point is CozoDB `main` HEAD — **30 commits ahead of the published
+0.7.6** crate, which means adopting mnestic already gives you several unreleased
+upstream fixes for free (including the `stored_prefix_join` correctness fix).
+The version was bumped to **0.8.0** to mark the fork's identity rather than
+0.7.7.
+
+## Highlights by release
+
+### 0.8.2 — non-blocking HNSW index builds
+
+Building an HNSW index no longer holds the base relation's write lock for the
+duration of the build, so concurrent reads no longer stall for minutes. The
+graph is built off-lock under a snapshot and bulk-published with RocksDB's
+`SstFileWriter` / `IngestExternalFile`.
+
+→ [Non-blocking HNSW builds](/docs/fork/non-blocking-hnsw)
+
+### 0.8.1 — one-call hybrid retrieval & faster builds
+
+- **`hybrid_search`** runs HNSW + FTS (+ optional graph traversal), fuses with
+  Reciprocal Rank Fusion, and optionally diversifies with MMR — in a single typed
+  call, replacing roughly seven hand-written Datalog rules.
+- **HNSW index builds ~3× faster** (20k × 128: 135 s → 43.6 s, measured release),
+  with a byte-identical result.
+- The C++/RocksDB bridge is now a maintained fork, **`mnestic-rocks`**, keeping
+  the importable name `cozorocks`.
+
+→ [Hybrid retrieval (RRF + MMR)](/docs/fork/hybrid-retrieval)
+
+### 0.8.0 — fixes & agentic-memory primitives
+
+- **Equality pushdown** — `*rel[k, ..], k == <value>` now compiles to a keyed
+  `stored_prefix_join` instead of a full scan (~28–29× faster single-row
+  primary-key lookups at 5k rows, measured).
+- **`ReciprocalRankFusion` / `MaximalMarginalRelevance`** fixed rules (aliases
+  `RRF` / `MMR`) — the fusion and diversity primitives behind hybrid retrieval,
+  usable directly in Datalog.
+- **ULID functions** — `rand_ulid()` and `ulid_timestamp()` for
+  lexicographically-sortable, time-ordered keys.
+- **Parser fix** — identifiers that begin with a keyword literal
+  (`nullable_column`, `trueValue`, `falsey`) now parse correctly.
+
+→ [Equality pushdown](/docs/fork/equality-pushdown) · [ULID identifiers](/docs/fork/ulid)
+
+## Not affiliated with CozoDB
+
+mnestic is **not** the official CozoDB and is not affiliated with or endorsed by
+its authors. All credit for the original design belongs to Ziyang Hu and the
+Cozo Project Authors. See [License & attribution](/docs/license).

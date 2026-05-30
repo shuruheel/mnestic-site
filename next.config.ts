@@ -1,8 +1,19 @@
 import type { NextConfig } from "next";
+import createMDX from "@next/mdx";
+
+// Turbopack requires MDX plugins to be referenced by string name with
+// serializable options (not imported function references).
+const prettyCodeOptions = {
+  theme: "github-dark-default",
+  // Keep shiki's own background off; our panels supply it.
+  keepBackground: false,
+  defaultLang: { block: "text", inline: "text" },
+};
 
 const nextConfig: NextConfig = {
   // Pin the workspace root — the parent dir holds unrelated lockfiles.
   turbopack: { root: import.meta.dirname },
+  pageExtensions: ["ts", "tsx", "md", "mdx"],
   async headers() {
     return [
       {
@@ -39,4 +50,15 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+const withMDX = createMDX({
+  options: {
+    remarkPlugins: [["remark-gfm"]],
+    rehypePlugins: [
+      // pretty-code tokenizes fenced blocks; slug then gives headings ids.
+      ["rehype-pretty-code", prettyCodeOptions],
+      ["rehype-slug"],
+    ],
+  },
+});
+
+export default withMDX(nextConfig);

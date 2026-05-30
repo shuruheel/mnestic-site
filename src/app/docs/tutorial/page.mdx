@@ -1,0 +1,1460 @@
+export const metadata = {
+  title: "Tutorial",
+  description:
+    "A hands-on introduction to the engine: rules, joins, stored relations, graphs, recursion, aggregation, time travel, and a real-world air-routes dataset.",
+};
+
+# Tutorial
+
+This tutorial will teach you the basics of using the database.
+
+<Callout type="note">
+  This tutorial is adapted from the original CozoDB manual. The query language
+  and semantics are inherited unchanged, so everything below applies equally to
+  mnestic, the maintained fork. We keep the names "CozoDB"/"Cozo" where the text
+  describes inherited behavior.
+</Callout>
+
+There are several ways you can run the queries in this tutorial:
+
+- You can run the examples in your browser without installing anything: open the
+  [Cozo in Wasm](https://www.cozodb.org/wasm-demo/) demo and you are ready to go.
+- You can download the appropriate `cozo-*` executable for your operating system
+  from the [release page](https://github.com/cozodb/cozo/releases), uncompress
+  it, rename it to `cozo`, and run the REPL by running `cozo repl` in a terminal.
+- If you are familiar with the Python data-science stack, you can run the
+  examples in Jupyter Lab.
+- There are [many other ways](https://github.com/cozodb/cozo#Install), but the
+  above ones are the easiest.
+
+## Introduction
+
+Datalog is pattern matching for your data.
+
+This sort of thing (Ruby):
+
+```ruby
+config = {db: {user: 'admin', password: 'abc123'}}
+
+case config
+in db: {user:} # matches subhash and puts matched value in variable user
+  puts "Connect with user '#{user}'"
+in connection: {username: }
+  puts "Connect with user '#{username}'"
+else
+  puts "Unrecognized structure of config"
+end
+# Prints: "Connect with user 'admin'"
+```
+
+Broadly speaking, you provide some values and variables that constitute a
+pattern for pulling apart some data structure. The matching simultaneously
+chooses an execution path and gets values of the variables that match out of the
+data structure.
+
+## First steps
+
+Cozo is a relational database. Relations are similar to tables in SQL. The
+difference is that you can't have duplicate rows in a relation.
+
+You can define and then retrieve all the rows from a relation like this:
+
+```prolog
+?[] <- [['hello', 'world', 'Cozo!']]
+```
+
+This is a _rule_. The `<-` separates the _head_ of the rule on the left from the
+_body_ on the right. The `[] <-` acts like `SELECT *` in SQL. The above query in
+SQL would look something like:
+
+```sql
+SELECT * FROM (VALUES('hello', 'world', 'sql')) as unnecessary_alias;
+```
+
+(a hint here of Datalog's freedom from the endless ceremony that plagues SQL)
+
+You can have multiple rows:
+
+```prolog
+?[] <- [[1, 2, 3], ['a', 'b', 'c']]
+```
+
+You can have the usual sorts of types:
+
+```prolog
+?[] <- [[1.5, 2.5, 3, 4, 5.5],
+        ['aA', 'bB', 'cC', 'dD', 'eE'],
+        [true, false, null, -1.4e-2, "A string with double quotes"]]
+```
+
+The input literal representations are similar to those in JavaScript. In
+particular, strings in double quotes are guaranteed to be interpreted in the
+same way as in JSON. The output is JSON, but how it appears on your screen
+depends on your setup. For example, with a Python setup, booleans are displayed
+as `True` and `False` instead of in lowercase, since they are converted to the
+native Python datatypes for display.
+
+In the last example, you may have noticed that the returned order is not the same
+as the input order. This is because relations are always stored as trees, and
+trees are always sorted.
+
+Another consequence of relations as trees is that you can have no duplicate rows:
+
+```prolog
+?[] <- [[1], [2], [1], [2], [1]]
+```
+
+### Expressions
+
+The next example shows the use of various functions, expressions and comments:
+
+```prolog
+?[] <- [[
+            1 + 2, # addition
+            3 / 4, # division
+            5 == 6, # equality
+            7 > 8, # greater
+            true || false, # or
+            false && true, # and
+            lowercase('HELLO'), # function
+            rand_float(), # function taking no argument
+            union([1, 2, 3], [3, 4, 5], [5, 6, 7]), # variadic function
+        ]]
+```
+
+Cozo has a pretty robust set of
+[built-in functions and operators](/docs/functions).
+
+## Find values for these variables
+
+More complex queries proceed by providing some expressions with values and
+variables, much like pattern matching in your favourite language.
+
+Cozo tries to find all the sets of rows that match the given values, including
+values for the variables that also match across all the expressions. Some
+examples will make this clearer.
+
+```prolog
+?[first, second, third] <- [[1, 2, 3], ['a', 'b', 'c']]
+```
+
+Here, we've just provided named variables for the values coming back.
+
+Note that you have to do obvious things, like not having different numbers of
+columns within one relation. Typing can be strict or loose as you choose (so far,
+it's all been loose; we'll see examples of strict typing shortly).
+
+For `<-` (called _constant_) rules, the number of bindings must match the actual
+data (the _arity_), otherwise you will get an error:
+
+```prolog
+?[first, second] <- [[1, 2, 3], ['a', 'b', 'c']]
+```
+
+Now let's define rules that _apply_ (use) other rules:
+
+```prolog
+rule[first, second, third] <- [[1, 2, 3], ['a', 'b', 'c']]
+?[a, b, c] := rule[a, b, c]
+```
+
+You'll notice the two different connectors. The first, `<-`, is actually
+syntactic sugar for `<~`, which is used for invoking functions on the right-hand
+side (as well as Cozo's many built-in functions, you can write your own in the
+host language). `<-` is invoking a `Constant` function that looks like
+`rule[first, second, third] <~ Constant(data: [[1, 2, 3], ['a', 'b', 'c']])`.
+`<-` and `<~` rules are called _constant rules_.
+
+The second rule is an _inline_ rule, meaning it's not invoking anything external
+to the database; it's just matching data. Note that because it is named `?`, it
+is the _result_ of the query.
+
+Note how in the second line, we match `a`, `b`, `c` to the `first`, `second`,
+`third` in the first rule.
+
+We don't have to use all the variables from the body in an inline rule:
+
+```prolog
+rule[first, second, third] <- [[1, 2, 3], ['a', 'b', 'c']]
+?[c, b] := rule[a, b, c]
+```
+
+Let's get a bit fancier:
+
+```prolog
+?[c, b] := rule[a, b, c], is_num(a)
+rule[first, second, third] <- [[1, 2, 3], ['a', 'b', 'c']]
+```
+
+Here, the first rule had multiple bodies, separated by commas. These are
+effectively joined by _and_. We see here how the variable `a` matches with a
+value from the database, but _also_ has to return _true_ when passed to the
+`is_num` function.
+
+You can also bind constants to rule applications directly:
+
+```prolog
+rule[first, second, third] <- [[1, 2, 3], ['a', 'b', 'c']]
+?[c, b] := rule['a', b, c]
+```
+
+The pattern in the head on the second line matches only rows with an `'a'` for
+the first field value.
+
+You can have multiple rules with the same _head_ name, which is like joining
+their bodies with `OR`:
+
+```prolog
+important[a] := recent[a], unread[a], not deleted[a]
+important[a] := flagged[a], not deleted[a]
+```
+
+This means `a` is important if it isn't deleted, and it's either flagged, or
+recent and unread. You can also use `and`, `or`, `not` and parentheses, although
+the style above is more idiomatic.
+
+We can just directly set a value as part of the query, using `=`:
+
+```prolog
+rule[first, second, third] <- [[1, 2, 3], ['a', 'b', 'c']]
+?[c, b, d] := rule[a, b, c], is_num(a), d = a + b + 2*c
+```
+
+The unification `=` unifies with a single value. Use `in` to unify with each
+value within a list in turn:
+
+```prolog
+?[x, y] := x in [1, 2, 3], y in ['x', 'y']
+```
+
+Having multiple rule applications in the body generates every combination of the
+bindings:
+
+```prolog
+r1[] <- [[1, 'a'], [2, 'b']]
+r2[] <- [[2, 'B'], [3, 'C']]
+
+?[l1, l2] := r1[a, l1],
+             r2[b, l2]
+```
+
+This is a cross join in SQL.
+
+We've now seen enough of the basics to start looking at some more complex
+operations.
+
+## Joins, made easy
+
+```prolog
+r1[] <- [[1, 'a'], [2, 'b']]
+r2[] <- [[2, 'B'], [3, 'C']]
+
+?[l1, l2] := r1[a, l1],
+             r2[a, l2] # reused `a`
+```
+
+A join is as simple as using the same variable in different relations. Here, we
+are asking for a single value of `a` that matches a row in each of the sources at
+the same time.
+
+Compare the above with the SQL for the same operation:
+
+```sql
+WITH
+    r1 AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) as t(c1, c2),
+    r2 AS SELECT * FROM (VALUES(2, 'B'), (3, 'C')) as u(d1, d2)
+SELECT
+    r1.c2, r2.d2 FROM r1 JOIN r2 ON (r1.c1 = r2.d1);
+```
+
+An outer join is done by considering the cases separately:
+
+```prolog
+a[x, y] <- [[1, 2], [3, 4]]
+b[y, z] <- [[2, 3], [2, 4]]
+?[x, y, z] := a[x, y], b[y, z]
+?[x, y, z] := a[x, y], not b[y, _], z = null
+```
+
+Note that we still only have a single output `?` rule here; it is split into two
+parts, effectively joining the right sides with `or` as we discussed previously.
+
+## Stored relations
+
+The relations we've seen so far were created on the fly as constant rules, and
+only persist for the duration of the query.
+
+You can of course also persist data. To do this, you first declare the relation:
+
+```prolog
+:create stored {c1, c2}
+```
+
+This creates a relation called `stored` with two columns that will take any
+type. Here is a fully typed relation:
+
+```prolog
+:create dept_info {
+    company_name: String,
+    department_name: String,
+    =>
+    head_count: Int default 0,
+    address: String,
+}
+```
+
+This should be fairly obvious, except for the `=>` in the middle. This symbol
+separates the columns in the primary key (before the `=>`) from the other
+columns. If the `=>` isn't present, all of the columns are considered part of
+the primary key.
+
+```prolog
+?[a, b, c] <- [[1, 'a', 'A'],
+[2, 'b', 'B'],
+[3, 'c', 'C'],
+[4, 'd', 'D']]
+
+:create fd {a, b => c}
+```
+
+```prolog
+?[a, b, c] := *fd[a, b, c]
+```
+
+Note how we create rows in `fd` as we define it.
+
+In Cozo terms, the fields _after_ the `=>` are _functionally dependent_ on the
+ones before. Those before determine identity, which lets the `:put` operation
+function as an _upsert_ (update-or-insert).
+
+```prolog
+?[a, b, c] <- [[3, 'c', 'CCCCCCC']]
+
+:put fd {a, b => c}
+```
+
+```prolog
+?[a, b, c] := *fd[a, b, c]
+```
+
+<Callout type="note">
+  The name of a stored relation should not start with an underscore `_`. You
+  will get no error if you use such a name, but the relation won't be persisted —
+  it is actually an [_ephemeral relation_](/docs/stored-relations).
+</Callout>
+
+You can see the stored relations in your system by running a _system op_:
+
+```prolog
+::relations
+```
+
+Note that we have regular operations like `:create` that start with a `:`, and
+system operations with a `::`.
+
+We can investigate the columns of the stored relation:
+
+```prolog
+::columns stored
+```
+
+Stored relations can be accessed by using an asterisk `*` before the name:
+
+```prolog
+?[a, b] := *stored[a, b]
+```
+
+Unlike relations defined inline, the columns of stored relations have fixed
+names. You can take advantage of this by selectively referring to columns by
+name, especially if you have a lot of columns:
+
+```prolog
+?[a, b] := *stored{l2: b, l1: a}
+```
+
+If the binding is the same as the column name, you can omit the binding:
+
+```prolog
+?[l2] := *stored{l2}
+```
+
+Use `:rm` to remove data:
+
+```prolog
+?[l1, l2] <- [['e', 'E']]
+
+:rm stored {l1, l2}
+```
+
+```prolog
+?[l1, l2] := *stored[l1, l2]
+```
+
+Use `::remove` (double colon!) to get rid of a stored relation:
+
+```prolog
+::remove stored
+```
+
+```prolog
+::relations
+```
+
+We've now seen a variety of Cozo queries. They all have one or more rules, one of
+which will have the name `?` which determines which variables are the _result_ of
+the query.
+
+A query can also have one or more operations such as `:put`, which are executed
+after the query and can use its results. These operations might also change the
+query in some way, by limiting the number of results, sorting, paginating and so
+on.
+
+Stored relations can have triggers. These are discussed in detail in
+[Stored relations & transactions](/docs/stored-relations).
+
+Before continuing, let's remove the stored relation we introduced:
+
+```prolog
+::remove fd
+```
+
+## Command blocks
+
+Cozo executes the entire script you send to it in a single transaction. You can
+do multiple query-command blocks by wrapping each block in curly braces. The
+blocks are executed in sequence and either all of them succeed or none of them
+do and the state rolls back. The result returned to a client is whatever is in
+the last block. Like this:
+
+```prolog
+{?[a] <- [[1], [2], [3]]; :replace test {a}}
+{?[a] <- []; :replace test2 {a}}
+%swap test test2
+%return test
+```
+
+## Graphs
+
+Now let's consider a graph stored as a relation:
+
+```prolog
+?[loving, loved] <- [['alice', 'eve'],
+                     ['bob', 'alice'],
+                     ['eve', 'alice'],
+                     ['eve', 'bob'],
+                     ['eve', 'charlie'],
+                     ['charlie', 'eve'],
+                     ['david', 'george'],
+                     ['george', 'george']]
+
+:replace love {loving, loved}
+```
+
+The graph we have created reads like "Alice loves Eve, Bob loves Alice", "nobody
+loves David, David loves George, but George only loves himself", and so on. Here
+we used `:replace` instead of `:create`. The difference is that if `love` already
+exists, it will be wiped and replaced with the new data given.
+
+We can investigate competing interests:
+
+```prolog
+?[loved_by_b_e] := *love['eve', loved_by_b_e],
+                   *love['bob', loved_by_b_e]
+```
+
+It feels natural here to use the `or` keyword:
+
+```prolog
+?[loved_by_b_e] := *love['eve', loved_by_b_e] or *love['bob', loved_by_b_e],
+                   loved_by_b_e != 'bob',
+                   loved_by_b_e != 'eve'
+```
+
+Compare this with multiple rule definitions under the same name:
+
+```prolog
+?[loved_by_b_e] := *love['eve', loved_by_b_e],
+                   loved_by_b_e != 'bob',
+                   loved_by_b_e != 'eve'
+?[loved_by_b_e] := *love['bob', loved_by_b_e],
+                   loved_by_b_e != 'bob',
+                   loved_by_b_e != 'eve'
+```
+
+When you have multiple definitions of the same inline rule, the rule heads must
+be compatible. Only inline rules can have multiple definitions.
+
+### Negation
+
+Negation of _expressions_ should be familiar:
+
+```prolog
+?[loved] := *love[person, loved], !ends_with(person, 'e')
+```
+
+Rule applications can also be negated, not with the `!` operator, but with the
+`not` keyword:
+
+```prolog
+?[loved_by_e_not_b] := *love['eve', loved_by_e_not_b],
+                       not *love['bob', loved_by_e_not_b]
+```
+
+There are two sets of logical operations in Cozo, one set that acts on the level
+of expressions, and another set that acts within the expression (we say they
+work on _atoms_):
+
+- For atoms: `,` or `and` (conjunction), `or` (disjunction), `not` (negation)
+- For expressions: `&&` (conjunction), `||` (disjunction), `!` (negation)
+
+The difference between `,` and `and` is operator precedence: `and` has higher
+precedence than `or`, whereas `,` has lower precedence than `or`.
+
+There is a _safety rule_ for negation:
+
+```prolog
+?[not_loved_by_b] := not *love['bob', not_loved_by_b]
+```
+
+This query is forbidden because the resulting relation is infinite. For example,
+`'gold'` should be in the result, since _according to the facts stored in the
+database_, Bob has no interest in gold.
+
+To make our query finite, we have to explicitly give our query a _closed world_:
+
+```prolog
+the_population[p] := *love[p, _a]
+the_population[p] := *love[_a, p]
+
+?[not_loved_by_b] := the_population[not_loved_by_b],
+                     not *love['bob', not_loved_by_b]
+```
+
+### Recursion
+
+The single greatest advantage of Datalog over SQL is that recursive/graph queries
+are much simpler.
+
+Inline rules can apply other rules, and can have multiple definitions. If you
+combine these two, you get recursions:
+
+```prolog
+alice_love_chain[person] := *love['alice', person]
+alice_love_chain[person] := alice_love_chain[in_person],
+                            *love[in_person, person]
+
+?[chained] := alice_love_chain[chained]
+```
+
+You may object that you only need to be able to apply other rules to have
+recursion, without multiple definitions. Technically correct, but the resulting
+queries are not useful:
+
+```prolog
+alice_love_chain[person] := alice_love_chain[in_person],
+                            *love[in_person, person]
+
+?[chained] := alice_love_chain[chained]
+```
+
+Similar to the negation case, if there is no way to _deduce_ a fact from the
+given facts, then the fact itself is considered false. You need multiple
+definitions to "bootstrap" the query.
+
+### Aggregation
+
+_Aggregations_ are usually used to compute statistics. In Cozo, aggregations are
+applied in the head of inline rules:
+
+```prolog
+?[person, count(loved_by)] := *love[loved_by, person]
+```
+
+The usual `sum`, `mean`, etc. are all available. Here is the
+[full list](/docs/aggregations) of aggregations for you to play with.
+
+### Query options
+
+We have seen query options like `:create`, `:put`, `:rm` for manipulating stored
+relations. There are also query options for controlling what is returned:
+
+```prolog
+?[loving, loved] := *love{ loving, loved }
+
+:limit 1
+```
+
+Next we want the result to be sorted by `loved` in descending order, then
+`loving` in ascending order, and skip the first row:
+
+```prolog
+?[loving, loved] := *love{ loving, loved }
+
+:order -loved, loving
+:offset 1
+```
+
+Putting `-` in front of variables in the `:order` clause denotes reverse order.
+Nothing or `+` denotes ascending order.
+
+The full list of query options is explained in the [Queries](/docs/queries)
+chapter.
+
+### Fixed rules
+
+We've seen how the `<-` syntax for constant rules is syntax sugar. The full
+syntax is:
+
+```prolog
+?[] <~ Constant(data: [['hello', 'world', 'Cozo!']])
+```
+
+Here we are using the _fixed rule_ `Constant`, which takes one _option_ named
+`data`. The curly tail `<~` denotes a fixed rule.
+
+Fixed rules take input relations as arguments, apply custom logic to them and
+produce an output relation. They're functions that return relations, defined
+outside the Cozo engine itself (either built-in or loaded from a library or
+defined by the host language).
+
+The `Constant` fixed rule takes zero input relations.
+
+If you are using Cozo in the browser, `Constant` is the only fixed rule you can
+use. In all other cases your Cozo will have the graph algorithms module enabled,
+and all graph algorithms are implemented as fixed rules. As an example, let's
+find out who is most popular in the `love` graph by using the
+[PageRank](https://en.wikipedia.org/wiki/PageRank) algorithm:
+
+```prolog
+?[person, page_rank] <~ PageRank(*love[])
+
+:order -page_rank
+```
+
+Here the input relation is the stored relation `*love` (as noted above, you will
+receive an error if you run this in the WASM implementation).
+
+Each fixed rule is different: [here](/docs/algorithms) is the full list.
+
+```prolog
+::remove love
+```
+
+## Time travel
+
+A very useful capability of Cozo is the ability to time travel in a stored
+relation. Usually when you `:put` into a relation, the old value is overwritten;
+and when you `:rm`, the row is completely gone. But the old values can be of great
+value.
+
+In this case, _time travel_ is the solution: instead of storing _current_ facts,
+the stored relation stores the complete history of facts, at least all the
+available history as history itself unfolds.
+
+If you believe that you don't want this functionality at all, you can skip to the
+next section. At Cozo we adopt the "zero-cost, zero-mental-overhead abstraction"
+philosophy: if you don't use a functionality, you don't pay the performance or
+cognitive overhead.
+
+Let's have a simple example: storing the head of state of countries. First we
+have to create a new stored relation:
+
+```prolog
+:create hos {state: String, year: Validity => hos: String}
+```
+
+`hos` is shorthand for "head of state". The only thing different about this
+relation is that we are giving `year` the type `Validity`. You can think of
+validity as a list of two elements, the first element being an integer and the
+second element being a boolean. The integer indicates the "time" of the fact
+recorded by the row; the boolean, if `true`, indicates that the new version of
+the row holds starting from the indicated time; if the boolean is `false`, the
+row is deleted at this time.
+
+Note that the integer only identifies a temporal sequence to Cozo. What sequence
+you use is up to you. UNIX _Epoch_ is the default, as we will see.
+
+Now let's insert some data:
+
+```prolog
+?[state, year, hos] <- [['US', [2001, true], 'Bush'],
+                        ['US', [2005, true], 'Bush'],
+                        ['US', [2009, true], 'Obama'],
+                        ['US', [2013, true], 'Obama'],
+                        ['US', [2017, true], 'Trump'],
+                        ['US', [2021, true], 'Biden']]
+
+:put hos {state, year => hos}
+```
+
+It is OK to assert a still-valid fact again, as we have done above. You can use
+this relation like a normal relation:
+
+```prolog
+?[state, year, hos] := *hos{state, year, hos}
+```
+
+The curious thing is that it is sorted _descendingly_ by year. Validity sorts
+descendingly.
+
+For any stored relation that has type `Validity` at the _last_ slot of the key,
+the time-travel capability is enabled. Say you have forgotten who the president
+of the US was in 2019. Easy:
+
+```prolog
+?[hos, year] := *hos{state: 'US', year, hos @ 2019}
+```
+
+In your answer you also got the year that this fact was last known to be true.
+
+You also don't know about the year 2099:
+
+```prolog
+?[hos, year] := *hos{state: 'US', year, hos @ 2099}
+```
+
+That certainly doesn't look right. Let's fix it by _retracting_ facts on or after
+2025, and only inserting them back when we have sure facts:
+
+```prolog
+?[state, year, hos] <- [['US', [2025, false], '']]
+
+:put hos {state, year => hos}
+```
+
+As we have hinted, you retract facts by _putting_ a retraction. Now let's run the
+query again:
+
+```prolog
+?[hos, year] := *hos{state: 'US', year, hos @ 2099}
+```
+
+Since the database does not contain facts on or after 2025, your query returns
+empty.
+
+This functionality is flexible: you can mix different periods in the same query:
+
+```prolog
+?[hos2018, hos2010] := *hos{state: 'US', hos: hos2018 @ 2018},
+                       *hos{state: 'US', hos: hos2010 @ 2010}
+```
+
+As the relation `hos` is just a normal relation, you can still `:rm` facts from
+it, in which case the facts are irretrievably gone. Whether that's desirable is
+up to you: the database gives you the choice of how you want to use it, and trusts
+that you know how to use it correctly for your use case.
+
+First let's create a new stored relation to store people's moods:
+
+```prolog
+:create mood {name: String, at: Validity => mood: String}
+```
+
+I want to record my mood now:
+
+```prolog
+?[name, at, mood] <- [['me', 'ASSERT', 'curious']]
+:put mood {name, at => mood}
+```
+
+Instead of giving a list of two elements as we have done above, we have simply
+used the string `ASSERT`, and the system will know that we mean an assertion of a
+_current_ fact, with the value used being the current UNIX Epoch.
+
+```prolog
+?[name, at, mood] := *mood{name, at, mood}
+```
+
+```prolog
+?[name, time, mood] := *mood{name, at, mood},
+                       time = format_timestamp(at)
+```
+
+To query for current facts, use the string `NOW` in the validity specification:
+
+```prolog
+?[name, time, mood] := *mood{name, at, mood @ 'NOW'},
+                       time = format_timestamp(at)
+```
+
+You can put in facts with manual timestamps as before, so it is possible that
+your database contains facts about the future. Let's do just that. Instead of
+giving a mysterious string of numerals, you can use a string for the timestamp:
+
+```prolog
+?[name, at, mood] <- [['me', '2030-01-01T00:00:00.000+00:00', 'hopeful']]
+:put mood {name, at => mood}
+```
+
+Since this is in the future, it shouldn't affect `NOW`:
+
+```prolog
+?[name, time, mood] := *mood{name, at, mood @ 'NOW'},
+                       time = format_timestamp(at)
+```
+
+In this case, there is also `END` for the validity specification, meaning to
+extract facts at the end of time:
+
+```prolog
+?[name, time, mood] := *mood{name, at, mood @ 'END'},
+                       time = format_timestamp(at)
+```
+
+Retraction at the current timestamp can be done with the string `RETRACT`:
+
+```prolog
+?[name, at, mood] <- [['me', 'RETRACT', '']]
+:put mood {name, at => mood}
+```
+
+Retraction placed in the future can also be done with stringy timestamps by
+prefixing with `~`:
+
+```prolog
+?[name, at, mood] <- [['me', '~9999-01-01T00:00:00.000+00:00', 'who cares']]
+:put mood {name, at => mood}
+```
+
+Now let's look at the complete history:
+
+```prolog
+?[name, time, is_assert, mood] := *mood{name, at, mood},
+                                  time = format_timestamp(at),
+                                  is_assert = to_bool(at)
+```
+
+This time-travel facility is much faster than what you get if you try to
+implement it directly with Datalog. Some further technical details of time travel
+are discussed in its own chapter, [Time travel](/docs/time-travel).
+
+```prolog
+::remove mood, hos
+```
+
+## Extended example: the air routes dataset
+
+Now that you have a basic understanding of using the various constructs of Cozo,
+let's deal with a small real-world dataset, with about 3700 nodes and 57000
+edges.
+
+The data we are going to use, and many examples that we will present, are adapted
+from the book
+[Practical Gremlin](https://kelvinlawrence.net/book/Gremlin-Graph-Guide.html).
+Gremlin is an imperative query language for graphs, a very different take
+compared to Datalog.
+
+First, let's create the stored relations we want (wrapping queries in braces
+allows you to execute several queries together atomically):
+
+```prolog
+{:create airport {
+    code: String
+    =>
+    icao: String,
+    desc: String,
+    region: String,
+    runways: Int,
+    longest: Float,
+    elev: Float,
+    country: String,
+    city: String,
+    lat: Float,
+    lon: Float
+}}
+{:create country {
+    code: String
+    =>
+    desc: String
+}}
+{:create continent {
+    code: String
+    =>
+    desc: String
+}}
+{:create contain { entity: String, contained: String }}
+{:create route { fr: String, to: String => dist: Float }}
+```
+
+The next command applies only if you are using Jupyter notebooks: it downloads a
+JSON file containing the data and imports it into the database. The commented-out
+line shows how to do the same thing with a local file. If you are using the Cozo
+WASM interface, click the "Import from URL" or the "Import from File" icon, and
+paste in the address.
+
+```python
+%cozo_import_remote_file 'https://raw.githubusercontent.com/cozodb/cozo/dev/cozo-core/tests/air-routes.json'
+# %cozo_import_local_file '../../cozo/cozo-core/tests/air-routes.json'
+```
+
+If you are using the `cozo repl` command line, the command to use instead is
+simply:
+
+```bash
+%import https://raw.githubusercontent.com/cozodb/cozo/dev/cozo-core/tests/air-routes.json
+```
+
+You can replace the URL with the path to a local file as well. Other environments
+also have ways to do the same thing: refer to the respective documentation.
+
+If you feel that the above is too much magic, we will show you the "hard way" of
+importing the same data at the end of this tutorial. For now let's move on.
+
+Let's verify all the relations we want are there:
+
+```prolog
+::relations
+```
+
+While we are at it, let's lock all these tables to prevent accidentally changing
+their contents:
+
+```prolog
+::access_level read_only airport, contain, continent, country, route
+```
+
+More information about what this does is explained in
+[System ops](/docs/system-ops).
+
+Let's just look at some data. Start with airports:
+
+```prolog
+?[code, city, desc, region, runways, lat, lon] := *airport{code, city, desc, region, runways, lat, lon}
+
+:limit 5
+```
+
+Airports with the most runways:
+
+```prolog
+?[code, city, desc, region, runways, lat, lon] := *airport{code, city, desc, region, runways, lat, lon}
+
+:order -runways
+:limit 10
+```
+
+How many airports are there in total?
+
+```prolog
+?[count(code)] := *airport{code}
+```
+
+Let's get a distribution of the initials of the airport codes:
+
+```prolog
+?[count(initial), initial] := *airport{code}, initial = first(chars(code))
+
+:order initial
+```
+
+More useful are the statistics of runways:
+
+```prolog
+?[count(r), count_unique(r), sum(r), min(r), max(r), mean(r), std_dev(r)] :=
+    *airport{runways: r}
+```
+
+Using `country`, we can find countries with no airports:
+
+```prolog
+?[desc] := *country{code, desc}, not *airport{country: code}
+```
+
+The `route` relation by itself is rather boring:
+
+```prolog
+?[fr, to, dist] := *route{fr, to, dist}
+
+:limit 10
+```
+
+It just records the starting and ending airports of each route, together with
+the distance. This relation only becomes useful when used as a graph.
+
+Airports with no routes:
+
+```prolog
+?[code, desc] := *airport{code, desc}, not *route{fr: code}, not *route{to: code}
+```
+
+Airports with the most outgoing routes:
+
+```prolog
+route_count[fr, count(fr)] := *route{fr}
+?[code, n] := route_count[code, n]
+
+:sort -n
+:limit 5
+```
+
+How many routes are there from the European Union to the US?
+
+```prolog
+routes[unique(r)] := *contain['EU', fr],
+                     *route{fr, to},
+                     *airport{code: to, country: 'US'},
+                     r = [fr, to]
+?[n] := routes[rs], n = length(rs)
+```
+
+How many airports are there in the US with routes from the EU?
+
+```prolog
+?[count_unique(to)] := *contain['EU', fr],
+                       *route{fr, to},
+                       *airport{code: to, country: 'US'}
+```
+
+How many routes are there for each airport in London, UK?
+
+```prolog
+?[code, count(code)] := *airport{code, city: 'London', region: 'GB-ENG'}, *route{fr: code}
+```
+
+We need to specify the region, because there is another city called London, not
+in the UK.
+
+How many airports are reachable from London, UK in two hops?
+
+```prolog
+lon_uk_airports[code] := *airport{code, city: 'London', region: 'GB-ENG'}
+one_hop[to] := lon_uk_airports[fr], *route{fr, to}, not lon_uk_airports[to];
+?[count_unique(a3)] := one_hop[a2], *route{fr: a2, to: a3}, not lon_uk_airports[a3];
+```
+
+What are the cities directly reachable from LGW (London Gatwick), but
+furthermost away?
+
+```prolog
+?[city, dist] := *route{fr: 'LGW', to, dist},
+                 *airport{code: to, city}
+:order -dist
+:limit 10
+```
+
+What airports are within 0.1 degrees of the Greenwich meridian?
+
+```prolog
+?[code, desc, lon, lat] := *airport{lon, lat, code, desc}, lon > -0.1, lon < 0.1
+```
+
+Airports in a box drawn around London Heathrow, UK:
+
+```prolog
+h_box[lon, lat] := *airport{code: 'LHR', lon, lat}
+?[code, desc] := h_box[lhr_lon, lhr_lat], *airport{code, lon, lat, desc},
+                 abs(lhr_lon - lon) < 1, abs(lhr_lat - lat) < 1
+```
+
+For some spherical geometry: what is the angle subtended by SFO and NRT on the
+surface of the earth?
+
+```prolog
+?[deg_diff] := *airport{code: 'SFO', lat: a_lat, lon: a_lon},
+               *airport{code: 'NRT', lat: b_lat, lon: b_lon},
+               deg_diff = rad_to_deg(haversine_deg_input(a_lat, a_lon, b_lat, b_lon))
+```
+
+We mentioned before that aggregations in Cozo are powerful. They are powerful
+because they can be used in recursions (some restrictions apply).
+
+Let's find the distance of the _shortest route_ between two airports. One way is
+to enumerate all the routes between the two airports, and then apply `min`
+aggregation to the results. This cannot be implemented as stated, since the
+routes may contain cycles and hence there can be an infinite number of routes
+between two airports.
+
+Instead, think recursively. If we already have all the shortest routes between
+all nodes, we derive an _equation_ satisfied by the shortest route: the shortest
+route between `a` and `b` is either the distance of a direct route, or the sum of
+the shortest distance from `a` to `c` and the distance of a direct route from `c`
+to `d`. We apply our `min` aggregation to this recursive set instead.
+
+Write it out and it works. For example, the shortest route between the airports
+`LHR` and `YPO`:
+
+```prolog
+shortest[b, min(dist)] := *route{fr: 'LHR', to: b, dist}
+                          # Start with the airport 'LHR', retrieve a direct route from 'LHR' to b
+
+shortest[b, min(dist)] := shortest[c, d1], # Start with an existing shortest route from 'LHR' to c
+                          *route{fr: c, to: b, dist: d2},  # Retrieve a direct route from c to b
+                          dist = d1 + d2 # Add the distances
+
+?[dist] := shortest['YPO', dist] # Extract the answer for 'YPO'.
+                                 # We chose it since it is the hardest airport to get to from 'LHR'.
+```
+
+There is a caveat when you try to write similar queries. Say you try to write it
+in the following way (don't try to run it):
+
+```prolog
+shortest[a, b, min(dist)] := *route{fr: a, to: b, dist}
+shortest[a, b, min(dist)] := shortest[a, c, d1],
+                          *route{fr: c, to: b, dist: d2},
+                          dist = d1 + d2
+
+?[dist] := shortest['LHR', 'YPO', dist]
+```
+
+You will find that the query does not complete in a reasonable amount of time,
+despite it being equivalent to the original query. Why?
+
+In the changed query, you are asking the database to compute the all-pair
+shortest path, and then extract the answer to a particular shortest path.
+Normally Cozo would apply a technique called _magic set rewrite_ so that only the
+needed answer would be calculated. However, in the changed query the presence of
+the aggregation operator `min` prevents that. In this case, applying the rewrite
+to the variable `a` would still yield the correct answer, but rewriting in any
+other way would give complete nonsense, and in the more general case with
+recursive aggregations this is a can of worms.
+
+So as explained in the chapter about [Query execution](/docs/query-execution),
+magic set rewrites are only applied to rules without aggregations or recursions
+for the moment, until we are sure of the exact conditions under which the
+rewrites are safe. So for now at least the database executes the query as
+written, computing the result of the `shortest` rule containing more than ten
+million rows (to be exact, 3700 * 3700 = 13,690,000 rows) first!
+
+The bottom line is: be mindful of the cardinality of the return sets of recursive
+rules.
+
+### A tour of graph algorithms
+
+Now let's investigate the graph using some graph algorithms. As we have mentioned
+before, the Cozo running in browsers through WASM does not have the graph
+algorithms module enabled, so to run the following examples you will need to use
+some other implementation.
+
+Since path-finding is such a common operation on graphs, Cozo has several fixed
+rules for that:
+
+```prolog
+starting[] <- [['LHR']]
+goal[] <- [['YPO']]
+?[starting, goal, distance, path] <~ ShortestPathDijkstra(*route[], starting[], goal[])
+```
+
+Not only is it more efficient, but we also get a path for the shortest route.
+
+Not content with the shortest path, the following calculates the ten shortest
+paths:
+
+```prolog
+starting[] <- [['LHR']]
+goal[] <- [['YPO']]
+?[starting, goal, distance, path] <~ KShortestPathYen(*route[], starting[], goal[], k: 10)
+```
+
+If efficiency is really important to you, you can use the A* algorithm with a
+good heuristic function:
+
+```prolog
+code_lat_lon[code, lat, lon] := *airport{code, lat, lon}
+starting[code, lat, lon] := code = 'LHR', *airport{code, lat, lon};
+goal[code, lat, lon] := code = 'YPO', *airport{code, lat, lon};
+?[] <~ ShortestPathAStar(*route[],
+                         code_lat_lon[node, lat1, lon1],
+                         starting[],
+                         goal[goal, lat2, lon2],
+                         heuristic: haversine_deg_input(lat1, lon1, lat2, lon2) * 3963);
+```
+
+There's a lot more setup required in this case: we need to retrieve the latitudes
+and longitudes of airports and do processing on them first. The number `3963`
+above is the radius of the earth in miles.
+
+The most important airports, by PageRank:
+
+```prolog
+rank[code, score] <~ PageRank(*route[a, b])
+?[code, desc, score] := rank[code, score], *airport{code, desc}
+
+:limit 10;
+:order -score
+```
+
+The following example takes a long time to run since it calculates the
+betweenness centrality: up to a few seconds, depending on your machine.
+Algorithms for calculating betweenness centrality have high complexity.
+
+```prolog
+centrality[code, score] <~ BetweennessCentrality(*route[a, b])
+?[code, desc, score] := centrality[code, score], *airport{code, desc}
+
+:limit 10;
+:order -score
+```
+
+These are the airports that, if disconnected from the network, cause the most
+disruption. As this example shows, some of the algorithms really struggle when
+you go beyond a small or medium sized dataset.
+
+Community detection can collapse a graph into a _supergraph_. Here we store the
+result, since it has too many rows to display nicely:
+
+```prolog
+community[detailed_cluster, code] <~ CommunityDetectionLouvain(*route[a, b])
+?[code, cluster, detailed_cluster] := community[detailed_cluster, code], cluster = first(detailed_cluster)
+
+:replace community {code => cluster, detailed_cluster}
+```
+
+We can look at the supernodes containing specific nodes. For example, the
+supernode for London Gatwick consists of mainly UK and other European airports,
+as you would expect:
+
+```prolog
+community[code] := *community{code: 'LGW', cluster}, *community{code, cluster}
+?[country, count(code)] :=
+    community[code],
+    *airport{code, desc, country: country_code},
+    *country{code: country_code, desc: country},
+
+:order -count(code)
+:limit 5
+```
+
+For `JFK` on the other hand, its supernode consists of mainly US airports:
+
+```prolog
+community[code] := *community{code: 'JFK', cluster}, *community{code, cluster}
+?[country, count(code)] :=
+    community[code],
+    *airport{code, desc, country: country_code},
+    *country{code: country_code, desc: country},
+
+:order -count(code)
+:limit 5
+```
+
+But it does not always work according to geography. For example, Frankfurt
+airport is in Germany:
+
+```prolog
+?[desc, country_desc] := *airport{code: 'FRA', desc, country: country_code}, *country{code: country_code, desc: country_desc}
+```
+
+But its supernode:
+
+```prolog
+community[code] := *community{code: 'FRA', cluster}, *community{code, cluster}
+?[country, count(code)] :=
+    community[code],
+    *airport{code, desc, country: country_code},
+    *country{code: country_code, desc: country},
+
+:order -count(code)
+:limit 5
+```
+
+Germany does not even appear in the top five. In fact, `FRA` is in the same
+supernode as `JFK`. What matters is the connectivity in the graph, not the
+geography. As another example:
+
+```prolog
+community[code] := *community{code: 'SIN', cluster}, *community{code, cluster}
+?[country, count(code)] :=
+    community[code],
+    *airport{code, desc, country: country_code},
+    *country{code: country_code, desc: country},
+
+:order -count(code)
+:limit 5
+```
+
+You'd expect `SIN` to be a Chinese airport. Wrong:
+
+```prolog
+?[desc, country_desc] := *airport{code: 'SIN', desc, country: country_code}, *country{code: country_code, desc: country_desc}
+```
+
+Finally, let's collapse the `route` relation into `super_route`:
+
+```prolog
+?[fr_cluster, to_cluster, count(dist), sum(dist)] := *route{fr, to, dist},
+                                                     *community{code: fr, cluster: fr_cluster},
+                                                     *community{code: to, cluster: to_cluster}
+:replace super_route {fr_cluster, to_cluster => n_routes=count(dist), total_distance=sum(dist)}
+```
+
+As expected, the "diagonals" where `fr_cluster == to_cluster` are larger in the
+`super_route` graph:
+
+```prolog
+?[fr_cluster, to_cluster, n_routes, total_distance] := *super_route{fr_cluster, to_cluster, n_routes, total_distance}, fr_cluster < 2
+```
+
+Now the super graph is small enough that all analytics algorithms return
+instantly:
+
+```prolog
+?[cluster, score] <~ PageRank(*super_route[])
+:order -score
+:limit 5
+```
+
+You can now go on to investigate the supernodes, give real-world interpretations
+to them, etc. For example, a naïve interpretation of the above PageRank result is
+that North America is (still) the most prosperous part of the world, followed by
+East Asia in second place, South Asia in third place, and Europe in fourth place.
+
+## Importing the dataset the hard way
+
+Previously, we imported the air-routes dataset by using Python under the hood to
+download a specially-crafted JSON file and feed it to the database. Here we learn
+how to achieve the same effect by letting Cozo fetch and import a series of CSV
+files, without Python's help.
+
+Let's set the database magic up first:
+
+```prolog
+::access_level normal airport, contain, continent, country, route
+```
+
+```prolog
+::remove airport, contain, continent, country, route, community, super_route
+```
+
+Next, some parameters to make life easier (the lines commented out do the same
+thing by processing local files):
+
+```python
+# %cozo_set AIR_ROUTES_NODES_URL 'https://raw.githubusercontent.com/cozodb/cozo/dev/cozo-core/tests/air-routes-latest-nodes.csv'
+# %cozo_set AIR_ROUTES_EDGES_URL 'https://raw.githubusercontent.com/cozodb/cozo/dev/cozo-core/tests/air-routes-latest-edges.csv'
+%cozo_set AIR_ROUTES_NODES_URL 'file://./../../cozo/cozo-core/tests/air-routes-latest-nodes.csv'
+%cozo_set AIR_ROUTES_EDGES_URL 'file://./../../cozo/cozo-core/tests/air-routes-latest-edges.csv'
+```
+
+First, import the `airport` relation:
+
+```prolog
+res[idx, label, typ, code, icao, desc, region, runways, longest, elev, country, city, lat, lon] <~
+    CsvReader(types: ['Int', 'Any', 'Any', 'Any', 'Any', 'Any', 'Any', 'Int?', 'Float?', 'Float?', 'Any', 'Any', 'Float?', 'Float?'],
+              url: $AIR_ROUTES_NODES_URL,
+              has_headers: true)
+
+?[code, icao, desc, region, runways, longest, elev, country, city, lat, lon] :=
+    res[idx, label, typ, code, icao, desc, region, runways, longest, elev, country, city, lat, lon],
+    label == 'airport'
+
+:replace airport {
+    code: String
+    =>
+    icao: String,
+    desc: String,
+    region: String,
+    runways: Int,
+    longest: Float,
+    elev: Float,
+    country: String,
+    city: String,
+    lat: Float,
+    lon: Float
+}
+```
+
+The `CsvReader` utility downloads a CSV file from the internet and attempts to
+parse its content into a relation. When we store the relation, we specified types
+for the columns. The `code` column acts as a primary key for the `airport` stored
+relation.
+
+Next is `country`:
+
+```prolog
+res[idx, label, typ, code, icao, desc] <~
+    CsvReader(types: ['Int', 'Any', 'Any', 'Any', 'Any', 'Any'],
+              url: $AIR_ROUTES_NODES_URL,
+              has_headers: true)
+?[code, desc] :=
+    res[idx, label, typ, code, icao, desc],
+    label == 'country'
+
+:replace country {
+    code: String
+    =>
+    desc: String
+}
+```
+
+`continent`:
+
+```prolog
+res[idx, label, typ, code, icao, desc] <~
+    CsvReader(types: ['Int', 'Any', 'Any', 'Any', 'Any', 'Any'],
+              url: $AIR_ROUTES_NODES_URL,
+              has_headers: true)
+?[idx, code, desc] :=
+    res[idx, label, typ, code, icao, desc],
+    label == 'continent'
+
+:replace continent {
+    code: String
+    =>
+    desc: String
+}
+```
+
+We need to make a translation table for the indices the data use:
+
+```prolog
+res[idx, label, typ, code] <~
+    CsvReader(types: ['Int', 'Any', 'Any', 'Any'],
+              url: $AIR_ROUTES_NODES_URL,
+              has_headers: true)
+?[idx, code] :=
+    res[idx, label, typ, code],
+
+:replace idx2code { idx => code }
+```
+
+The `contain` relation contains information on the geographical inclusion of
+entities:
+
+```prolog
+res[] <~
+    CsvReader(types: ['Int', 'Int', 'Int', 'String'],
+              url: $AIR_ROUTES_EDGES_URL,
+              has_headers: true)
+?[entity, contained] :=
+    res[idx, fr_i, to_i, typ],
+    typ == 'contains',
+    *idx2code[fr_i, entity],
+    *idx2code[to_i, contained]
+
+
+:replace contain { entity: String, contained: String }
+```
+
+Finally, the `route`s between the airports. This relation is much larger than the
+rest and contains about 60k rows:
+
+```prolog
+res[] <~
+    CsvReader(types: ['Int', 'Int', 'Int', 'String', 'Float?'],
+              url: $AIR_ROUTES_EDGES_URL,
+              has_headers: true)
+?[fr, to, dist] :=
+    res[idx, fr_i, to_i, typ, dist],
+    typ == 'route',
+    *idx2code[fr_i, fr],
+    *idx2code[to_i, to]
+
+:replace route { fr: String, to: String => dist: Float }
+```
+
+We no longer need the `idx2code` relation:
+
+```prolog
+::remove idx2code
+```
+
+Let's verify all the relations we want are there:
+
+```prolog
+::relations
+```
+
+That's it for the tutorial!
+
+<Attribution page="tutorial.html" />

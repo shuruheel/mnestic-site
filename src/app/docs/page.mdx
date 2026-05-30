@@ -1,0 +1,78 @@
+export const metadata = {
+  title: "Introduction",
+  description:
+    "What mnestic is, how it relates to CozoDB, and why a relational-graph-vector database with Datalog makes a good substrate for machine memory.",
+};
+
+# Introduction
+
+**mnestic** is a general-purpose, transactional database that uses **Datalog**
+for queries, is **embeddable** but can also handle large amounts of data and
+concurrency, and treats **graph** and **vector** data as first-class. It is a
+maintained fork of [CozoDB](https://github.com/cozodb/cozo), continued under
+MPL-2.0 and tuned as a substrate for agentic memory.
+
+<Callout type="fork">
+  These docs cover the engine you inherit from CozoDB (the query language and
+  semantics are unchanged) and the things mnestic adds on top. Pages adapted
+  from the original CozoDB manual carry an attribution note at the foot; pages
+  under **mnestic — the fork** are original to this project.
+</Callout>
+
+## What "embeddable" means
+
+A database is _embedded_ if it runs in the same process as your program, rather
+than as a separate server you connect to over a socket. SQLite is embedded;
+Postgres and MySQL are client-server. Embedded databases need no setup and run
+almost anywhere.
+
+mnestic is _embeddable_ rather than strictly _embedded_: you can run it
+in-process for zero-setup local use, or stand it up as an HTTP server when you
+want to share resources and handle more concurrency.
+
+## Why graphs
+
+Data is inherently interconnected, and the most useful insights often live in
+graph structures several levels deep. Rather than forcing your data into a
+labelled-property graph model, mnestic keeps the **relational model** — an
+algebra that handles graph data cleanly and composes far better.
+
+## Why Datalog
+
+Datalog expresses every relational query, and makes **recursion** easy to write,
+more powerful, and usually faster than the SQL equivalent. Queries compose piece
+by piece: you build a result from small named rules.
+
+```prolog
+# a recursive rule: everyone reachable by following "follows" edges
+reachable[to] := *follows{ from: $start, to }
+reachable[to] := reachable[via], *follows{ from: via, to }
+
+?[person] := reachable[person]
+```
+
+## Relational, graph, and vector in one engine
+
+The same query can join stored relations, recurse over graph structure, and
+search a vector index by meaning — no separate systems to keep in sync.
+
+```prolog
+# 2-hop neighbours of a seed, re-ranked by embedding distance
+recall[to] := *recalls{ from: $seed, to }
+recall[to] := recall[via], *recalls{ from: via, to }
+
+?[memory, dist] :=
+    recall[memory],
+    ~memory:embedding{ memory | query: $cue, k: 12, ef: 80, bind_distance: dist }
+:order dist
+:limit 12
+```
+
+## Where to go next
+
+- New to the engine? Start with the **[Tutorial](/docs/tutorial)**.
+- Installing it in a Rust project? See **[Installation](/docs/install)**.
+- Want the headline fork features? Jump to **[What mnestic adds](/docs/fork/overview)**.
+- Looking for a specific function or operator? See the **[Functions reference](/docs/functions)**.
+
+<Attribution page="index.html" />

@@ -1,0 +1,67 @@
+export const metadata = {
+  title: "Non-blocking HNSW builds",
+  description:
+    "How mnestic builds HNSW vector indexes off-lock so concurrent reads no longer stall for the duration of the build.",
+};
+
+# Non-blocking HNSW builds
+
+<Callout type="fork">
+  Specific to mnestic 0.8.2. Applies to the **RocksDB** backend; other backends
+  keep the in-transaction build path unchanged.
+</Callout>
+
+## The problem
+
+Building or rebuilding an HNSW index with `::hnsw create` used to hold the base
+relation's **exclusive write lock** for the _entire_ build. Every concurrent
+read takes that same lock (shared), so all reads blocked until the build
+finished. In production this meant **10–20+ minutes** of stalled reads for a
+large index (76 minutes for a 151K × 1536 index). The bottleneck was the
+engine's per-relation lock, not RocksDB itself.
+
+## What changed
+
+The heavy graph construction now runs **off-lock**, under a read-only snapshot,
+with no relation lock held. The lock is taken only briefly twice: once to set up
+the empty index relation, and once at the end to publish the finished graph.
+
+Measured: building a **40,000**-vector index takes about **5.6 s**, during which
+**90,507** concurrent reads of the same relation completed — the slowest in
+**0.8 ms** (release). Previously every one of those reads would have queued
+behind the whole build.
+
+## How it stays correct
+
+Correctness under concurrent writes is the hard part. mnestic handles it with
+four guarantees:
+
+- **Data before metadata.** The finished, key-sorted graph is bulk-published into
+  the live store via `SstFileWriter` / `IngestExternalFile` (bypassing the
+  transaction write-batch), and the index _data_ is always ingested before its
+  _metadata_ is committed. A reader can never observe an index before its keys
+  exist.
+- **Reconcile pass.** Base-relation rows that change during the unlocked build are
+  folded in by a short reconcile pass — a re-scan and diff against the build
+  snapshot, applying the same incremental `hnsw_put` / `hnsw_remove` maintenance —
+  under a brief final lock.
+- **Serialized builds.** Concurrent builds of the same index are serialized; a
+  build that loses the race cleans up its own ingested data.
+- **Crash safety.** Index relation ids are always freshly allocated, so a crash
+  mid-publish leaves at worst unreferenced dead keys, never a torn index.
+
+## Backends
+
+Non-RocksDB backends (SQLite, in-memory) keep the in-transaction build with
+per-key flush. A new `Storage::ingest_sorted` hook carries the SST bulk-load and
+is implemented only on RocksDB (it default-errors elsewhere).
+
+This change is guarded by a dedicated test suite covering build correctness,
+persistence across reopen, reads-during-build, reconciliation of concurrent
+inserts, and drop-and-recreate.
+
+## See also
+
+- [Proximity searches](/docs/proximity-search) — HNSW index creation and query
+  syntax (inherited engine behavior).
+- [What mnestic adds](/docs/fork/overview)

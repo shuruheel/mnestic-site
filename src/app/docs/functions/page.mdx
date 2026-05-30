@@ -1,0 +1,802 @@
+export const metadata = {
+  title: "Functions & operators",
+  description:
+    "Complete reference for the functions and operators available in CozoScript expressions: comparison, boolean, math, vector, JSON, string, list, binary, type, random, regex, and timestamp.",
+};
+
+# Functions & operators
+
+Functions can be used to build expressions.
+
+All functions except those that extract the current time and those having names starting with `rand_` are deterministic.
+
+## Non-functions
+
+Functions must take in expressions as arguments, evaluate each argument in turn, and then evaluate its implementation to produce a value that can be used in an expression. We first describe constructs that look like, but are not functions.
+
+These are language constructs that return Horn clauses instead of expressions:
+
+- `var = expr` unifies `expr` with `var`. Different from `expr1 == expr2`.
+- `not clause` negates a Horn clause `clause`. Different from `!expr` or `negate(expr)`.
+- `clause1 or clause2` connects two Horn-clauses by disjunction. Different from `or(expr1, expr2)`.
+- `clause1 and clause2` connects two Horn-clauses by conjunction. Different from `and(expr1, expr2)`.
+- `clause1, clause2` connects two Horn-clauses by conjunction.
+
+For the last three, `or` binds more tightly than `and`, which in turn binds more tightly than `,`: `and` and `,` are identical in every aspect except their binding powers.
+
+These are constructs that return expressions:
+
+- `if(a, b, c)` evaluates `a`, and if the result is `true`, evaluate `b` and returns its value, otherwise evaluate `c` and returns its value. `a` must evaluate to a boolean.
+- `if(a, b)` same as `if(a, b, null)`.
+- `cond(a1, b1, a2, b2, ...)` evaluates `a1`, if the result is `true`, returns the value of `b1`, otherwise continue with `a2` and `b2`. An even number of arguments must be given and the `a`s must evaluate to booleans. If all `a`s are `false`, `null` is returned. If you want a catch-all clause at the end, put `true` as the condition.
+
+## Operators representing functions
+
+Some functions have equivalent operator forms, which are easier to type and perhaps more familiar. First the binary operators:
+
+- `a && b` is the same as `and(a, b)`
+- `a || b` is the same as `or(a, b)`
+- `a ^ b` is the same as `pow(a, b)`
+- `a ++ b` is the same as `concat(a, b)`
+- `a + b` is the same as `add(a, b)`
+- `a - b` is the same as `sub(a, b)`
+- `a * b` is the same as `mul(a, b)`
+- `a / b` is the same as `div(a, b)`
+- `a % b` is the same as `mod(a, b)`
+- `a >= b` is the same as `ge(a, b)`
+- `a <= b` is the same as `le(a, b)`
+- `a > b` is the same as `gt(a, b)`
+- `a < b` is the same as `lt(a, b)`
+- `a == b` is the same as `eq(a, b)`
+- `a != b` is the same as `neq(a, b)`
+- `a ~ b` is the same as `coalesce(a, b)`
+- `a -> b` is the same as `maybe_get(a, b)`
+
+These operators have precedence as follows (the earlier rows bind more tightly, and within the same row operators have equal binding power):
+
+- `->`
+- `~`
+- `^`
+- `*`, `/`
+- `+`, `-`, `++`
+- `%`
+- `==`, `!=`
+- `>=`, `<=`, `>`, `<`
+- `&&`
+- `||`
+
+With the exception of `^`, all binary operators are left associative: `a / b / c` is the same as `(a / b) / c`. `^` is right associative: `a ^ b ^ c` is the same as `a ^ (b ^ c)`.
+
+And the unary operators are:
+
+- `-a` is the same as `minus(a)`
+- `!a` is the same as `negate(a)`
+
+Function applications using parentheses bind the tightest, followed by unary operators, then binary operators.
+
+## Equality and comparisons
+
+### `eq(x, y)`
+
+Equality comparison. The operator form is `x == y`. The two arguments of the equality can be of different types, in which case the result is `false`.
+
+### `neq(x, y)`
+
+Inequality comparison. The operator form is `x != y`. The two arguments of the equality can be of different types, in which case the result is `true`.
+
+### `gt(x, y)`
+
+Equivalent to `x > y`.
+
+### `ge(x, y)`
+
+Equivalent to `x >= y`.
+
+### `lt(x, y)`
+
+Equivalent to `x < y`.
+
+### `le(x, y)`
+
+Equivalent to `x <= y`.
+
+<Callout type="note">
+  The four comparison operators can only compare values of the same runtime
+  type. Integers and floats are of the same type `Number`.
+</Callout>
+
+### `max(x, ...)`
+
+Returns the maximum of the arguments. Can only be applied to numbers.
+
+### `min(x, ...)`
+
+Returns the minimum of the arguments. Can only be applied to numbers.
+
+## Boolean functions
+
+### `and(...)`
+
+Variadic conjunction. For binary arguments it is equivalent to `x && y`.
+
+### `or(...)`
+
+Variadic disjunction. For binary arguments it is equivalent to `x || y`.
+
+### `negate(x)`
+
+Negation. Equivalent to `!x`.
+
+### `assert(x, ...)`
+
+Returns `true` if `x` is `true`, otherwise will raise an error containing all its arguments as the error message.
+
+## Mathematics
+
+### `add(...)`
+
+Variadic addition. The binary version is the same as `x + y`.
+
+### `sub(x, y)`
+
+Equivalent to `x - y`.
+
+### `mul(...)`
+
+Variadic multiplication. The binary version is the same as `x * y`.
+
+### `div(x, y)`
+
+Equivalent to `x / y`.
+
+### `minus(x)`
+
+Equivalent to `-x`.
+
+### `pow(x, y)`
+
+Raises `x` to the power of `y`. Equivalent to `x ^ y`. Always returns floating number.
+
+### `sqrt(x)`
+
+Returns the square root of `x`.
+
+### `mod(x, y)`
+
+Returns the remainder when `x` is divided by `y`. Arguments can be floats. The returned value has the same sign as `x`. Equivalent to `x % y`.
+
+### `abs(x)`
+
+Returns the absolute value.
+
+### `signum(x)`
+
+Returns `1`, `0` or `-1`, whichever has the same sign as the argument, e.g. `signum(to_float('NEG_INFINITY')) == -1`, `signum(0.0) == 0`, but `signum(-0.0) == -1`. Returns `NAN` when applied to `NAN`.
+
+### `floor(x)`
+
+Returns the floor of `x`.
+
+### `ceil(x)`
+
+Returns the ceiling of `x`.
+
+### `round(x)`
+
+Returns the nearest integer to the argument (represented as Float if the argument itself is a Float). Round halfway cases away from zero. E.g. `round(0.5) == 1.0`, `round(-0.5) == -1.0`, `round(1.4) == 1.0`.
+
+### `exp(x)`
+
+Returns the exponential of the argument, natural base.
+
+### `exp2(x)`
+
+Returns the exponential base 2 of the argument. Always returns a float.
+
+### `ln(x)`
+
+Returns the natural logarithm.
+
+### `log2(x)`
+
+Returns the logarithm base 2.
+
+### `log10(x)`
+
+Returns the logarithm base 10.
+
+### `sin(x)`
+
+The sine trigonometric function.
+
+### `cos(x)`
+
+The cosine trigonometric function.
+
+### `tan(x)`
+
+The tangent trigonometric function.
+
+### `asin(x)`
+
+The inverse sine.
+
+### `acos(x)`
+
+The inverse cosine.
+
+### `atan(x)`
+
+The inverse tangent.
+
+### `atan2(x, y)`
+
+The inverse tangent [atan2](https://en.wikipedia.org/wiki/Atan2) by passing `x` and `y` separately.
+
+### `sinh(x)`
+
+The hyperbolic sine.
+
+### `cosh(x)`
+
+The hyperbolic cosine.
+
+### `tanh(x)`
+
+The hyperbolic tangent.
+
+### `asinh(x)`
+
+The inverse hyperbolic sine.
+
+### `acosh(x)`
+
+The inverse hyperbolic cosine.
+
+### `atanh(x)`
+
+The inverse hyperbolic tangent.
+
+### `deg_to_rad(x)`
+
+Converts degrees to radians.
+
+### `rad_to_deg(x)`
+
+Converts radians to degrees.
+
+### `haversine(a_lat, a_lon, b_lat, b_lon)`
+
+Computes with the [haversine formula](https://en.wikipedia.org/wiki/Haversine_formula) the angle measured in radians between two points `a` and `b` on a sphere specified by their latitudes and longitudes. The inputs are in radians. You probably want the next function when you are dealing with maps, since most maps measure angles in degrees instead of radians.
+
+### `haversine_deg_input(a_lat, a_lon, b_lat, b_lon)`
+
+Same as the previous function, but the inputs are in degrees instead of radians. The return value is still in radians.
+
+If you want the approximate distance measured on the surface of the earth instead of the angle between two points, multiply the result by the radius of the earth, which is about `6371` kilometres, `3959` miles, or `3440` nautical miles.
+
+<Callout type="note">
+  The haversine formula, when applied to the surface of the earth, which is not
+  a perfect sphere, can result in an error of less than one percent.
+</Callout>
+
+## Vector functions
+
+Now the mathematical functions that operate on floats can also take vectors as arguments, and apply the operation element-wise.
+
+### `vec(l, type?)`
+
+Takes a list of numbers and returns a vector.
+
+Defaults to 32-bit float vectors. If you want to use 64-bit float vectors, pass `'F64'` as the second argument.
+
+### `rand_vec(n, type?)`
+
+Returns a vector of `n` random numbers between `0` and `1`.
+
+Defaults to 32-bit float vectors. If you want to use 64-bit float vectors, pass `'F64'` as the second argument.
+
+### `l2_normalize(v)`
+
+Takes a vector and returns a vector with the same direction but length `1`, normalized using L2 norm.
+
+### `l2_dist(u, v)`
+
+Takes two vectors and returns the distance between them, using squared L2 norm: `d = sum((ui-vi)^2)`.
+
+### `ip_dist(u, v)`
+
+Takes two vectors and returns the distance between them, using inner product: `d = 1 - sum(ui*vi)`.
+
+### `cos_dist(u, v)`
+
+Takes two vectors and returns the distance between them, using cosine distance: `d = 1 - sum(ui*vi) / (sqrt(sum(ui^2)) * sqrt(sum(vi^2)))`.
+
+## JSON functions
+
+### `json(x)`
+
+Converts any value to a Json value. This function is idempotent and never fails.
+
+### `is_json(x)`
+
+Returns `true` if the argument is a Json value, `false` otherwise.
+
+### `json_object(k1, v1, ...)`
+
+Convert a list of key-value pairs to a Json object.
+
+### `dump_json(x)`
+
+Convert a Json value to its string representation.
+
+### `parse_json(x)`
+
+Parse a string to a Json value.
+
+### `get(json, idx, default?)`
+
+Returns the element at index `idx` in the Json `json`.
+
+`idx` may be a string (for indexing objects), a number (for indexing arrays), or a list of strings and numbers (for indexing deep structures).
+
+Raises an error if the requested element cannot be found, unless `default` is specified, in which case `default` is returned.
+
+### `maybe_get(json, idx)`
+
+Returns the element at index `idx` in the Json `json`. Same as `get(json, idx, null)`. The shorthand is `json->idx`.
+
+### `set_json_path(json, path, value)`
+
+Set the value at the given path in the given Json value. The path is a list of keys of strings (for indexing objects) or numbers (for indexing arrays). The value is converted to Json if it is not already a Json value.
+
+### `remove_json_path(json, path)`
+
+Remove the value at the given path in the given Json value. The path is a list of keys of strings (for indexing objects) or numbers (for indexing arrays).
+
+### `json_to_scalar(x)`
+
+Convert a Json value to a scalar value if it is a `null`, boolean, number or string, and returns the argument unchanged otherwise.
+
+### `concat(x, y, ...)`
+
+Concatenate (deep-merge) Json values. It is equivalent to the operator form `x ++ y ++ ...`.
+
+The concatenation of two Json arrays is the concatenation of the two arrays. The concatenation of two Json objects is the deep-merge of the two objects, meaning that their key-value pairs are combined, with any pairs that appear in both left and right having their values deep-merged. For all other cases, the right value wins.
+
+## String functions
+
+### `length(str)`
+
+Returns the number of Unicode characters in the string.
+
+Can also be applied to a list or a byte array.
+
+<Callout type="warning">
+  `length(str)` does not return the number of bytes of the string
+  representation. Also, what is returned depends on the normalization of the
+  string. So if such details are important, apply `unicode_normalize` before
+  `length`.
+</Callout>
+
+### `concat(x, ...)`
+
+Concatenates strings. Equivalent to `x ++ y` in the binary case.
+
+Can also be applied to lists.
+
+### `str_includes(x, y)`
+
+Returns `true` if `x` contains the substring `y`, `false` otherwise.
+
+### `lowercase(x)`
+
+Convert to lowercase. Supports Unicode.
+
+### `uppercase(x)`
+
+Converts to uppercase. Supports Unicode.
+
+### `trim(x)`
+
+Removes [whitespace](https://en.wikipedia.org/wiki/Whitespace_character) from both ends of the string.
+
+### `trim_start(x)`
+
+Removes [whitespace](https://en.wikipedia.org/wiki/Whitespace_character) from the start of the string.
+
+### `trim_end(x)`
+
+Removes [whitespace](https://en.wikipedia.org/wiki/Whitespace_character) from the end of the string.
+
+### `starts_with(x, y)`
+
+Tests if `x` starts with `y`.
+
+<Callout type="note">
+  `starts_with(var, str)` is preferred over equivalent (e.g. regex) conditions,
+  since the compiler may more easily compile the clause into a range scan.
+</Callout>
+
+### `ends_with(x, y)`
+
+Tests if `x` ends with `y`.
+
+### `unicode_normalize(str, norm)`
+
+Converts `str` to the [normalization](https://en.wikipedia.org/wiki/Unicode_equivalence) specified by `norm`. The valid values of `norm` are `'nfc'`, `'nfd'`, `'nfkc'` and `'nfkd'`.
+
+### `chars(str)`
+
+Returns Unicode characters of the string as a list of substrings.
+
+### `from_substrings(list)`
+
+Combines the strings in `list` into a big string. In a sense, it is the inverse function of `chars`.
+
+<Callout type="warning">
+  If you want substring slices, indexing strings, etc., first convert the string
+  to a list with `chars`, do the manipulation on the list, and then recombine
+  with `from_substrings`.
+</Callout>
+
+## List functions
+
+### `list(x, ...)`
+
+Constructs a list from its argument, e.g. `list(1, 2, 3)`. Equivalent to the literal form `[1, 2, 3]`.
+
+### `is_in(el, list)`
+
+Tests the membership of an element in a list.
+
+### `first(l)`
+
+Extracts the first element of the list. Returns `null` if given an empty list.
+
+### `last(l)`
+
+Extracts the last element of the list. Returns `null` if given an empty list.
+
+### `get(l, n, default?)`
+
+Returns the element at index `n` in the list `l`. Raises an error if the access is out of bounds, unless `default` is specified, in which case `default` is returned. Indices start with 0.
+
+### `maybe_get(l, n)`
+
+Returns the element at index `n` in the list `l`. Same as `get(l, n, null)`. The shorthand is `l->n`.
+
+### `length(list)`
+
+Returns the length of the list.
+
+Can also be applied to a string or a byte array.
+
+### `slice(l, start, end)`
+
+Returns the slice of list between the index `start` (inclusive) and `end` (exclusive). Negative numbers may be used, which is interpreted as counting from the end of the list. E.g. `slice([1, 2, 3, 4], 1, 3) == [2, 3]`, `slice([1, 2, 3, 4], 1, -1) == [2, 3]`.
+
+### `concat(x, ...)`
+
+Concatenates lists. The binary case is equivalent to `x ++ y`.
+
+Can also be applied to strings.
+
+### `prepend(l, x)`
+
+Prepends `x` to `l`.
+
+### `append(l, x)`
+
+Appends `x` to `l`.
+
+### `reverse(l)`
+
+Reverses the list.
+
+### `sorted(l)`
+
+Sorts the list and returns the sorted copy.
+
+### `chunks(l, n)`
+
+Splits the list `l` into chunks of `n`, e.g. `chunks([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]`.
+
+### `chunks_exact(l, n)`
+
+Splits the list `l` into chunks of `n`, discarding any trailing elements, e.g. `chunks_exact([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4]]`.
+
+### `windows(l, n)`
+
+Splits the list `l` into overlapping windows of length `n`, e.g. `windows([1, 2, 3, 4, 5], 3) == [[1, 2, 3], [2, 3, 4], [3, 4, 5]]`.
+
+### `union(x, y, ...)`
+
+Computes the set-theoretic union of all the list arguments.
+
+### `intersection(x, y, ...)`
+
+Computes the set-theoretic intersection of all the list arguments.
+
+### `difference(x, y, ...)`
+
+Computes the set-theoretic difference of the first argument with respect to the rest.
+
+## Binary functions
+
+### `length(bytes)`
+
+Returns the length of the byte array.
+
+Can also be applied to a list or a string.
+
+### `bit_and(x, y)`
+
+Calculate the bitwise and. The two bytes must have the same lengths.
+
+### `bit_or(x, y)`
+
+Calculate the bitwise or. The two bytes must have the same lengths.
+
+### `bit_not(x)`
+
+Calculate the bitwise not.
+
+### `bit_xor(x, y)`
+
+Calculate the bitwise xor. The two bytes must have the same lengths.
+
+### `pack_bits([...])`
+
+Packs a list of booleans into a byte array; if the list is not divisible by 8, it is padded with `false`.
+
+### `unpack_bits(x)`
+
+Unpacks a byte array into a list of booleans.
+
+### `encode_base64(b)`
+
+Encodes the byte array `b` into the [Base64](https://en.wikipedia.org/wiki/Base64)-encoded string.
+
+<Callout type="note">
+  `encode_base64` is automatically applied when output to JSON since JSON cannot
+  represent bytes natively.
+</Callout>
+
+### `decode_base64(str)`
+
+Tries to decode the `str` as a [Base64](https://en.wikipedia.org/wiki/Base64)-encoded byte array.
+
+## Type checking and conversions
+
+### `coalesce(x, ...)`
+
+Returns the first non-null value; `coalesce(x, y)` is equivalent to `x ~ y`.
+
+### `to_string(x)`
+
+Convert `x` to a string: the argument is unchanged if it is already a string, otherwise its JSON string representation will be returned.
+
+### `to_float(x)`
+
+Tries to convert `x` to a float. Conversion from numbers always succeeds. Conversion from strings has the following special cases in addition to the usual string representation:
+
+- `INF` is converted to infinity;
+- `NEG_INF` is converted to negative infinity;
+- `NAN` is converted to NAN (but don't compare NAN by equality, use `is_nan` instead);
+- `PI` is converted to pi (3.14159...);
+- `E` is converted to the base of natural logarithms, or Euler's constant (2.71828...).
+
+Converts `null` and `false` to `0.0`, `true` to `1.0`.
+
+### `to_int(x)`
+
+Converts to an integer. If `x` is a validity, extracts the timestamp as an integer.
+
+### `to_unity(x)`
+
+Tries to convert `x` to `0` or `1`: `null`, `false`, `0`, `0.0`, `""`, `[]`, and the empty bytes are converted to `0`, and everything else is converted to `1`.
+
+### `to_bool(x)`
+
+Tries to convert `x` to a boolean. The following are converted to `false`, and everything else is converted to `true`:
+
+- `null`
+- `false`
+- `0`, `0.0`
+- `""` (empty string)
+- the empty byte array
+- the nil UUID (all zeros)
+- `[]` (the empty list)
+- any validity that is a retraction
+
+### `to_uuid(x)`
+
+Tries to convert `x` to a UUID. The input must either be a hyphenated UUID string representation or already a UUID for it to succeed.
+
+### `uuid_timestamp(x)`
+
+Extracts the timestamp from a UUID version 1, as seconds since the UNIX epoch. If the UUID is not of version 1, `null` is returned. If `x` is not a UUID, an error is raised.
+
+### `is_null(x)`
+
+Checks for `null`.
+
+### `is_int(x)`
+
+Checks for integers.
+
+### `is_float(x)`
+
+Checks for floats.
+
+### `is_finite(x)`
+
+Returns `true` if `x` is an integer or a finite float.
+
+### `is_infinite(x)`
+
+Returns `true` if `x` is infinity or negative infinity.
+
+### `is_nan(x)`
+
+Returns `true` if `x` is the special float `NAN`. Returns `false` when the argument is not of number type.
+
+### `is_num(x)`
+
+Checks for numbers.
+
+### `is_bytes(x)`
+
+Checks for bytes.
+
+### `is_list(x)`
+
+Checks for lists.
+
+### `is_string(x)`
+
+Checks for strings.
+
+### `is_uuid(x)`
+
+Checks for UUIDs.
+
+## Random functions
+
+### `rand_float()`
+
+Generates a float in the interval `[0, 1]`, sampled uniformly.
+
+### `rand_bernoulli(p)`
+
+Generates a boolean with probability `p` of being `true`.
+
+### `rand_int(lower, upper)`
+
+Generates an integer within the given bounds, both bounds are inclusive.
+
+### `rand_choose(list)`
+
+Randomly chooses an element from `list` and returns it. If the list is empty, it returns `null`.
+
+### `rand_uuid_v1()`
+
+Generate a random UUID, version 1 (random bits plus timestamp). The resolution of the timestamp part is much coarser on WASM targets than the others.
+
+### `rand_uuid_v4()`
+
+Generate a random UUID, version 4 (completely random bits).
+
+### `rand_vec(n, type?)`
+
+Generates a vector of `n` random elements. If `type` is not given, it defaults to `F32`.
+
+## Regex functions
+
+### `regex_matches(x, reg)`
+
+Tests if `x` matches the regular expression `reg`.
+
+### `regex_replace(x, reg, y)`
+
+Replaces the first occurrence of the pattern `reg` in `x` with `y`.
+
+### `regex_replace_all(x, reg, y)`
+
+Replaces all occurrences of the pattern `reg` in `x` with `y`.
+
+### `regex_extract(x, reg)`
+
+Extracts all occurrences of the pattern `reg` in `x` and returns them in a list.
+
+### `regex_extract_first(x, reg)`
+
+Extracts the first occurrence of the pattern `reg` in `x` and returns it. If none is found, returns `null`.
+
+### Regex syntax
+
+Matching one character:
+
+```text
+.             any character except new line
+\d            digit (\p{Nd})
+\D            not digit
+\pN           One-letter name Unicode character class
+\p{Greek}     Unicode character class (general category or script)
+\PN           Negated one-letter name Unicode character class
+\P{Greek}     negated Unicode character class (general category or script)
+```
+
+Character classes:
+
+```text
+[xyz]         A character class matching either x, y or z (union).
+[^xyz]        A character class matching any character except x, y and z.
+[a-z]         A character class matching any character in range a-z.
+[[:alpha:]]   ASCII character class ([A-Za-z])
+[[:^alpha:]]  Negated ASCII character class ([^A-Za-z])
+[x[^xyz]]     Nested/grouping character class (matching any character except y and z)
+[a-y&&xyz]    Intersection (matching x or y)
+[0-9&&[^4]]   Subtraction using intersection and negation (matching 0-9 except 4)
+[0-9--4]      Direct subtraction (matching 0-9 except 4)
+[a-g~~b-h]    Symmetric difference (matching `a` and `h` only)
+[\[\]]        Escaping in character classes (matching [ or ])
+```
+
+Composites:
+
+```text
+xy    concatenation (x followed by y)
+x|y   alternation (x or y, prefer x)
+```
+
+Repetitions:
+
+```text
+x*        zero or more of x (greedy)
+x+        one or more of x (greedy)
+x?        zero or one of x (greedy)
+x*?       zero or more of x (ungreedy/lazy)
+x+?       one or more of x (ungreedy/lazy)
+x??       zero or one of x (ungreedy/lazy)
+x{n,m}    at least n x and at most m x (greedy)
+x{n,}     at least n x (greedy)
+x{n}      exactly n x
+x{n,m}?   at least n x and at most m x (ungreedy/lazy)
+x{n,}?    at least n x (ungreedy/lazy)
+x{n}?     exactly n x
+```
+
+Empty matches:
+
+```text
+^     the beginning of the text
+$     the end of the text
+\A    only the beginning of the text
+\z    only the end of the text
+\b    a Unicode word boundary (\w on one side and \W, \A, or \z on the other)
+\B    not a Unicode word boundary
+```
+
+## Timestamp functions
+
+### `now()`
+
+Returns the current timestamp as seconds since the UNIX epoch. The resolution is much coarser on WASM targets than the others.
+
+### `format_timestamp(ts, tz?)`
+
+Interpret `ts` as seconds since the epoch and format as a string according to [RFC3339](https://www.rfc-editor.org/rfc/rfc3339). If `ts` is a validity, its timestamp will be converted to seconds and used.
+
+If a second string argument is provided, it is interpreted as a [timezone](https://en.wikipedia.org/wiki/Tz_database) and used to format the timestamp.
+
+### `parse_timestamp(str)`
+
+Parse `str` into seconds since the epoch according to RFC3339.
+
+### `validity(ts_micro, is_assert?)`
+
+Returns a validity object with the given timestamp in microseconds. If `is_assert` is `true`, the validity will be asserted, otherwise it will be assumed. Defaults to `true`.
+
+<Attribution page="functions.html" />

@@ -1,0 +1,63 @@
+export const metadata = {
+  title: "ULID identifiers",
+  description:
+    "rand_ulid() and ulid_timestamp() give mnestic lexicographically-sortable, time-ordered keys — ideal for append-only agentic-memory streams.",
+};
+
+# ULID identifiers
+
+<Callout type="fork">
+  Specific to mnestic 0.8.0 (upstream CozoDB #296, shipped in the fork).
+</Callout>
+
+A **ULID** is a 26-character, Crockford-base32 identifier built from a 48-bit
+millisecond timestamp followed by 80 bits of randomness. Unlike a random UUIDv4,
+ULIDs sort **lexicographically in time order**, which makes them ideal keys for
+append-only memory streams that you scan by recency.
+
+## `rand_ulid()`
+
+Returns a fresh, lexicographically-sortable ULID string.
+
+```prolog
+?[id, created] := id = rand_ulid(), created = now()
+```
+
+Because the timestamp is the high-order component, sorting by the id sorts by
+creation time:
+
+```prolog
+# most recent memories first, no separate timestamp column needed
+?[id, content] := *memory{ id, content }
+:order -id
+:limit 20
+```
+
+## `ulid_timestamp(s)`
+
+Extracts the embedded Unix-millisecond timestamp from a ULID string.
+
+```prolog
+?[id, ts] := *memory{ id }, ts = ulid_timestamp(id)
+```
+
+<Callout type="warning">
+  `ulid_timestamp` rejects malformed or non-canonical ULIDs — wrong length,
+  invalid character, or a leading character greater than `7` — with an error,
+  rather than silently truncating.
+</Callout>
+
+## Why this matters for memory
+
+Agentic memory is largely append-only and read back by recency. A sortable
+string key lets you:
+
+- order recall by time using the key alone (no secondary timestamp index);
+- page through history with `:limit` / `:offset` on a single column;
+- keep globally-unique ids without coordinating a counter.
+
+## See also
+
+- [Functions & operators](/docs/functions) — the full function reference.
+- [Time travel](/docs/time-travel) — querying a relation as it was at a past
+  point (inherited engine behavior).

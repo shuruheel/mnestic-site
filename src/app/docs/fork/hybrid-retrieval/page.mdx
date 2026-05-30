@@ -1,0 +1,147 @@
+export const metadata = {
+  title: "Hybrid retrieval (RRF + MMR)",
+  description:
+    "One-call hybrid retrieval in mnestic: fuse vector, full-text, and graph signals with Reciprocal Rank Fusion, then diversify with Maximal Marginal Relevance.",
+};
+
+# Hybrid retrieval (RRF + MMR)
+
+Vector similarity, keyword match, and graph proximity are three different
+signals about _what to recall right now_. mnestic fuses them with **Reciprocal
+Rank Fusion (RRF)** and de-duplicates the result with **Maximal Marginal
+Relevance (MMR)** — exposed both as composable Datalog fixed rules and as a
+single typed Rust call.
+
+<Callout type="fork">
+  This entire page is specific to mnestic. RRF and MMR landed in 0.8.0; the
+  one-call `hybrid_search` API landed in 0.8.1.
+</Callout>
+
+## The one-call API: `hybrid_search`
+
+`DbInstance::hybrid_search` (and `Db::hybrid_search`) assemble the proven
+CozoScript pattern, pass the query vector and text as script parameters (never
+string-interpolated), validate every interpolated identifier against injection,
+and run it read-only.
+
+```rust
+use cozo::{DbInstance, HybridSearch, MmrParams};
+
+let recalls = db.hybrid_search(&HybridSearch {
+    relation:     "memory".into(),
+    vector_index: "embedding".into(),
+    query_vector: cue,              // Vec<f32> from your embedder
+    vector_k:     24,
+    ef:           80,
+    fts_index:    "summary_fts".into(),
+    query_text:   "pricing decision".into(),
+    fts_k:        24,
+    rrf_k:        60.0,
+    mmr: Some(MmrParams {
+        lambda: 0.5,
+        k: 12,
+        embedding_col: "embedding".into(),
+    }),
+    ..HybridSearch::default()
+})?;
+```
+
+To see (or hand-tune) the CozoScript it generates rather than run it, call
+`hybrid_search_script` with the same `HybridSearch`.
+
+### `HybridSearch` fields
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `relation` | — | The base stored relation, e.g. `"memory"`. |
+| `id_col` | `"id"` | Key column holding the item id. |
+| `vector_index` | — | HNSW index name (the `<name>` in `relation:<name>`). |
+| `query_vector` | — | Query embedding for the semantic leg. |
+| `vector_f64` | `false` | Send the query vector as `F64` to match an `F64` index. |
+| `vector_k` | `10` | `k` for the HNSW search. |
+| `ef` | `50` | HNSW search breadth. |
+| `fts_index` | — | Full-text index name. |
+| `query_text` | — | Query text for the keyword leg (a CozoScript FTS expression). |
+| `fts_k` | `10` | `k` for the FTS search. |
+| `extra_lists` | `[]` | Extra ranked lists folded into the fusion (e.g. graph traversal). |
+| `rrf_k` | `60.0` | RRF rank-bias damping constant. |
+| `mmr` | `None` | Optional MMR diversity rerank. `None` returns the fused ranking directly. |
+| `limit` | `10` | Max rows when no MMR rerank is applied. |
+
+### Folding in a graph signal
+
+`extra_lists` takes a `HybridList { label, rule_body }`. The `rule_body` is a
+Datalog rule body that must bind two variables — `id` (the item key, matching the
+fused output) and `score` (higher is better). For example, a one-hop traversal
+from a seed:
+
+```rust
+use cozo::HybridList;
+
+HybridList {
+    label: "graph".into(),
+    rule_body: "*edges{ from: $seed, to: id }, score = 1.0".into(),
+}
+```
+
+<Callout type="warning">
+  `rule_body` is your own Datalog and is spliced verbatim — it is not sanitized.
+  Only `label` is validated. Keep it free of untrusted input.
+</Callout>
+
+## The primitives, in Datalog
+
+If you want full control, use the fixed rules directly. Both are also available
+as the aliases `RRF` and `MMR`.
+
+### `ReciprocalRankFusion`
+
+Fuses several ranked result lists into one ranking via
+`Σ 1/(k + rank_in_list)`. Input is a single relation `[list_id, item, score]`;
+rows are grouped by `list_id`, ranked within each list by `score`, and the
+reciprocal-rank contributions are summed per item.
+
+- Options: `k` (default `60`), `descending` (default `true`).
+- Output: `[item, fused_score]`, composable in further Datalog.
+
+```prolog
+candidates[list_id, item, score] <- [
+    ['vec', 'a', 0.91], ['vec', 'b', 0.74],
+    ['fts', 'b', 7.2],  ['fts', 'c', 5.1],
+]
+
+?[item, fused] <~ ReciprocalRankFusion(candidates[], k: 60)
+:order -fused
+```
+
+<Callout type="note">
+  Datalog can already _sum_ reciprocal contributions, but it cannot assign a
+  _rank position within a group_ — that intra-list ranking is the missing
+  primitive RRF supplies.
+</Callout>
+
+### `MaximalMarginalRelevance`
+
+Re-ranks a candidate set to balance relevance against diversity, avoiding
+near-duplicate recalls. It greedily selects
+`argmax(λ·relevance − (1−λ)·max cosine_sim to already-selected)`.
+
+- Input: `[item, relevance, vector]`.
+- Options: `lambda` (default `0.5`, clamped to `[0, 1]`), `k` (default `0` = all).
+- Output: `[item, rank]` in selection order.
+
+```prolog
+?[item, rank] <~ MaximalMarginalRelevance(candidates[], lambda: 0.5, k: 12)
+:order rank
+```
+
+Both rules reject non-finite (NaN/inf) scores; MMR also rejects inconsistent
+vector dimensions rather than panicking, and uses the true maximum cosine
+similarity so anti-correlated candidates are rewarded with diversity credit.
+
+## Why one call
+
+Before mnestic, composing this pipeline took roughly seven hand-assembled
+Datalog rules: run the HNSW leg, run the FTS leg, tag and union them into ranked
+lists, fuse, then rerank. `hybrid_search` collapses that into a typed call while
+still letting you inspect the generated script.

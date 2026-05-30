@@ -1,0 +1,57 @@
+export const metadata = {
+  title: "Release history",
+  description:
+    "mnestic fork release notes (0.8.0–0.8.2) and pointers to the upstream CozoDB release history.",
+};
+
+# Release history
+
+This page summarizes the **mnestic fork** releases. The authoritative,
+fully-detailed log lives in
+[`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.8.2
+
+**Non-blocking HNSW index builds.** `::hnsw create` no longer holds the base
+relation's write lock during graph construction, so concurrent reads no longer
+stall for the build's duration. Measured: 90,507 reads completed (slowest 0.8 ms)
+during a ~5.6 s, 40,000-vector build that would previously have blocked them all.
+RocksDB only.
+
+→ [Non-blocking HNSW builds](/docs/fork/non-blocking-hnsw)
+
+## 0.8.1
+
+- **One-call hybrid retrieval** — `hybrid_search` runs HNSW + FTS (+ optional
+  graph traversal), fuses with RRF, and optionally diversifies with MMR in a
+  single typed call.
+- **HNSW index build ~3× faster** (20k × 128: 135 s → 43.6 s, measured release);
+  the built graph is byte-identical.
+- **`mnestic-rocks`** — the C++/RocksDB bridge is now a maintained fork
+  (importable name stays `cozorocks`).
+- Blocking clippy CI gate.
+
+→ [Hybrid retrieval (RRF + MMR)](/docs/fork/hybrid-retrieval)
+
+## 0.8.0
+
+First fork release: CozoDB 0.7.6 plus 30 unreleased upstream commits (the fork
+point), bumped to 0.8.0 to mark the fork's identity.
+
+- **Equality pushdown** — keyed `stored_prefix_join` for equality post-filters
+  (~28–29× faster single-row lookups at 5k rows).
+- **`ReciprocalRankFusion` / `MaximalMarginalRelevance`** fixed rules (aliases
+  `RRF` / `MMR`).
+- **ULID functions** — `rand_ulid()`, `ulid_timestamp()`.
+- **Parser fix** — keyword-prefixed identifiers parse correctly (upstream #281).
+- **`env_logger`** moved to a dev-dependency (upstream #287).
+
+→ [Equality pushdown](/docs/fork/equality-pushdown) · [ULID identifiers](/docs/fork/ulid)
+
+## Upstream CozoDB history
+
+CozoDB's own release notes (v0.1 through v0.7) — covering the introduction of
+HNSW vector search, full-text search, MinHash-LSH, JSON values, and time travel —
+remain available in the
+[original documentation](https://docs.cozodb.org/en/latest/release.html). mnestic
+inherits all of that functionality.
