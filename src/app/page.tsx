@@ -242,17 +242,17 @@ const capabilities = [
   {
     k: "01",
     t: "Datalog, not SQL",
-    d: "Queries compose piece by piece. Recursion is first-class — and runs faster than the SQL equivalent. A safe subset of aggregations is allowed inside recursion.",
+    d: "Queries compose piece by piece. Recursion is first-class, and runs faster than the SQL equivalent. A safe subset of aggregations is allowed inside recursion.",
   },
   {
     k: "02",
     t: "Relational · graph · vector",
-    d: "One engine, one model. The relational algebra handles graph structure implicit several levels deep — no shoehorning your data into a labelled-property graph.",
+    d: "One engine, one model. The relational algebra handles graph structure implicit several levels deep, with no shoehorning your data into a labelled-property graph.",
   },
   {
     k: "03",
     t: "Embeddable like SQLite",
-    d: "Runs in-process — no server, no setup — yet scales to large data and high concurrency, and can also run client-server when you want it to.",
+    d: "Runs in-process (no server, no setup), yet scales to large data and high concurrency, and can also run client-server when you want it to.",
   },
   {
     k: "04",
@@ -262,12 +262,12 @@ const capabilities = [
   {
     k: "05",
     t: "Full-text & near-dup",
-    d: "Built-in full-text search and MinHash-LSH for near-duplicate detection — the keyword and dedup legs of retrieval, native to the engine.",
+    d: "Built-in full-text search and MinHash-LSH for near-duplicate detection: the keyword and dedup legs of retrieval, native to the engine.",
   },
   {
     k: "06",
     t: "Time travel",
-    d: "Relations can carry validity time. Query the graph as it was at any historical point — memory you can rewind, not just overwrite.",
+    d: "Relations can carry validity time. Query the graph as it was at any historical point: memory you can rewind, not just overwrite.",
   },
 ];
 
@@ -275,31 +275,31 @@ const forkItems = [
   {
     ver: "0.8.3",
     t: "Native 3-way fused recall",
-    d: "Graph proximity is now a typed leg of hybrid_search — add GraphLeg seeds and a bounded-hop edge relation, and vector, keyword, and graph signals fuse in one call, one transaction. No hand-written recursion, no app-side stitching.",
-    metric: "all 3 signals in one call · 41.55 ms p50 · ~4× faster than the hand-decomposed path",
+    d: "Graph proximity is now a typed leg of hybrid_search: add GraphLeg seeds and a bounded-hop edge relation, and vector, keyword, and graph signals fuse in one call, one transaction. No hand-written recursion, no app-side stitching.",
+    metric: "all 3 signals in one call, ~4× faster than decomposing it by hand",
   },
   {
     ver: "0.8.3",
     t: "BM25-correct full-text search",
     d: "The default ::fts scorer is now Okapi BM25 with term-frequency saturation and document-length normalization, and OR-disjunction sums per-term contributions. avgdl is an O(1) durable counter, not a per-query index scan. (tf and tf_idf stay selectable for byte-identical upstream scoring.)",
-    metric: "fused recall 0.75 → 0.954 · cold p99 tail 2,900 → 258 ms (40k chunks, measured)",
+    metric: "fused recall jumps 0.75 → 0.954, cold-start tail cut ~10× (40k chunks)",
   },
   {
     ver: "0.8.2",
     t: "Non-blocking HNSW index builds",
     d: "::hnsw create no longer holds the base relation's write lock while it constructs the graph. The graph is built off-lock under a snapshot and bulk-published via SstFileWriter; mutations during the build reconcile under a brief final lock.",
-    metric: "90,507 reads served (slowest 0.8 ms) during a 5.6 s, 40k-vector build that previously blocked them all",
+    metric: "90k reads served (slowest 0.8 ms) during a build that previously blocked them all",
   },
   {
     ver: "0.8.1",
     t: "One-call hybrid retrieval",
-    d: "DbInstance::hybrid_search runs HNSW + FTS + optional graph traversal, fuses them with Reciprocal Rank Fusion, and optionally diversifies with MMR — in a single typed call. Previously ~7 hand-written Datalog rules.",
+    d: "DbInstance::hybrid_search runs HNSW + FTS + optional graph traversal, fuses them with Reciprocal Rank Fusion, and optionally diversifies with MMR, all in a single typed call. Previously ~7 hand-written Datalog rules.",
     metric: "RRF + MMR fusion · one typed call replaces ~7 hand-written rules",
   },
   {
     ver: "0.8.1",
     t: "HNSW builds ~3× faster",
-    d: "The build no longer round-trips the whole graph through the transaction's write-batch overlay. The resulting index is byte-identical to before — just built in a third of the time.",
+    d: "The build no longer round-trips the whole graph through the transaction's write-batch overlay. The resulting index is byte-identical to before, just built in a third of the time.",
     metric: "20k × 128-dim: 135 s → 43.6 s (release, measured)",
   },
   {
@@ -311,13 +311,13 @@ const forkItems = [
   {
     ver: "0.8.0",
     t: "ULID identifiers",
-    d: "rand_ulid() and ulid_timestamp() give you lexicographically-sortable, time-ordered keys — ideal for append-only memory streams that you scan by recency.",
+    d: "rand_ulid() and ulid_timestamp() give you lexicographically-sortable, time-ordered keys, ideal for append-only memory streams you scan by recency.",
     metric: "lexicographically sortable · time-ordered scans",
   },
   {
     ver: "0.8.0",
     t: "Correctness, inherited & added",
-    d: "Forked 30 commits ahead of the published 0.7.6 — including the stored_prefix_join correctness fix. Plus a parser fix for identifiers that begin with a keyword (nullable_column, trueValue).",
+    d: "Forked 30 commits ahead of the published 0.7.6, including the stored_prefix_join correctness fix. Plus a parser fix for identifiers that begin with a keyword (nullable_column, trueValue).",
     metric: "upstream fixes for free + a slimmer dependency graph",
   },
 ];
@@ -418,7 +418,7 @@ export default function Home() {
               <span className="text-[var(--color-paper)]">
                 relational–graph–vector
               </span>{" "}
-              database that speaks Datalog — the same engine that called itself
+              database that speaks Datalog, the same engine that called itself
               “the hippocampus for AI,” now actively maintained and tuned as the
               recall layer for agents.
             </p>
@@ -473,9 +473,9 @@ export default function Home() {
           <p className="max-w-3xl font-serif text-2xl leading-snug text-[var(--color-paper-dim)] md:text-[1.7rem]">
             CozoDB went quiet after{" "}
             <span className="text-[var(--color-paper)]">December 2024</span>. The
-            design is too good to let drift. So we forked it —{" "}
-            <span className="text-[var(--color-paper)]">openly, under MPL-2.0</span>{" "}
-            — and pointed it at one job:{" "}
+            design is too good to let drift. So we forked it,{" "}
+            <span className="text-[var(--color-paper)]">openly, under MPL-2.0</span>,{" "}
+            and pointed it at one job:{" "}
             <span className="italic text-[var(--color-synapse)]">
               being the memory an agent can trust.
             </span>{" "}
@@ -530,8 +530,8 @@ export default function Home() {
           </h2>
           <p className="mb-12 max-w-2xl text-lg leading-relaxed text-[var(--color-paper-dim)]">
             The query language and semantics are unchanged. What changed is the
-            stuff that bites you in production — lock contention, full scans,
-            seven-rule retrieval pipelines — and the things agents actually need.
+            stuff that bites you in production (lock contention, full scans,
+            seven-rule retrieval pipelines) and the things agents actually need.
           </p>
 
           <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] md:grid-cols-2">
@@ -573,16 +573,16 @@ export default function Home() {
             <p className="mt-6 text-lg leading-relaxed text-[var(--color-paper-dim)]">
               Vector similarity, keyword match, and graph proximity are three
               different signals about <em>“what should I remember right now.”</em>{" "}
-              As of 0.8.3 mnestic fuses all three <em>natively</em> — a typed{" "}
+              As of 0.8.3 mnestic fuses all three <em>natively</em>: a typed{" "}
               graph leg joins the vector and keyword legs in one call, combined by
               Reciprocal Rank Fusion and de-duplicated by Maximal Marginal
               Relevance.
             </p>
             <ul className="mt-7 space-y-3">
               {[
-                "Graph proximity is a typed GraphLeg — bounded-hop, ranked by min distance",
-                "Query vector, text & seeds passed as params — never string-interpolated",
-                "One call, one transaction — generated CozoScript inspectable via hybrid_search_script",
+                "Graph proximity is a typed GraphLeg: bounded-hop, ranked by min distance",
+                "Query vector, text & seeds passed as params, never string-interpolated",
+                "One call, one transaction; generated CozoScript inspectable via hybrid_search_script",
               ].map((li) => (
                 <li key={li} className="flex gap-3 text-sm text-[var(--color-paper-dim)]">
                   <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-[var(--color-synapse)]" />
@@ -642,7 +642,7 @@ export default function Home() {
           <p className="mb-10 max-w-2xl text-lg leading-relaxed text-[var(--color-paper-dim)]">
             The task is fusing vector, keyword, <em>and</em> graph proximity into
             one ranking. Raw latency isn&apos;t what separates the field at this
-            scale — three structural things are, and mnestic is the only embedded
+            scale. Three structural things are, and mnestic is the only embedded
             engine here that gets all three right.
           </p>
 
@@ -651,17 +651,17 @@ export default function Home() {
               {
                 n: "01",
                 t: "It has a graph signal at all",
-                d: "Graph proximity is correlated-but-distinct from vector and keyword — drop it and you lose recall the other two can't recover. It's the single largest effect in the run: the graph-less engines (LanceDB) land far below. This is why graph-augmented retrieval exists.",
+                d: "Graph proximity is correlated but distinct from vector and keyword: drop it and you lose recall the other two can't recover. It's the single largest effect in the run, with the graph-less engines (LanceDB) landing far below. This is why graph-augmented retrieval exists.",
               },
               {
                 n: "02",
-                t: "One store, one call — no glue",
+                t: "One store, one call, no glue",
                 d: "mnestic serves all three signals from one embedded store and fuses them in a single transactional call. SQLite, DuckDB and Kuzu keep them in one process but fuse in app code (three queries + a hand-rolled RRF); LanceDB fuses natively but needs a second system for graph.",
               },
               {
                 n: "03",
                 t: "Read-your-writes on every signal",
-                d: "An agent writes a memory and must recall it immediately. mnestic's indexes update in the same transaction — 100% fused read-your-writes. DuckDB's full-text index is a build-time snapshot: a new memory is unsearchable by keyword (0%) until a rebuild. A static-corpus drag race hides this entirely.",
+                d: "An agent writes a memory and must recall it immediately. mnestic's indexes update in the same transaction, giving 100% fused read-your-writes. DuckDB's full-text index is a build-time snapshot: a new memory is unsearchable by keyword (0%) until a rebuild. A static-corpus drag race hides this entirely.",
               },
             ].map((p) => (
               <div key={p.n} className="bg-[var(--color-ink)] p-7">
@@ -679,11 +679,11 @@ export default function Home() {
           </div>
 
           <p className="mb-6 max-w-2xl text-base leading-relaxed text-[var(--color-paper-dim)]">
-            On quality, that lands mnestic at{" "}
-            <strong className="text-[var(--color-paper)]">recall@10 of 0.954</strong>{" "}
-            — level with DuckDB&apos;s 0.957, far above the graph-less LanceDB
-            (0.501) — while being the only engine fusing all three signals in one
-            transaction:
+            On quality, mnestic hits{" "}
+            <strong className="text-[var(--color-paper)]">recall@10 of 0.954</strong>,
+            level with DuckDB&apos;s 0.957 and far above the graph-less LanceDB
+            (0.501). It&apos;s the only engine here that fuses all three signals in
+            one transaction:
           </p>
 
           <div className="overflow-x-auto rounded-xl border border-[var(--color-line)]">
@@ -739,12 +739,12 @@ export default function Home() {
               </h3>
               <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
                 mnestic&apos;s one-call 3-way fusion runs at{" "}
-                <span className="font-mono text-[var(--color-paper)]">41.55 ms p50</span>{" "}
-                — <strong className="text-[var(--color-paper)]">faster than
-                DuckDB&apos;s 68 ms</strong> decomposed path, and ~4× faster than
-                hand-decomposing it yourself (175 ms). It&apos;s the only engine
-                here that fuses three signals in one call at all; LanceDB&apos;s
-                native call is 2-way (recall 0.456).
+                <span className="font-mono text-[var(--color-paper)]">~42 ms p50</span>,{" "}
+                <strong className="text-[var(--color-paper)]">faster than
+                DuckDB&apos;s decomposed path</strong> and about 4× faster than
+                hand-decomposing it yourself. It&apos;s the only engine here that
+                fuses three signals in a single call; LanceDB&apos;s native call
+                covers just two.
               </p>
             </div>
             <div className="bg-[var(--color-ink)] p-7">
@@ -752,17 +752,17 @@ export default function Home() {
                 Latency, in context
               </h3>
               <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
-                mnestic isn&apos;t the lowest absolute latency at this scale — but
-                it&apos;s not a wheel artifact either. Re-measured on the{" "}
+                mnestic isn&apos;t the lowest absolute latency at this scale, but
+                the numbers hold up off the test wheel. Re-measured on the{" "}
                 <span className="font-mono text-[var(--color-paper)]">RocksDB</span>{" "}
-                backend (the one the engine actually runs) with{" "}
+                backend it actually runs, with{" "}
                 <span className="text-[var(--color-paper)]">real
-                sentence-transformer embeddings</span>, the decomposed path holds
-                at ~162 ms p50 with a markedly tighter tail (p99{" "}
+                sentence-transformer embeddings</span>, the decomposed path&apos;s
+                tail falls (p99{" "}
                 <span className="font-mono text-[var(--color-paper)]">181 ms</span>{" "}
-                vs 258 on the wheel), and the native 3-way call stays ~41 ms. The
-                comparison that holds is quality and capability: matching the best
-                indexed engine while fusing a signal they can&apos;t.
+                vs 258 on the wheel) and the native 3-way call stays around
+                40 ms. What holds is quality and capability: matching the best
+                indexed engine while fusing a signal the others can&apos;t.
               </p>
             </div>
           </div>
@@ -839,7 +839,7 @@ db.run_default("?[x] := x in [1, 2, 3]")?;`}
                   cozo
                 </code>
                 . Every <code className="font-mono text-sm text-[var(--color-paper)]">use cozo::…</code>{" "}
-                in your existing code — and in downstream crates — keeps working
+                in your existing code, and in downstream crates, keeps working
                 unchanged. A drop-in, not a rewrite.
               </p>
             </div>
