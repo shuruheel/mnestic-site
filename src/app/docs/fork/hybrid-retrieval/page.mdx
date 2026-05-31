@@ -14,7 +14,8 @@ single typed Rust call.
 
 <Callout type="fork">
   This entire page is specific to mnestic. RRF and MMR landed in 0.8.0; the
-  one-call `hybrid_search` API landed in 0.8.1.
+  one-call `hybrid_search` API landed in 0.8.1; **native graph legs (`GraphLeg`)
+  and BM25-default full-text scoring landed in 0.8.3**.
 </Callout>
 
 ## The one-call API: `hybrid_search`
@@ -25,7 +26,7 @@ string-interpolated), validate every interpolated identifier against injection,
 and run it read-only.
 
 ```rust
-use cozo::{DbInstance, HybridSearch, MmrParams};
+use cozo::{DbInstance, GraphLeg, HybridSearch, MmrParams};
 
 let recalls = db.hybrid_search(&HybridSearch {
     relation:     "memory".into(),
@@ -36,6 +37,14 @@ let recalls = db.hybrid_search(&HybridSearch {
     fts_index:    "summary_fts".into(),
     query_text:   "pricing decision".into(),
     fts_k:        24,
+    // graph leg: 2-hop proximity from a seed over *recalls,
+    // ranked by minimum hop distance, fused in the same call.
+    graph_legs:   vec![GraphLeg {
+        edge_relation: "recalls".into(),
+        seeds:         vec![seed.into()],
+        max_hops:      2,
+        ..GraphLeg::default()
+    }],
     rrf_k:        60.0,
     mmr: Some(MmrParams {
         lambda: 0.5,
@@ -63,24 +72,59 @@ To see (or hand-tune) the CozoScript it generates rather than run it, call
 | `fts_index` | — | Full-text index name. |
 | `query_text` | — | Query text for the keyword leg (a CozoScript FTS expression). |
 | `fts_k` | `10` | `k` for the FTS search. |
-| `extra_lists` | `[]` | Extra ranked lists folded into the fusion (e.g. graph traversal). |
+| `graph_legs` | `[]` | Typed graph-proximity legs (`GraphLeg`) — bounded-hop traversal fused as ranked lists. **(0.8.3)** |
+| `extra_lists` | `[]` | Low-level escape hatch: raw ranked lists spliced into the fusion. Prefer `graph_legs` for traversal. |
 | `rrf_k` | `60.0` | RRF rank-bias damping constant. |
 | `mmr` | `None` | Optional MMR diversity rerank. `None` returns the fused ranking directly. |
 | `limit` | `10` | Max rows when no MMR rerank is applied. |
 
-### Folding in a graph signal
+### The graph signal: typed `GraphLeg` (0.8.3)
 
-`extra_lists` takes a `HybridList { label, rule_body }`. The `rule_body` is a
-Datalog rule body that must bind two variables — `id` (the item key, matching the
-fused output) and `score` (higher is better). For example, a one-hop traversal
-from a seed:
+A `GraphLeg` expands from a set of `seeds` over a stored edge relation up to
+`max_hops`, scores every reached node by its **minimum hop distance** (closer ⇒
+higher rank), and contributes that ranked list to the same Reciprocal Rank Fusion
+as the vector and keyword legs. mnestic generates the recursive shortest-path rule
+for you — a seed relation, a hop-1 base rule, and a `min(dist)` recursive rule
+gated at `max_hops` — so there is no hand-written recursion.
+
+```rust
+use cozo::GraphLeg;
+
+GraphLeg {
+    label:         "graph".into(),   // fusion list tag (validated)
+    edge_relation: "recalls".into(), // the stored edge relation to traverse
+    from_col:      "from".into(),    // source-id column   (default "from")
+    to_col:        "to".into(),      // dest-id column     (default "to")
+    seeds:         vec![seed.into()],// query anchors (not themselves scored)
+    max_hops:      2,                // bounded expansion; must be >= 1
+    undirected:    false,            // also follow to_col -> from_col when true
+}
+```
+
+<Callout type="fork">
+  **Injection-safe.** Seed values are passed as query parameters
+  (`$hg{i}_seed{j}`), never string-interpolated; the label, edge relation, and
+  column names are validated as bare identifiers, and empty seeds /
+  `max_hops == 0` are rejected. Multiple seeds are unioned, and multiple
+  `graph_legs` each become their own ranked list in the fusion. An empty
+  `graph_legs` generates the exact pre-0.8.3 script (backward compatible).
+</Callout>
+
+#### Escape hatch: `extra_lists`
+
+If you need a ranked list that isn't a bounded-hop traversal, `extra_lists` takes
+a `HybridList { label, rule_body }`. The `rule_body` is a Datalog rule body that
+must bind two variables — `id` (the item key, matching the fused output) and
+`score` (higher is better). Prefer `graph_legs` for graph proximity: an
+`extra_lists` entry is a single spliced rule body and cannot express the recursive
+shortest-path rule that bounded-hop proximity needs.
 
 ```rust
 use cozo::HybridList;
 
 HybridList {
-    label: "graph".into(),
-    rule_body: "*edges{ from: $seed, to: id }, score = 1.0".into(),
+    label: "recency".into(),
+    rule_body: "*memory{ id, created_at }, score = created_at".into(),
 }
 ```
 
@@ -88,6 +132,15 @@ HybridList {
   `rule_body` is your own Datalog and is spliced verbatim — it is not sanitized.
   Only `label` is validated. Keep it free of untrusted input.
 </Callout>
+
+### The keyword leg uses BM25 (0.8.3)
+
+The FTS leg scores with Okapi **BM25** by default (term-frequency saturation +
+document-length normalization, with `OR`-disjunction summing per-term
+contributions). This is what lifted fused recall@10 from ~0.75 to **0.954** in the
+benchmark. It is the engine-wide `::fts` default — see
+[Proximity searches](/docs/proximity-search#full-text-search-fts) for `score_kind`
+tuning (`k1`, `b`) and how to fall back to `tf_idf`/`tf`.
 
 ## The primitives, in Datalog
 

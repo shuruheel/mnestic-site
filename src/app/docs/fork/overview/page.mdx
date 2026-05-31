@@ -1,7 +1,7 @@
 export const metadata = {
   title: "What mnestic adds",
   description:
-    "An overview of how mnestic diverges from CozoDB: faster builds, non-blocking HNSW, equality pushdown, one-call hybrid retrieval, and ULID keys.",
+    "An overview of how mnestic diverges from CozoDB: native 3-way fused recall, BM25 full-text search, faster & non-blocking HNSW builds, equality pushdown, one-call hybrid retrieval, and ULID keys.",
 };
 
 # What mnestic adds
@@ -27,6 +27,26 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 0.7.7.
 
 ## Highlights by release
+
+### 0.8.3 — native 3-way fused recall & BM25 full-text
+
+- **Native 3-way fused recall** — `hybrid_search` now takes typed `GraphLeg`s, so
+  graph proximity fuses with the vector and keyword legs in one call. Each leg
+  expands from seeds over a stored edge relation up to `max_hops` and ranks reached
+  nodes by minimum hop distance. The fused call runs all three signals at ~41.55 ms
+  p50, roughly 4× faster than hand-decomposing it into separate queries.
+- **BM25-correct full-text search** — the default `::fts` scorer is now Okapi BM25
+  (term-frequency saturation + document-length normalization), `OR` sums per-term
+  contributions, and `avgdl` is an O(1) durable counter rather than a per-query
+  scan. This lifted fused recall from 0.75 to 0.954. `tf` and `tf_idf` remain
+  selectable for byte-identical upstream scoring.
+
+<Callout type="warning">
+  **Behavior change in 0.8.3:** the default `::fts` score kind moved from `tf_idf`
+  to `bm25`. Pass `score_kind: 'tf_idf'` (or `'tf'`) to keep upstream scoring.
+</Callout>
+
+→ [Hybrid retrieval (RRF + MMR + graph legs)](/docs/fork/hybrid-retrieval)
 
 ### 0.8.2 — non-blocking HNSW index builds
 

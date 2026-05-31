@@ -276,7 +276,7 @@ That's it. At query time:
     query: $q,
     k: 10,
     filter: 1 + 1 == 2,
-    score_kind: 'tf_idf',
+    score_kind: 'bm25',
     bind_score: s
 }
 
@@ -286,10 +286,31 @@ That's it. At query time:
 This query retrieves the top 10 results from the index `index_name` based on a
 search query `$q`. The `filter` parameter can be used to filter the results
 further based on additional conditions. The `score_kind` parameter specifies the
-scoring method, and in this case, it is set to `'tf_idf'` which takes into
-consideration of global statistics when scoring documents. You can also use
-`'tf'`. The resulting scores are bound to the variable `s`. Finally, the results
-are ordered in descending order of score (`-s`).
+scoring method. The resulting scores are bound to the variable `s`. Finally, the
+results are ordered in descending order of score (`-s`).
+
+<Callout type="fork">
+  **mnestic 0.8.3 changed the default `score_kind`** from `'tf_idf'` to Okapi
+  **`'bm25'`** — a behavior change. The three options:
+
+  - **`'bm25'`** *(default)* — term-frequency saturation (`k1`, default `1.2`) and
+    document-length normalization (`b`, default `0.75`), both tunable as query
+    params; `OR`-disjunction **sums** per-term contributions. `avgdl` is an O(1)
+    durable counter, not a per-query scan.
+  - **`'tf_idf'`** — raw `tf · idf` with no length normalization; `OR` takes the
+    **max** per-term score. Byte-identical to upstream CozoDB.
+  - **`'tf'`** — term frequency only.
+
+  Pass `score_kind: 'tf_idf'` (or `'tf'`) to keep the exact upstream scoring.
+</Callout>
+
+```prolog
+# BM25 with explicit tuning (k1 saturation, b length-normalization)
+?[s, k, v] := ~table:index_name {k, v |
+    query: $q, k: 10, score_kind: 'bm25', k1: 1.2, b: 0.75, bind_score: s
+}
+:order -s
+```
 
 The search query must be a string and is processed by the same tokenizer as the
 index. The tokenizer is specified by the `tokenizer` parameter, and the

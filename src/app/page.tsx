@@ -212,10 +212,10 @@ recall[to] := recall[via], *recalls{ from: via, to }
 :order dist
 :limit 12`;
 
-const HYBRID_CODE = `use cozo::{DbInstance, HybridSearch, MmrParams};
+const HYBRID_CODE = `use cozo::{DbInstance, GraphLeg, HybridSearch, MmrParams};
 
-// One typed call: HNSW + FTS (+ optional graph traversal),
-// fused with Reciprocal Rank Fusion, then MMR-diversified.
+// One typed call: HNSW + FTS + graph proximity, fused natively
+// with Reciprocal Rank Fusion, then MMR-diversified.
 let recalls = db.hybrid_search(&HybridSearch {
     relation:     "memory".into(),
     vector_index: "embedding".into(),
@@ -225,6 +225,14 @@ let recalls = db.hybrid_search(&HybridSearch {
     fts_index:    "summary_fts".into(),
     query_text:   "pricing decision",
     fts_k:        24,
+    // graph leg: expand 2 hops from a seed over *recalls,
+    // rank by min hop distance — fused in the same call.
+    graph_legs:   vec![GraphLeg {
+        edge_relation: "recalls".into(),
+        seeds:         vec![seed.into()],
+        max_hops:      2,
+        ..GraphLeg::default()
+    }],
     rrf_k:        60.0,
     mmr: Some(MmrParams { lambda: 0.5, k: 12, embedding_col: "embedding".into() }),
     ..HybridSearch::default()
@@ -264,6 +272,18 @@ const capabilities = [
 ];
 
 const forkItems = [
+  {
+    ver: "0.8.3",
+    t: "Native 3-way fused recall",
+    d: "Graph proximity is now a typed leg of hybrid_search — add GraphLeg seeds and a bounded-hop edge relation, and vector, keyword, and graph signals fuse in one call, one transaction. No hand-written recursion, no app-side stitching.",
+    metric: "all 3 signals in one call · 41.55 ms p50 · ~4× faster than the hand-decomposed path",
+  },
+  {
+    ver: "0.8.3",
+    t: "BM25-correct full-text search",
+    d: "The default ::fts scorer is now Okapi BM25 with term-frequency saturation and document-length normalization, and OR-disjunction sums per-term contributions. avgdl is an O(1) durable counter, not a per-query index scan. (tf and tf_idf stay selectable for byte-identical upstream scoring.)",
+    metric: "fused recall 0.75 → 0.954 · cold p99 tail 2,900 → 258 ms (40k chunks, measured)",
+  },
   {
     ver: "0.8.2",
     t: "Non-blocking HNSW index builds",
@@ -309,6 +329,18 @@ const benches = [
   { v: "~50 MB", u: "peak RAM", d: "at OLTP load" },
 ];
 
+/* Hybrid-recall benchmark — small scale (40k chunks), 1,000 queries, k=10.
+   Single run 2026-05-31, macOS arm64, SQLite-backed wheel, synthetic
+   embeddings. Source: mnestic-benchmarks. Numbers are hardware-specific.
+   The story is capability + recall parity, not raw latency: latency is in
+   the cards below, framed native-vs-native. */
+const recallBench = [
+  { e: "mnestic", recall: "0.954", signals: "vec · FTS · graph", locus: "native · one call", ryw: "100%", us: true },
+  { e: "duckdb 1.5.3", recall: "0.957", signals: "vec · FTS · graph", locus: "app-side glue", ryw: "0% full-text †" },
+  { e: "sqlite 0.1.9", recall: "1.000*", signals: "vec · FTS · graph", locus: "app-side glue", ryw: "100%" },
+  { e: "lancedb 0.33", recall: "0.501", signals: "vec · FTS", locus: "native · no graph", ryw: "n/a — no graph" },
+];
+
 export default function Home() {
   return (
     <>
@@ -330,6 +362,9 @@ export default function Home() {
             </a>
             <a href="#perf" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
               Speed
+            </a>
+            <a href="#bench" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
+              Benchmarks
             </a>
             <a href={DOCS} className="label link-grow hover:text-[var(--color-paper)]">
               Docs
@@ -356,7 +391,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.8.2
+                a maintained fork of CozoDB · v0.8.3
               </span>
             </div>
 
@@ -538,15 +573,16 @@ export default function Home() {
             <p className="mt-6 text-lg leading-relaxed text-[var(--color-paper-dim)]">
               Vector similarity, keyword match, and graph proximity are three
               different signals about <em>“what should I remember right now.”</em>{" "}
-              mnestic fuses them for you — Reciprocal Rank Fusion to combine,
-              Maximal Marginal Relevance to keep the results from collapsing into
-              near-duplicates.
+              As of 0.8.3 mnestic fuses all three <em>natively</em> — a typed{" "}
+              graph leg joins the vector and keyword legs in one call, combined by
+              Reciprocal Rank Fusion and de-duplicated by Maximal Marginal
+              Relevance.
             </p>
             <ul className="mt-7 space-y-3">
               {[
-                "Query vector & text passed as params — never string-interpolated",
-                "Generated CozoScript inspectable via hybrid_search_script",
-                "Fold in your own n-hop traversal as an extra ranked list",
+                "Graph proximity is a typed GraphLeg — bounded-hop, ranked by min distance",
+                "Query vector, text & seeds passed as params — never string-interpolated",
+                "One call, one transaction — generated CozoScript inspectable via hybrid_search_script",
               ].map((li) => (
                 <li key={li} className="flex gap-3 text-sm text-[var(--color-paper-dim)]">
                   <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-[var(--color-synapse)]" />
@@ -588,6 +624,174 @@ export default function Home() {
           <p className="mt-5 font-mono text-xs text-[var(--color-paper-faint)]">
             Backup ≈ 1M rows/s · restore ≈ 400K rows/s · PageRank on 1.6M
             vertices ≈ 30 s. mnestic keeps these and adds the fork wins above.
+          </p>
+        </section>
+
+        <div className="rule" />
+
+        {/* ── Hybrid-recall benchmark ───────────────────── */}
+        <section id="bench" className="py-20">
+          <div className="mb-3 flex items-center gap-3">
+            <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-synapse)]" />
+            <span className="label">Hybrid recall, measured</span>
+          </div>
+          <h2 className="mb-5 max-w-3xl font-serif text-4xl font-medium leading-tight tracking-tight md:text-5xl">
+            One engine for all three{" "}
+            <span className="italic text-[var(--color-synapse)]">signals</span>.
+          </h2>
+          <p className="mb-10 max-w-2xl text-lg leading-relaxed text-[var(--color-paper-dim)]">
+            The task is fusing vector, keyword, <em>and</em> graph proximity into
+            one ranking. Raw latency isn&apos;t what separates the field at this
+            scale — three structural things are, and mnestic is the only embedded
+            engine here that gets all three right.
+          </p>
+
+          <div className="mb-12 grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] md:grid-cols-3">
+            {[
+              {
+                n: "01",
+                t: "It has a graph signal at all",
+                d: "Graph proximity is correlated-but-distinct from vector and keyword — drop it and you lose recall the other two can't recover. It's the single largest effect in the run: the graph-less engines (LanceDB) land far below. This is why graph-augmented retrieval exists.",
+              },
+              {
+                n: "02",
+                t: "One store, one call — no glue",
+                d: "mnestic serves all three signals from one embedded store and fuses them in a single transactional call. SQLite, DuckDB and Kuzu keep them in one process but fuse in app code (three queries + a hand-rolled RRF); LanceDB fuses natively but needs a second system for graph.",
+              },
+              {
+                n: "03",
+                t: "Read-your-writes on every signal",
+                d: "An agent writes a memory and must recall it immediately. mnestic's indexes update in the same transaction — 100% fused read-your-writes. DuckDB's full-text index is a build-time snapshot: a new memory is unsearchable by keyword (0%) until a rebuild. A static-corpus drag race hides this entirely.",
+              },
+            ].map((p) => (
+              <div key={p.n} className="bg-[var(--color-ink)] p-7">
+                <span className="font-mono text-xs text-[var(--color-synapse)]">
+                  {p.n}
+                </span>
+                <h3 className="mb-3 mt-4 font-serif text-lg font-medium leading-snug">
+                  {p.t}
+                </h3>
+                <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
+                  {p.d}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          <p className="mb-6 max-w-2xl text-base leading-relaxed text-[var(--color-paper-dim)]">
+            On quality, that lands mnestic at{" "}
+            <strong className="text-[var(--color-paper)]">recall@10 of 0.954</strong>{" "}
+            — level with DuckDB&apos;s 0.957, far above the graph-less LanceDB
+            (0.501) — while being the only engine fusing all three signals in one
+            transaction:
+          </p>
+
+          <div className="overflow-x-auto rounded-xl border border-[var(--color-line)]">
+            <table className="w-full border-collapse text-left text-sm">
+              <thead>
+                <tr className="border-b border-[var(--color-line)] bg-[var(--color-ink-2)]">
+                  <th className="label px-5 py-3 font-normal">Engine</th>
+                  <th className="label px-5 py-3 text-right font-normal">recall@10</th>
+                  <th className="label px-5 py-3 font-normal">Signals</th>
+                  <th className="label px-5 py-3 font-normal">Fusion</th>
+                  <th className="label px-5 py-3 font-normal">Fused read-your-writes</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono text-[0.82rem]">
+                {recallBench.map((r) => (
+                  <tr
+                    key={r.e}
+                    className={`border-b border-[var(--color-line)] last:border-0 ${
+                      r.us ? "bg-[var(--color-synapse)]/5" : ""
+                    }`}
+                  >
+                    <td
+                      className={`px-5 py-3 ${
+                        r.us
+                          ? "font-medium text-[var(--color-synapse)]"
+                          : "text-[var(--color-paper)]"
+                      }`}
+                    >
+                      {r.e}
+                    </td>
+                    <td className="px-5 py-3 text-right text-[var(--color-paper)]">
+                      {r.recall}
+                    </td>
+                    <td className="px-5 py-3 text-[var(--color-paper-dim)]">
+                      {r.signals}
+                    </td>
+                    <td className="px-5 py-3 text-[var(--color-paper-dim)]">
+                      {r.locus}
+                    </td>
+                    <td className="px-5 py-3 text-[var(--color-paper-dim)]">
+                      {r.ryw}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-8 grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] md:grid-cols-2">
+            <div className="bg-[var(--color-ink)] p-7">
+              <h3 className="mb-3 font-serif text-xl font-medium">
+                The native call is the fast path
+              </h3>
+              <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
+                mnestic&apos;s one-call 3-way fusion runs at{" "}
+                <span className="font-mono text-[var(--color-paper)]">41.55 ms p50</span>{" "}
+                — <strong className="text-[var(--color-paper)]">faster than
+                DuckDB&apos;s 68 ms</strong> decomposed path, and ~4× faster than
+                hand-decomposing it yourself (175 ms). It&apos;s the only engine
+                here that fuses three signals in one call at all; LanceDB&apos;s
+                native call is 2-way (recall 0.456).
+              </p>
+            </div>
+            <div className="bg-[var(--color-ink)] p-7">
+              <h3 className="mb-3 font-serif text-xl font-medium">
+                Latency, in context
+              </h3>
+              <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
+                mnestic isn&apos;t the lowest absolute latency at this scale — but
+                it&apos;s not a wheel artifact either. Re-measured on the{" "}
+                <span className="font-mono text-[var(--color-paper)]">RocksDB</span>{" "}
+                backend (the one the engine actually runs) with{" "}
+                <span className="text-[var(--color-paper)]">real
+                sentence-transformer embeddings</span>, the decomposed path holds
+                at ~162 ms p50 with a markedly tighter tail (p99{" "}
+                <span className="font-mono text-[var(--color-paper)]">181 ms</span>{" "}
+                vs 258 on the wheel), and the native 3-way call stays ~41 ms. The
+                comparison that holds is quality and capability: matching the best
+                indexed engine while fusing a signal they can&apos;t.
+              </p>
+            </div>
+          </div>
+
+          <p className="mt-5 font-mono text-xs leading-relaxed text-[var(--color-paper-faint)]">
+            † DuckDB&apos;s full-text index is a build-time snapshot — its fused
+            read-your-writes is 99% overall but 0% for the keyword leg until a
+            rebuild.{" "}
+            Source: the mnestic-benchmarks hybrid suite, summarized in the{" "}
+            <a
+              href={`${GITHUB}/blob/main/CHANGELOG-FORK.md`}
+              target="_blank"
+              rel="noreferrer"
+              className="link-grow text-[var(--color-paper-dim)]"
+            >
+              0.8.3 changelog
+            </a>
+. Small scale (40k chunks, 10k entities, 50k edges, dim 384) · 1,000
+            queries, k=10, 2-hop graph · 2026-05-31 · macOS arm64. Numbers are
+            hardware-specific.{" "}
+            <strong className="text-[var(--color-paper-dim)]">Recall@10</strong>{" "}
+            is the synthetic text-derived-embedding run on the SQLite-backed wheel,
+            where the vector signal is meaningful by construction;{" "}
+            <strong className="text-[var(--color-paper-dim)]">latency</strong>{" "}
+            is additionally validated on the RocksDB backend with real
+            sentence-transformer embeddings. *SQLite&apos;s recall reflects an
+            exact brute-force KNN scan (no ANN index), not a like-for-like indexed
+            search. Kuzu did not complete (extension host offline since its
+            Oct-2025 archival).
           </p>
         </section>
 
