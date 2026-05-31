@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.8.2) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.8.3) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,32 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.8.3
+
+Two agentic-memory wedge features, validated end-to-end on the hybrid-recall
+benchmark (40k chunks, vs SQLite / DuckDB / LanceDB / Kuzu).
+
+- **Native 3-way fused recall** — graph proximity is now a typed `GraphLeg` on
+  `hybrid_search`. Each leg expands from seed nodes over a stored edge relation
+  up to `max_hops`, scores every reached node by its minimum hop distance, and
+  feeds that ranked list into the same RRF as the vector and keyword legs — one
+  call, one transaction, no hand-written recursion. The fused call runs all three
+  signals at **41.55 ms p50** (recall 0.873), ~4× faster than the hand-decomposed
+  path, fusing a signal no 2-way engine can.
+- **BM25-correct full-text search** — the default `::fts` score kind is now
+  Okapi **BM25** (term-frequency saturation `k1` + document-length normalization
+  `b`), and `OR` now **sums** per-term contributions instead of taking the max.
+  `avgdl` is an **O(1)** read of a durable per-index doc-stats counter, not a
+  per-query index scan. Fused recall **0.75 → 0.954** (parity with DuckDB's
+  0.957); cold p99 tail **2,900 → 258 ms**.
+
+<Callout type="warning">
+  **Behavior change:** the default `::fts` scorer moved from `tf_idf` to `bm25`.
+  Pass `score_kind: 'tf_idf'` (or `'tf'`) for byte-identical upstream scoring.
+</Callout>
+
+→ [Hybrid retrieval (RRF + MMR + graph legs)](/docs/fork/hybrid-retrieval)
 
 ## 0.8.2
 
