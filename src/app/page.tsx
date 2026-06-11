@@ -273,6 +273,13 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "next",
+    t: "Flat in-RAM parallel index builds — 15× faster ::hnsw create",
+    d: "The bulk build now constructs the graph in flat, integer-indexed memory (contiguous vector slab + per-node adjacency, the hnswlib/pgvector layout) with parallel insertion under per-node locks, then serialises once into the unchanged on-disk format. ::fts create drops a redundant second tokenisation pass and tokenises in parallel. Same search path, same incremental maintenance, still non-blocking. On crates.io with 0.8.5; on main now.",
+    metric:
+      "40k × 384-dim: 294 s → 19 s synthetic · 89 s → 11.1 s real-embedding corpus, recall@10 unchanged",
+  },
+  {
     ver: "0.8.4",
     t: "Per-leg fusion detail — recall that explains itself",
     d: "ReciprocalRankFusion(detailed: true) and HybridSearch::detailed return one row per (item, contributing leg): which legs surfaced each result, the within-leg rank the fusion used, and the leg's raw score. The fused score reconstructs exactly as \u03a3 1/(k + rank) — the mechanism behind \u201cwhy was this retrieved\u201d surfaces. Also fixes a 0.8.3 defect where the durable avgdl counter made concurrent writers to FTS-indexed relations contend on one key.",
