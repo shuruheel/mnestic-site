@@ -15,7 +15,7 @@ const UPSTREAM = "https://github.com/cozodb/cozo";
    ────────────────────────────────────────────────────────────── */
 type Tok = { t: string; c?: string };
 
-function hl(line: string, lang: "cozo" | "rust"): ReactNode[] {
+function hl(line: string, lang: "cozo" | "rust" | "python"): ReactNode[] {
   const out: ReactNode[] = [];
   // comments first
   const commentIdx = line.search(lang === "rust" ? /\/\// : /(^|\s)#/);
@@ -93,7 +93,7 @@ function Code({
   title,
 }: {
   code: string;
-  lang: "cozo" | "rust";
+  lang: "cozo" | "rust" | "python";
   title: string;
 }) {
   const lines = code.split("\n");
