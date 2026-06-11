@@ -273,6 +273,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.8.4",
+    t: "Per-leg fusion detail — recall that explains itself",
+    d: "ReciprocalRankFusion(detailed: true) and HybridSearch::detailed return one row per (item, contributing leg): which legs surfaced each result, the within-leg rank the fusion used, and the leg's raw score. The fused score reconstructs exactly as \u03a3 1/(k + rank) — the mechanism behind \u201cwhy was this retrieved\u201d surfaces. Also fixes a 0.8.3 defect where the durable avgdl counter made concurrent writers to FTS-indexed relations contend on one key.",
+    metric: "every fused score decomposes into its legs · Python: detailed=True",
+  },
+  {
     ver: "0.8.3",
     t: "Native 3-way fused recall",
     d: "Graph proximity is now a typed leg of hybrid_search: add GraphLeg seeds and a bounded-hop edge relation, and vector, keyword, and graph signals fuse in one call, one transaction. No hand-written recursion, no app-side stitching.",
@@ -281,7 +287,7 @@ const forkItems = [
   {
     ver: "0.8.3",
     t: "BM25-correct full-text search",
-    d: "The default ::fts scorer is now Okapi BM25 with term-frequency saturation and document-length normalization, and OR-disjunction sums per-term contributions. avgdl is an O(1) durable counter, not a per-query index scan. (tf and tf_idf stay selectable for byte-identical upstream scoring.)",
+    d: "The default ::fts scorer is now Okapi BM25 with term-frequency saturation and document-length normalization, and OR-disjunction sums per-term contributions. avgdl is an O(1) read (process-cached since 0.8.4), not a per-query index scan. (tf and tf_idf stay selectable for byte-identical upstream scoring.)",
     metric: "fused recall jumps 0.75 → 0.954, cold-start tail cut ~10× (40k chunks)",
   },
   {
@@ -391,7 +397,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.8.3
+                a maintained fork of CozoDB · v0.8.4
               </span>
             </div>
 
@@ -778,7 +784,7 @@ export default function Home() {
               rel="noreferrer"
               className="link-grow text-[var(--color-paper-dim)]"
             >
-              0.8.3 changelog
+              0.8.4 changelog
             </a>
 . Small scale (40k chunks, 10k entities, 50k edges, dim 384) · 1,000
             queries, k=10, 2-hop graph · 2026-05-31 · macOS arm64. Numbers are
@@ -800,7 +806,7 @@ export default function Home() {
         {/* ── Get started ───────────────────────────────── */}
         <section className="py-20">
           <h2 className="mb-10 font-serif text-4xl font-medium tracking-tight md:text-5xl">
-            Add it to your Rust project
+            Add it to your project
           </h2>
           <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_1fr]">
             <div className="space-y-4">
@@ -820,6 +826,13 @@ cargo add mnestic
 
 let db = DbInstance::new("mem", "", "")?;
 db.run_default("?[x] := x in [1, 2, 3]")?;`}
+              />
+              <Code
+                lang="python"
+                title="Python — with LangChain & LlamaIndex adapters"
+                code={`pip install mnestic                          # the engine (abi3 wheels)
+pip install langchain-mnestic               # LangChain vector store
+pip install llama-index-vector-stores-mnestic`}
               />
             </div>
             <div className="flex flex-col justify-center rounded-xl border border-[var(--color-line)] bg-[var(--color-ink-2)] p-8">

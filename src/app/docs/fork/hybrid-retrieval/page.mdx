@@ -77,6 +77,7 @@ To see (or hand-tune) the CozoScript it generates rather than run it, call
 | `rrf_k` | `60.0` | RRF rank-bias damping constant. |
 | `mmr` | `None` | Optional MMR diversity rerank. `None` returns the fused ranking directly. |
 | `limit` | `10` | Max rows when no MMR rerank is applied. |
+| `detailed` | `false` | Per-leg contribution rows — see below. **(0.8.4)** |
 
 ### The graph signal: typed `GraphLeg` (0.8.3)
 
@@ -132,6 +133,30 @@ HybridList {
   `rule_body` is your own Datalog and is spliced verbatim — it is not sanitized.
   Only `label` is validated. Keep it free of untrusted input.
 </Callout>
+
+### Per-leg detail: recall that explains itself (0.8.4)
+
+With `detailed: true` the output switches to **one row per (item, contributing
+leg)**: `[id, score, list_id, leg_rank, leg_score]` — which legs surfaced each
+result, the 1-based within-leg rank the fusion actually used (after best-score
+dedup), and the leg's raw score (cosine for the vector leg, BM25 for the
+keyword leg, negative hop distance for a graph leg). Legs an item did not
+appear in contribute no row, and the fused score reconstructs exactly:
+
+```text
+score = Σ over legs of 1 / (rrf_k + leg_rank)
+```
+
+Without MMR the row limit widens to `limit × leg-count` so the top `limit`
+items always arrive with all their legs; with MMR the detail is joined onto
+MMR's selection (head: `[id, rank, score, list_id, leg_rank, leg_score]`).
+
+The same option exists on the raw fixed rule —
+`ReciprocalRankFusion(combined[lid, item, score], k: 60, detailed: true)` —
+and in the Python binding (`detailed=True` in the `hybrid_search` dict).
+
+This is the substrate for "why was this retrieved" product surfaces: every
+fused ranking decomposes into auditable per-signal contributions.
 
 ### The keyword leg uses BM25 (0.8.3)
 

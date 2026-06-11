@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="220" viewBox="0 0 820 220">
+  <g transform="translate(30,26.5) scale(5)" stroke-linecap="round">
+    <g stroke="#6fb3c4" stroke-opacity="0.6" stroke-width="1.6" fill="none">
+      <line x1="7" y1="23" x2="24" y2="8"/>
+      <line x1="24" y1="8" x2="25" y2="24"/>
+      <line x1="7" y1="23" x2="25" y2="24"/>
+    </g>
+    <circle cx="24" cy="8" r="3" fill="#6fb3c4"/>
+    <circle cx="25" cy="24" r="2.6" fill="#6fb3c4"/>
+    <circle cx="7" cy="23" r="4.4" fill="#c8f24a"/>
+  </g>
+  <text x="215" y="112" font-family="Georgia, 'Times New Roman', serif" font-size="130" font-weight="500" letter-spacing="-4" fill="#ece7dc" dominant-baseline="central">mnestic</text>
+</svg>

@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.8.3) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.8.4) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,28 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.8.4
+
+A defect fix plus the fusion-explainability primitive. Also the first release
+with the **Python family on PyPI**: `mnestic` (abi3 wheels for Linux x86_64 +
+aarch64, macOS x86_64 + arm64, Windows), `langchain-mnestic`, and
+`llama-index-vector-stores-mnestic`.
+
+- **Per-leg fusion detail** — `ReciprocalRankFusion(..., detailed: true)`
+  switches the output to one row per *(item, contributing list)*:
+  `[item, fused_score, list_id, leg_rank, leg_score]`, where `leg_rank` is the
+  1-based within-list rank the fusion actually used. The fused score
+  reconstructs exactly as `Σ 1/(k + leg_rank)`. `HybridSearch::detailed`
+  plumbs it through the one-call helper (Python: `detailed=True`) — the
+  mechanism behind "why was this retrieved" surfaces.
+- **Concurrency fix** — 0.8.3's durable `avgdl` counter was one shared storage
+  key written inside every document transaction; under RocksDB pessimistic
+  transactions, concurrent writers to any FTS-indexed relation conflicted on
+  that key (and the unlocked read-modify-write lost updates). The doc-stats
+  counter is now **process-cached and scan-seeded** — one scan per index per
+  process, maintained in memory, no shared hot-path key. Per-query `avgdl`
+  stays O(1); BM25 scores are unchanged.
 
 ## 0.8.3
 
@@ -25,8 +47,9 @@ benchmark (40k chunks, vs SQLite / DuckDB / LanceDB / Kuzu).
 - **BM25-correct full-text search** — the default `::fts` score kind is now
   Okapi **BM25** (term-frequency saturation `k1` + document-length normalization
   `b`), and `OR` now **sums** per-term contributions instead of taking the max.
-  `avgdl` is an **O(1)** read of a durable per-index doc-stats counter, not a
-  per-query index scan. Fused recall **0.75 → 0.954** (parity with DuckDB's
+  `avgdl` is an **O(1)** read instead of a per-query index scan (the 0.8.3
+  durable-counter design was replaced by a process-level cache in 0.8.4 — see
+  above). Fused recall **0.75 → 0.954** (parity with DuckDB's
   0.957); cold p99 tail **2,900 → 258 ms**.
 
 <Callout type="warning">

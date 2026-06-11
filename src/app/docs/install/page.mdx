@@ -30,6 +30,25 @@ use cozo::DbInstance;
   [Migrating from CozoDB](/docs/fork/migrating).
 </Callout>
 
+## Python
+
+The PyO3 binding ships abi3 wheels for Linux (x86_64, aarch64), macOS (Intel,
+Apple Silicon), and Windows — plus first-party LangChain and LlamaIndex
+adapters that expose `hybrid_search` as a vector store:
+
+```bash
+pip install mnestic
+pip install langchain-mnestic                  # LangChain VectorStore
+pip install llama-index-vector-stores-mnestic  # LlamaIndex vector store
+```
+
+```python
+from mnestic import CozoDbPy
+
+db = CozoDbPy("mem", "", "{}")
+db.run_script("?[x] <- [[1],[2],[3]]", {}, False)
+```
+
 ## Choosing a backend
 
 mnestic inherits CozoDB's storage backends. Select them with Cargo features:
