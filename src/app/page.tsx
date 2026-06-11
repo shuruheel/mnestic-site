@@ -277,7 +277,7 @@ const forkItems = [
     t: "Flat in-RAM parallel index builds — 15× faster ::hnsw create",
     d: "The bulk build now constructs the graph in flat, integer-indexed memory (contiguous vector slab + per-node adjacency, the hnswlib/pgvector layout) with parallel insertion under per-node locks, then serialises once into the unchanged on-disk format. ::fts create drops a redundant second tokenisation pass and tokenises in parallel. Same search path, same incremental maintenance, still non-blocking. On crates.io with 0.8.5; on main now.",
     metric:
-      "40k × 384-dim: 294 s → 19 s synthetic · 89 s → 11.1 s real-embedding corpus, recall@10 unchanged",
+      "40k × 384-dim: 294 s → 19 s synthetic · 89.1 s → 8.1 s real-embedding corpus (RocksDB), recall@10 unchanged",
   },
   {
     ver: "0.8.4",
