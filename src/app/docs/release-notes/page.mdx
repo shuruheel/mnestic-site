@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.8.4) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.8.5) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,50 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.8.5
+
+Index builds, 15× faster — plus the read path stops paying for transactions
+it doesn't need.
+
+- **Flat in-RAM parallel index builds** — `::hnsw create` used to build the
+  graph through the storage engine's tuple encoding: every neighbour visit
+  paid a decode, a hash of the full compound key, and allocator traffic — a
+  profile showed less than half the build was distance math. The build now
+  works the way hnswlib and pgvector do: a contiguous vector slab,
+  integer-ID adjacency arrays, parallel insertion with per-node locks, then
+  one serialisation pass into the existing on-disk format. Nothing changes
+  for readers: same tuple layout, same search path, same incremental
+  maintenance, and the non-blocking build (reads proceed during
+  construction) is preserved. Measured on the 40k × 384-dim RocksDB corpus:
+  `::hnsw create` **294 s → 19 s** synthetic, **89.1 s → 8.1 s** with real
+  embeddings, recall@10 unchanged. Decomposition: 3.2× from the flat layout
+  (serial), ~5× from parallel insertion. `MNESTIC_INDEX_BUILD_THREADS=1`
+  restores serial insertion; parallel builds produce equivalent-recall
+  graphs, not byte-identical ones — guarded by a recall-agreement test.
+  `::fts create` gets the same treatment (no deletion pass against a
+  provably-empty index, parallel tokenisation): ~2× on short documents, more
+  on long ones.
+- **Plain-snapshot read path (RocksDB)** — read-only scripts no longer open
+  a pessimistic transaction; they read through a plain snapshot (the
+  standard MVCC read pattern — TiKV and CockroachDB made the same call).
+  Same consistent view as before, no lock-manager bookkeeping, and reads
+  structurally cannot wait on writer locks. Keyed point reads: p50
+  **28.5 → 23.9 µs** (−16%), p99 −19%. Retrieval-scale queries on a
+  cache-resident corpus are unchanged, as expected — and a write attempted
+  through a read-only transaction now errors explicitly. Isolation semantics
+  are pinned by tests.
+- **Batched HNSW neighbour reads** — `hnsw_search_level` fetches unvisited
+  neighbours' vectors through one RocksDB `MultiGet` per expansion step
+  (shared bloom probes, batched block reads) instead of one serial point get
+  per neighbour. Neutral on a cache-resident corpus; the win case is
+  cold-cache and larger-than-RAM data.
+- **`::describe` works now** — documented, implemented, and tested at the
+  operation level upstream, but never reachable: the grammar rule was
+  missing from the script-level alternations, since before the fork. Wired
+  in, with a read-only-mode guard. A small fix, and a fair illustration of
+  what "maintained" means: someone is reading this code.
+- Requires `mnestic-rocks` 0.1.9 for the rocksdb feature.
 
 ## 0.8.4
 

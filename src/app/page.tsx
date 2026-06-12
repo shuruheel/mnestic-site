@@ -273,11 +273,17 @@ const capabilities = [
 
 const forkItems = [
   {
-    ver: "next",
+    ver: "0.8.5",
     t: "Flat in-RAM parallel index builds — 15× faster ::hnsw create",
-    d: "The bulk build now constructs the graph in flat, integer-indexed memory (contiguous vector slab + per-node adjacency, the hnswlib/pgvector layout) with parallel insertion under per-node locks, then serialises once into the unchanged on-disk format. ::fts create drops a redundant second tokenisation pass and tokenises in parallel. Same search path, same incremental maintenance, still non-blocking. On crates.io with 0.8.5; on main now.",
+    d: "The bulk build now constructs the graph in flat, integer-indexed memory (contiguous vector slab + per-node adjacency, the hnswlib/pgvector layout) with parallel insertion under per-node locks, then serialises once into the unchanged on-disk format. ::fts create drops a redundant second tokenisation pass and tokenises in parallel. Same search path, same incremental maintenance, still non-blocking.",
     metric:
       "40k × 384-dim: 294 s → 19 s synthetic · 89.1 s → 8.1 s real-embedding corpus (RocksDB), recall@10 unchanged",
+  },
+  {
+    ver: "0.8.5",
+    t: "Plain-snapshot reads — read-only scripts skip the transaction",
+    d: "On RocksDB, read-only scripts no longer open a pessimistic transaction: they read through a plain snapshot (the standard MVCC read pattern), so reads structurally cannot wait on writer locks. HNSW search batches neighbour vector fetches through one RocksDB MultiGet per expansion step. Also: ::describe was documented and implemented upstream but never reachable from the grammar — wired in, with a read-only guard.",
+    metric: "keyed point reads p50 28.5 → 23.9 µs (−16%) · p99 −19%",
   },
   {
     ver: "0.8.4",
@@ -404,7 +410,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.8.4
+                a maintained fork of CozoDB · v0.8.5
               </span>
             </div>
 
@@ -791,7 +797,7 @@ export default function Home() {
               rel="noreferrer"
               className="link-grow text-[var(--color-paper-dim)]"
             >
-              0.8.4 changelog
+              0.8.5 changelog
             </a>
 . Small scale (40k chunks, 10k entities, 50k edges, dim 384) · 1,000
             queries, k=10, 2-hop graph · 2026-05-31 · macOS arm64. Numbers are
