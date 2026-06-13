@@ -273,71 +273,40 @@ const capabilities = [
 
 const forkItems = [
   {
-    ver: "0.8.5",
-    t: "Flat in-RAM parallel index builds — 15× faster ::hnsw create",
-    d: "The bulk build now constructs the graph in flat, integer-indexed memory (contiguous vector slab + per-node adjacency, the hnswlib/pgvector layout) with parallel insertion under per-node locks, then serialises once into the unchanged on-disk format. ::fts create drops a redundant second tokenisation pass and tokenises in parallel. Same search path, same incremental maintenance, still non-blocking.",
-    metric:
-      "40k × 384-dim: 294 s → 19 s synthetic · 89.1 s → 8.1 s real-embedding corpus (RocksDB), recall@10 unchanged",
+    ver: "0.8.1–0.8.4",
+    t: "Three-way recall in one call",
+    d: "Vector similarity, keyword match, and graph proximity — the three signals behind “what should I recall right now” — fuse in a single typed call, ranked by Reciprocal Rank Fusion and diversified with MMR. It used to take about seven hand-written Datalog rules, and every result can now tell you which signals surfaced it.",
+    metric: "all three signals, one transaction · ~4× faster than stitching it by hand",
   },
   {
-    ver: "0.8.5",
-    t: "Plain-snapshot reads — read-only scripts skip the transaction",
-    d: "On RocksDB, read-only scripts no longer open a pessimistic transaction: they read through a plain snapshot (the standard MVCC read pattern), so reads structurally cannot wait on writer locks. HNSW search batches neighbour vector fetches through one RocksDB MultiGet per expansion step. Also: ::describe was documented and implemented upstream but never reachable from the grammar — wired in, with a read-only guard.",
-    metric: "keyed point reads p50 28.5 → 23.9 µs (−16%) · p99 −19%",
-  },
-  {
-    ver: "0.8.4",
-    t: "Per-leg fusion detail — recall that explains itself",
-    d: "ReciprocalRankFusion(detailed: true) and HybridSearch::detailed return one row per (item, contributing leg): which legs surfaced each result, the within-leg rank the fusion used, and the leg's raw score. The fused score reconstructs exactly as \u03a3 1/(k + rank) — the mechanism behind \u201cwhy was this retrieved\u201d surfaces. Also fixes a 0.8.3 defect where the durable avgdl counter made concurrent writers to FTS-indexed relations contend on one key.",
-    metric: "every fused score decomposes into its legs · Python: detailed=True",
+    ver: "0.8.1–0.8.5",
+    t: "Index builds that never block reads",
+    d: "Building a vector (HNSW) or full-text index used to lock the table and stall every reader until it finished. Now the build happens off to the side while reads keep flowing the whole time — and the build itself is up to 15× faster.",
+    metric: "40k vectors indexed in ~19 s · 90k reads served mid-build",
   },
   {
     ver: "0.8.3",
-    t: "Native 3-way fused recall",
-    d: "Graph proximity is now a typed leg of hybrid_search: add GraphLeg seeds and a bounded-hop edge relation, and vector, keyword, and graph signals fuse in one call, one transaction. No hand-written recursion, no app-side stitching.",
-    metric: "all 3 signals in one call, ~4× faster than decomposing it by hand",
+    t: "Full-text search that ranks correctly",
+    d: "Keyword search now scores with Okapi BM25 — the ranking standard behind modern search engines — instead of raw term counts. The keyword half of hybrid recall actually surfaces the right passages.",
+    metric: "fused recall climbs 0.75 → 0.954 on a 40k-chunk corpus",
   },
   {
-    ver: "0.8.3",
-    t: "BM25-correct full-text search",
-    d: "The default ::fts scorer is now Okapi BM25 with term-frequency saturation and document-length normalization, and OR-disjunction sums per-term contributions. avgdl is an O(1) read (process-cached since 0.8.4), not a per-query index scan. (tf and tf_idf stay selectable for byte-identical upstream scoring.)",
-    metric: "fused recall jumps 0.75 → 0.954, cold-start tail cut ~10× (40k chunks)",
-  },
-  {
-    ver: "0.8.2",
-    t: "Non-blocking HNSW index builds",
-    d: "::hnsw create no longer holds the base relation's write lock while it constructs the graph. The graph is built off-lock under a snapshot and bulk-published via SstFileWriter; mutations during the build reconcile under a brief final lock.",
-    metric: "90k reads served (slowest 0.8 ms) during a build that previously blocked them all",
-  },
-  {
-    ver: "0.8.1",
-    t: "One-call hybrid retrieval",
-    d: "DbInstance::hybrid_search runs HNSW + FTS + optional graph traversal, fuses them with Reciprocal Rank Fusion, and optionally diversifies with MMR, all in a single typed call. Previously ~7 hand-written Datalog rules.",
-    metric: "RRF + MMR fusion · one typed call replaces ~7 hand-written rules",
-  },
-  {
-    ver: "0.8.1",
-    t: "HNSW builds ~3× faster",
-    d: "The build no longer round-trips the whole graph through the transaction's write-batch overlay. The resulting index is byte-identical to before, just built in a third of the time.",
-    metric: "20k × 128-dim: 135 s → 43.6 s (release, measured)",
+    ver: "0.8.5",
+    t: "Reads that don’t wait on writers",
+    d: "Read-only queries now read through a plain snapshot instead of opening a transaction, so a busy writer can never block a reader. For an agent recalling while it ingests, that means steady, predictable latency.",
+    metric: "keyed point reads −16% p50, −19% p99",
   },
   {
     ver: "0.8.0",
-    t: "Equality pushdown",
-    d: "*rel[k, ..], k == <value> now compiles to a keyed stored_prefix_join instead of a full scan. Numeric equalities keep cross-type op_eq semantics, so nothing silently changes meaning.",
-    metric: "~28–29× faster single-row primary-key lookups (5k rows, measured)",
+    t: "Key lookups skip the full scan",
+    d: "Filtering a stored relation by an exact key now compiles to a direct keyed seek instead of scanning every row — the difference between a constant-time lookup and a full table walk on your hottest queries.",
+    metric: "~28× faster single-row primary-key lookups",
   },
   {
     ver: "0.8.0",
-    t: "ULID identifiers",
-    d: "rand_ulid() and ulid_timestamp() give you lexicographically-sortable, time-ordered keys, ideal for append-only memory streams you scan by recency.",
+    t: "Time-ordered IDs for memory streams",
+    d: "rand_ulid() generates sortable, time-ordered identifiers — ideal for append-only memory you scan by recency, with the creation time recoverable straight from the key.",
     metric: "lexicographically sortable · time-ordered scans",
-  },
-  {
-    ver: "0.8.0",
-    t: "Correctness, inherited & added",
-    d: "Forked 30 commits ahead of the published 0.7.6, including the stored_prefix_join correctness fix. Plus a parser fix for identifiers that begin with a keyword (nullable_column, trueValue).",
-    metric: "upstream fixes for free + a slimmer dependency graph",
   },
 ];
 
@@ -376,11 +345,11 @@ export default function Home() {
             <a href="#capabilities" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
               Engine
             </a>
-            <a href="#fork" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
-              The Fork
-            </a>
             <a href="#perf" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
               Speed
+            </a>
+            <a href="#fork" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
+              The Fork
             </a>
             <a href="#bench" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
               Benchmarks
@@ -537,6 +506,40 @@ export default function Home() {
           </div>
         </section>
 
+        {/* ── Performance ───────────────────────────────── */}
+        <section id="perf" className="py-20">
+          <div className="mb-12 flex flex-wrap items-end justify-between gap-4">
+            <h2 className="font-serif text-4xl font-medium tracking-tight md:text-5xl">
+              Built to be fast
+            </h2>
+            <p className="label max-w-xs text-right">
+              upstream figures · 2020 Mac mini · RocksDB backend
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] lg:grid-cols-4">
+            {benches.map((b) => (
+              <div key={b.d} className="bg-[var(--color-ink)] p-7">
+                <div className="font-serif text-[2.6rem] font-medium leading-none tracking-tight text-[var(--color-paper)]">
+                  {b.v}
+                </div>
+                <div className="mt-1 font-mono text-xs uppercase tracking-widest text-[var(--color-synapse)]">
+                  {b.u}
+                </div>
+                <p className="mt-4 text-xs leading-relaxed text-[var(--color-paper-dim)]">
+                  {b.d}
+                </p>
+              </div>
+            ))}
+          </div>
+          <p className="mt-5 font-mono text-xs text-[var(--color-paper-faint)]">
+            Backup ≈ 1M rows/s · restore ≈ 400K rows/s · PageRank on 1.6M
+            vertices ≈ 30 s. mnestic keeps these and adds the recall-focused
+            wins below.
+          </p>
+        </section>
+
+        <div className="rule" />
+
         {/* ── The Fork (the emphasis) ───────────────────── */}
         <section id="fork" className="py-20">
           <div className="mb-3 flex items-center gap-3">
@@ -611,39 +614,6 @@ export default function Home() {
             </ul>
           </div>
           <Code code={HYBRID_CODE} lang="rust" title="hybrid recall — RRF + MMR in one call" />
-        </section>
-
-        <div className="rule" />
-
-        {/* ── Performance ───────────────────────────────── */}
-        <section id="perf" className="py-20">
-          <div className="mb-12 flex flex-wrap items-end justify-between gap-4">
-            <h2 className="font-serif text-4xl font-medium tracking-tight md:text-5xl">
-              Built to be fast
-            </h2>
-            <p className="label max-w-xs text-right">
-              upstream figures · 2020 Mac mini · RocksDB backend
-            </p>
-          </div>
-          <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] lg:grid-cols-4">
-            {benches.map((b) => (
-              <div key={b.d} className="bg-[var(--color-ink)] p-7">
-                <div className="font-serif text-[2.6rem] font-medium leading-none tracking-tight text-[var(--color-paper)]">
-                  {b.v}
-                </div>
-                <div className="mt-1 font-mono text-xs uppercase tracking-widest text-[var(--color-synapse)]">
-                  {b.u}
-                </div>
-                <p className="mt-4 text-xs leading-relaxed text-[var(--color-paper-dim)]">
-                  {b.d}
-                </p>
-              </div>
-            ))}
-          </div>
-          <p className="mt-5 font-mono text-xs text-[var(--color-paper-faint)]">
-            Backup ≈ 1M rows/s · restore ≈ 400K rows/s · PageRank on 1.6M
-            vertices ≈ 30 s. mnestic keeps these and adds the fork wins above.
-          </p>
         </section>
 
         <div className="rule" />
