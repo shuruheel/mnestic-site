@@ -273,6 +273,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.8.6",
+    t: "Repair corruption without losing data",
+    d: "A few truncated tuples used to put a whole relation in doubt. ::repair_corrupt now surgically removes only the damaged rows by their intact keys and leaves everything else in place — recovery instead of a rebuild, and never a wholesale delete of your data.",
+    metric: "deletes only short-arity tuples · the rest of your data stays put",
+  },
+  {
     ver: "0.8.1–0.8.4",
     t: "Three-way recall in one call",
     d: "Vector similarity, keyword match, and graph proximity — the three signals behind “what should I recall right now” — fuse in a single typed call, ranked by Reciprocal Rank Fusion and diversified with MMR. It used to take about seven hand-written Datalog rules, and every result can now tell you which signals surfaced it.",
@@ -379,7 +385,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.8.5
+                a maintained fork of CozoDB · v0.8.6
               </span>
             </div>
 
@@ -767,7 +773,7 @@ export default function Home() {
               rel="noreferrer"
               className="link-grow text-[var(--color-paper-dim)]"
             >
-              0.8.5 changelog
+              0.8.6 changelog
             </a>
 . Small scale (40k chunks, 10k entities, 50k edges, dim 384) · 1,000
             queries, k=10, 2-hop graph · 2026-05-31 · macOS arm64. Numbers are
