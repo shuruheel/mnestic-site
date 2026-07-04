@@ -212,6 +212,21 @@ recall[to] := recall[via], *recalls{ from: via, to }
 :order dist
 :limit 12`;
 
+const BITEMP_CODE = `# opt in: valid time + an engine-stamped transaction time
+:create beliefs {claim, vld: Validity, tt: TxTime => conf: Float}
+
+# writes are stamped by a crash-safe commit clock — tt is never user-set
+?[c, v, conf] <- [['q3 pipeline is healthy', '2026-09-01', 0.35]]
+:put beliefs {c, v => conf}
+
+# time travel on BOTH axes:
+# what did we believe on June 30 about September?
+?[conf] := *beliefs{claim: 'q3 pipeline is healthy', conf
+                    @ (vt: '2026-09-01', tt: '2026-06-30')}
+
+# the audit trail: every belief, correction, and cessation
+::history beliefs [['q3 pipeline is healthy']]`;
+
 const HYBRID_CODE = `use cozo::{DbInstance, GraphLeg, HybridSearch, MmrParams};
 
 // One typed call: HNSW + FTS + graph proximity, fused natively
@@ -266,12 +281,30 @@ const capabilities = [
   },
   {
     k: "06",
-    t: "Time travel",
-    d: "Relations can carry validity time. Query the graph as it was at any historical point: memory you can rewind, not just overwrite.",
+    t: "Bitemporal time travel",
+    d: "Relations carry valid time and, since 0.10.0, an engine-stamped transaction time. Query the graph as it was — and as it was believed — at any point: memory you can rewind and audit, not just overwrite.",
   },
 ];
 
 const forkItems = [
+  {
+    ver: "0.10.0",
+    t: "Bitemporality: an audit trail for belief",
+    d: "Every relation can opt into an engine-stamped transaction-time axis alongside valid time. Corrections append instead of overwrite, reads default to the current belief, and time travel answers what the database believed at any past moment — with ::history for the raw timeline, garbage collection that never fakes history, and audited eviction for data-erasure obligations.",
+    metric: "current-belief reads within ~4–12% of single-axis · nothing comparable in-engine in an embedded database",
+  },
+  {
+    ver: "0.10.0",
+    t: "Answers that carry their evidence",
+    d: "Provenance-semiring aggregates: register a custom combine for recursive rules, or ask for the k best derivations per answer — each with the exact evidence chain that justifies it. :reconcile keeps derived results consistent when base facts are retracted, recording the whole revision as one auditable belief event.",
+    metric: "min_cost_k top-k proofs · register_custom_aggr · :reconcile belief revision",
+  },
+  {
+    ver: "0.9.0",
+    t: "Cypher reads (alpha)",
+    d: "A read-only openCypher subset translates to CozoScript over your stored relations — evaluate the engine without learning Datalog first. MATCH / WHERE / RETURN with aggregates, ORDER BY, SKIP and LIMIT; Datalog stays the native, full-power language.",
+    metric: "opt-in cypher feature · run_cypher / cypher_to_script",
+  },
   {
     ver: "0.8.6",
     t: "Repair corruption without losing data",
@@ -385,7 +418,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.8.6
+                a maintained fork of CozoDB · v0.10.0
               </span>
             </div>
 
@@ -587,10 +620,49 @@ export default function Home() {
           </div>
         </section>
 
+        {/* ── Marquee feature: bitemporality ────────────── */}
+        <section className="grid grid-cols-1 items-center gap-12 py-20 lg:grid-cols-[0.9fr_1.1fr]">
+          <div>
+            <span className="label">The headline feature · 0.10.0</span>
+            <h2 className="mt-4 font-serif text-4xl font-medium leading-tight tracking-tight md:text-[2.9rem]">
+              What did we believe
+              <br />
+              <span className="italic text-[var(--color-synapse)]">
+                at time T
+              </span>{" "}
+              about period Y?
+            </h2>
+            <p className="mt-6 text-lg leading-relaxed text-[var(--color-paper-dim)]">
+              Valid time says when a fact is true in the world. Transaction time
+              says when the database <em>learned</em> it — and 0.10.0 adds it
+              in-engine, stamped at commit by a crash-safe monotonic clock.
+              Reproduce last Tuesday&apos;s answer exactly. Audit every
+              correction. Tell &ldquo;the world changed&rdquo; apart from
+              &ldquo;we were wrong.&rdquo; No other embedded engine serves this
+              natively.
+            </p>
+            <ul className="mt-7 space-y-3">
+              {[
+                "tt is engine-assigned, never user-set — nobody can backdate what the system knew",
+                "::history / ::history_gc / ::evict manage the record's lifecycle; GC keeps as-of reads exact behind a persisted floor",
+                "Current-belief reads measured within ~4–12% of a single-axis relation; opt-in, zero cost if unused",
+              ].map((li) => (
+                <li key={li} className="flex gap-3 text-sm text-[var(--color-paper-dim)]">
+                  <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-[var(--color-synapse)]" />
+                  {li}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <Code code={BITEMP_CODE} lang="cozo" title="bitemporality — belief, versioned" />
+        </section>
+
+        <div className="rule" />
+
         {/* ── Marquee feature: hybrid_search ────────────── */}
         <section className="grid grid-cols-1 items-center gap-12 py-20 lg:grid-cols-[0.9fr_1.1fr]">
           <div>
-            <span className="label">The headline feature</span>
+            <span className="label">Native hybrid retrieval</span>
             <h2 className="mt-4 font-serif text-4xl font-medium leading-tight tracking-tight md:text-[2.9rem]">
               Hybrid retrieval,
               <br />
@@ -773,7 +845,7 @@ export default function Home() {
               rel="noreferrer"
               className="link-grow text-[var(--color-paper-dim)]"
             >
-              0.8.6 changelog
+              0.10.0 changelog
             </a>
 . Small scale (40k chunks, 10k entities, 50k edges, dim 384) · 1,000
             queries, k=10, 2-hop graph · 2026-05-31 · macOS arm64. Numbers are
@@ -806,7 +878,7 @@ export default function Home() {
 cargo add mnestic
 
 # or, with the RocksDB backend:
-# mnestic = { version = "0.8", features = ["storage-rocksdb"] }`}
+# mnestic = { version = "0.10", features = ["storage-rocksdb"] }`}
               />
               <Code
                 lang="rust"
