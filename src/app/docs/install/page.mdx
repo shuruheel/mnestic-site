@@ -49,6 +49,13 @@ db = CozoDbPy("mem", "", "{}")
 db.run_script("?[x] <- [[1],[2],[3]]", {}, False)
 ```
 
+<Callout type="fork">
+  Specific to mnestic 0.10.5. The PyPI wheel now bundles the **RocksDB** backend
+  on every platform, so `CozoDbPy("rocksdb", path)` works straight from
+  `pip install mnestic` — earlier wheels were compact/SQLite-only. The sdist
+  stays compact, so the persistent backend is wheel-only.
+</Callout>
+
 ## Choosing a backend
 
 mnestic inherits CozoDB's storage backends. Select them with Cargo features:
@@ -61,7 +68,7 @@ mnestic inherits CozoDB's storage backends. Select them with Cargo features:
 
 ```toml
 # Cargo.toml — enable the RocksDB backend
-mnestic = { version = "0.8", features = ["storage-rocksdb"] }
+mnestic = { version = "0.10", features = ["storage-rocksdb"] }
 ```
 
 <Callout type="note">

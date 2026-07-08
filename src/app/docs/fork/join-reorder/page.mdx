@@ -1,0 +1,188 @@
+export const metadata = {
+  title: "Greedy join reorder",
+  description:
+    "mnestic reorders the positive relation atoms of a conjunction by a stat-free min-new-vars heuristic, removing the N³ blow-up a naively-ordered join falls into — measured 54.5x on the repro — with result sets unchanged.",
+};
+
+# Greedy join reorder
+
+<Callout type="fork">
+  Specific to mnestic 0.10.5. A pure optimization — result sets are unchanged,
+  and a hand-tuned order compiles byte-identically. Default **on**; opt out
+  per-query with `:reorder written`.
+</Callout>
+
+## The problem
+
+The engine has **no cost-based optimizer**: plans are deterministic, and the
+human is expected to be the optimizer. Before 0.10.5 the only ordering pass was
+the inherited binding-before-use well-ordering, which floats
+predicates, unifications, and negations to their earliest fully-bound slot but
+**leaves the positive relation atoms in exactly their written order**. Join
+order was therefore whatever the author wrote.
+
+That is fine for a hand-tuned query and pathological for a naively-ordered one —
+exactly the conjunction an LLM agent authors when it lists relations in schema
+order rather than join order. The motivating repro (from an external
+Ladybug-vs-mnestic benchmark) is a "members-first same-group triangle": three
+people in one group, pairwise connected.
+
+```prolog
+# members-first: the three membership scans share only `g`, so they build an
+# all-triples-of-co-members intermediate BEFORE any `knows` edge can shrink it
+?[a, b, c] := *membership{ person: a, group: g },
+              *membership{ person: b, group: g },
+              *membership{ person: c, group: g },
+              *knows{ x: a, y: b },
+              *knows{ x: b, y: c },
+              *knows{ x: a, y: c }
+```
+
+Every individual step is a connected prefix join, so nothing is "wrong" — but
+the intermediate is `O(N³)` in the number of co-members, where a better order
+that interleaves the selective `knows` edges keeps it `O(N²)`. Measured
+**54.5×** on the repro.
+
+## What changed
+
+mnestic adds a stat-free pre-pass, `greedy_reorder_conjunction`, in
+`query/reorder.rs`. It runs **after** the fork's [equality
+pushdown](/docs/fork/equality-pushdown) (so any hoisted `k == <ground>`
+equality already seeds the bound set) and **before** the binding-before-use
+well-ordering (which stays the correctness arbiter for whatever atom order the
+reorder produces).
+
+Seeding an empty bound set, it repeatedly places the remaining atom that scores
+best on a deterministic, total ordering:
+
+- **fewest new variables first** — pulling a zero-new-var atom forward is a
+  semi-join filter pushdown;
+- then **longest already-bound key prefix** — prefer an atom whose leading
+  primary-key columns are bound, so it compiles to a keyed `stored_prefix_join`
+  rather than a full scan;
+- then **written position** — a stable, unique final tie-break.
+
+On the triangle above, that interleaves each new person with the `knows` edge
+that constrains it — equivalent to writing:
+
+```prolog
+# what the reorder produces: each membership is immediately filtered by an edge,
+# so the intermediate never exceeds the connected frontier (N³ → N²)
+?[a, b, c] := *membership{ person: a, group: g },
+              *knows{ x: a, y: b },
+              *membership{ person: b, group: g },
+              *knows{ x: b, y: c },
+              *knows{ x: a, y: c },
+              *membership{ person: c, group: g }
+```
+
+## Default on, and how to opt out
+
+`ReorderMode` is `Greedy` by default. To use the authored atom order verbatim
+for one query, write `:reorder written`:
+
+```prolog
+# opt out — the written order is used as-is (well-ordering still runs)
+?[a, b, c] := *membership{ person: a, group: g },
+              *membership{ person: b, group: g },
+              *membership{ person: c, group: g },
+              *knows{ x: a, y: b },
+              *knows{ x: b, y: c },
+              *knows{ x: a, y: c }
+
+:reorder written
+```
+
+`:reorder greedy` forces the default explicitly; any other value is a parse
+error. One more case is forced to `written` automatically: a bare `:limit`
+**without** a `:sort`. Under a reordered plan an early-returning bare `:limit`
+could return a different (still valid) row subset than the written order would,
+so the pass steps aside to keep the returned subset stable. A `:limit` **with**
+a `:sort` is unaffected — the sort fixes the subset.
+
+## Why results are unchanged
+
+A conjunction of positive generator atoms is **commutative under set
+semantics**: reordering the atoms cannot change the set of variable bindings the
+body produces, and the binding-before-use pass re-derives binding order over the
+new arrangement, so a variable is never used before some atom binds it. Stored
+relations are sets, so each full binding is enumerated exactly once regardless
+of order.
+
+Two safety valves keep that guarantee airtight:
+
+- **Identity.** If the greedy order equals the written order, the pass returns
+  "no change" and the written body is used untouched. Any hand-tuned query whose
+  written order is already stepwise-greedy-consistent compiles to a
+  **byte-identical** plan — the pass never perturbs a good plan.
+- **Compile-fallback.** If a reordered body fails the well-ordering fixpoint,
+  the pass retries the original written order rather than surfacing a new error.
+  The reorder can never introduce a compile failure the written order would not
+  have had.
+
+## What it excludes
+
+The pass is conservative by construction — it declines any rule whose shape it
+cannot prove safe rather than guessing. A conjunction is reordered only when
+**all** of these hold:
+
+- every positive body atom is a stored `Relation` atom (a derived-rule
+  application, or an `Hnsw`/`Fts`/`Lsh` search atom with fixed placement,
+  disqualifies the whole rule);
+- there are at least **three** relation atoms (fewer cannot exhibit the blow-up);
+- the body contains **no multi-valued `in`-unification**;
+- it is not a bare `:limit` without `:sort`.
+
+The multi-valued-`in` exclusion is load-bearing. `x in <list>` is a
+*multiplicity injector*: it compiles to a generator (one row per list element,
+no dedup) when its variable is unbound at its position, but to a filter
+(keep-if-member) when the variable is already bound. Moving a relation atom that
+binds that variable across it flips generator ↔ filter, which changes the body's
+*multiset* of matches. A set-valued rule head hides the difference, but a
+non-idempotent aggregation (`count`/`sum`/`collect`) reads the multiset
+directly — so reordering around a multi-valued `in` could silently change a
+`count`. Excluding the whole rule is the safe response. Predicates,
+single-valued unifications, and negated atoms do **not** disqualify a rule; they
+are set-preserving and get re-floated to their earliest bound slot afterward.
+
+## Not a cost-based optimizer
+
+This pass consults **no statistics** — no cardinality estimates, no histograms,
+no cost model. It removes one structural pathology (a naively-ordered
+conjunction spinning on an oversized intermediate) using only the shape of the
+join graph. When a written order is bad for a reason the structure does not
+reveal — selectivity the heuristic cannot see — the human is still the
+optimizer, and `:reorder written` plus manual ordering remains available.
+Cardinality-aware ordering is future work, not something this pass pretends to
+do.
+
+## Cartesian steps: warned and annotated
+
+If even the greedy order still contains a Cartesian step — a genuinely
+disconnected conjunction, where a join shares no bound variable with its left
+input — the pass emits a `log::warn!` naming the rule so agent frameworks can
+surface it, and `::explain` annotates the operator as `<op> (cartesian)`. This
+is a diagnostic, not an error: a disconnected conjunction is legal, just usually
+a mistake, and the reorder still minimizes the number of such steps.
+
+## Inspecting plans
+
+Because plans are deterministic, `::explain` shows the reordered plan (and any
+Cartesian annotation):
+
+```prolog
+::explain { ?[a, b, c] := *membership{ person: a, group: g },
+                          *membership{ person: b, group: g },
+                          *membership{ person: c, group: g },
+                          *knows{ x: a, y: b },
+                          *knows{ x: b, y: c },
+                          *knows{ x: a, y: c } }
+```
+
+## See also
+
+- [Equality pushdown](/docs/fork/equality-pushdown) — the complementary pre-pass
+  that runs first, so its hoisted key equalities seed the reorder's bound set.
+- [Query execution](/docs/query-execution) — how atom ordering and plans are
+  decided (inherited engine behavior).
+- [Tips for writing queries](/docs/tips)

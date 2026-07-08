@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.8.5) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.10.5) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,143 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.10.5
+
+A liveness and performance release: queries you can always stop, and
+naively-ordered queries that stop being pathological. Engine plus the Python
+binding and its wheel CI — no `cozorocks`/`mnestic-rocks` change.
+
+- **Interruptible `::kill` and `::running`** — both now dispatch _before_
+  opening a storage transaction, so on the mem/sqlite backends a `::kill` no
+  longer queues behind the very read query it is trying to kill (they touch only
+  the in-memory running-query registry). And the per-query poison flag is now
+  checked every 4,096 pulls inside the relational-algebra enumeration — so a long
+  single-rule join that yields no output for a while is finally interruptible,
+  not just between rule applications. The Python `close()` is fixed too: it no
+  longer raises "Already borrowed" while a `run_script` is live (the handle moved
+  to interior mutability).
+- **Per-query wall-clock budget** — a query can carry a deadline three ways: the
+  in-script `:timeout <secs>` option, a per-call
+  `run_script_with_options(…, ScriptRunOptions { timeout })`, and a Db-wide
+  `set_default_query_timeout`. The effective deadline is the **minimum** of
+  whichever are set — a `:timeout` can tighten the budget but never extend past
+  the Db default. Expiry raises a distinct `eval::timeout` diagnostic (a `::kill`
+  still raises `eval::killed`); a budget-aborted mutable script rolls back with no
+  partial commit. Python `run_script` gains a `timeout=` kwarg. Wasm carries no
+  wall-clock budget — it has no monotonic clock.
+- **Deterministic greedy join reorder — default ON** (opt out per query with
+  `:reorder written`). No pass previously considered join order, so a
+  naively-ordered conjunction — exactly the shape an LLM authors — could spin on
+  an N³ intermediate. A stat-free min-new-vars greedy pre-pass (after the
+  equality-pushdown pass) reorders the positive relation atoms of an eligible
+  conjunction, measured **54.5× faster** on the repro (N³ → N²). Results are
+  **unchanged**: the pass is the identity on any stepwise-greedy-consistent
+  written order, so hand-tuned plans stay byte-identical, and it excludes the
+  multi-valued `in`-unifications that feed aggregation. It is **not** a cost-based
+  optimizer — there are no cardinality stats. A residual Cartesian step (a
+  genuinely disconnected conjunction) is warned and annotated `(cartesian)` in
+  `::explain`.
+- **Automatic factorized `count()` rewrite — opt-in, default OFF** (behind
+  `set_query_factorization`). Rewrites an eligible single-clause
+  `count()`-over-positive-join into per-key counting sub-rules — a bit-identical
+  (exact-i64, `Int`-typed) answer computed without ever materializing the join
+  (benchmarked **4–342×** vs a factorizing optimizer). It fires only on shapes it
+  can prove exact; a body with any `!=` predicate declines to exact naive
+  evaluation (the `!=` inclusion-exclusion rewrite was cut before release for
+  miscounting on mixed Int/Float data — the manual patterns live in the
+  cardinality-algebra spec). An always-on detector adds a factorization advisory
+  to `::explain`.
+- **RocksDB now ships in the PyPI `mnestic` wheel** — `CozoDbPy("rocksdb", path)`
+  works straight from `pip install mnestic` (the wheel was compact/SQLite-only
+  before). The sdist stays compact, so the persist engine is wheel-only.
+- **Bulk `import_relations` into an index-bearing relation now warns** — the bulk
+  path maintains B-tree secondary indexes but not HNSW/FTS/LSH, so imported rows
+  stay invisible to vector/text search until the index is rebuilt. A warning now
+  flags it (it stays a warning, not a hard error: importing a snapshot then
+  reindexing is a legitimate workflow).
+
+## 0.10.1
+
+A small additive release on top of 0.10.0: two new query primitives plus a
+correctness fix to the meet aggregates. Pure `cozo-core`.
+
+- **Dominance bounded-meet — the antichain / skyline aggregate.**
+  `register_bounded_meet_aggr(name, dominates, max_survivors)` lets a host
+  register a strict partial order; the head form `name(operand)` then keeps, per
+  group, the non-dominated (Pareto-frontier) set of operands — each survivor its
+  own output row. Survivors are held in canonical memcmp order, so output is
+  arrival-independent, and `max_survivors` is a mandatory resource guard:
+  overflow is a loud error, never a silent truncation (an antichain has no
+  canonical k-subset). Rust-embedded v1 — host closures do not cross the
+  Python/served surfaces yet.
+- **Interval primitives** — `interval_overlaps(a, b)` (builtin function) and
+  `interval_coalesce(span)` (aggregate) over half-open `[start, end)` list
+  intervals. Touching spans do not overlap but do coalesce
+  (`[0,5)` + `[5,10)` = `[0,10)`); empty spans `[x, x)` overlap nothing; mixed
+  int/float bounds compare numerically; malformed spans are loud errors, never
+  silent falses. `interval_coalesce` is deliberately named away from the shipped
+  null-coalescing `coalesce` builtin.
+- **`bit_and` / `bit_or` changed-bit fix** — the meet aggregates now report
+  whether the value actually changed; the byte loop previously returned `true`
+  unconditionally, so a non-changing fold re-entered the semi-naive delta every
+  epoch (the same defect family as the 0.10.0 `and`/`or` fix). The bounded-meet
+  divergence cap was also hardened to count total changed epochs rather than a
+  resettable consecutive streak.
+
+## 0.10.0
+
+Two pillars, in order of impact.
+
+- **Bitemporality** — engine-assigned transaction time alongside Cozo's valid
+  time. System-versioned (`tt: TxTime`) and fully bitemporal
+  (`vld: Validity, tt: TxTime`) relations: a crash-safe monotone commit clock
+  stamps every write; reads default to the current belief and time-travel with
+  `@ (vt: …, tt: …)` or the `:as_of` query option; existence-checking writes
+  target the resolved current belief; and `::history` / `::history_gc` (persisted
+  floor) / `::evict` (audited hard deletion, the one deliberate break of
+  append-only, for GDPR) manage the record's lifecycle. Current-belief reads stay
+  within ~4–12% of the single-axis baseline. "What did we believe at time T about
+  period Y" — in-engine.
+- **Provenance semirings** — the same recursive rules compute existence, cost,
+  confidence, or evidence. `register_custom_aggr` admits user-defined absorptive
+  combines into recursion; `min_cost_k([payload, cost], k)` is a bounded-meet
+  aggregate returning the k best _whole derivations_ per answer, with the evidence
+  chains that justify them (k-shortest-paths, and "the k most-likely paths plus
+  their exact evidence", fall straight out); and `:reconcile` is recompute-based
+  belief revision that keeps derived annotations consistent under base-fact
+  retraction, composed with the transaction-time axis.
+- **Four upstream CozoDB bugs fixed** along the way — an inverted changed-bit in
+  the `and`/`or` meet aggregates, a panic on negated validity atoms, wrong
+  answers from prefix-truncated temporal-column joins, and the braced-`%return`
+  imperative parse panic.
+
+## 0.9.0
+
+Adds the read-only **Cypher query surface** and bundles the corrupt-database
+tooling that was banked as **0.8.6** but never separately published (0.8.5 →
+0.9.0 ships both; there is no standalone 0.8.6 crates.io artifact).
+
+- **Read-only Cypher query surface** (alpha; opt-in `cypher` feature, off by
+  default) — translate a subset of openCypher to CozoScript so the engine can be
+  evaluated and adopted without first learning Datalog. New API: `run_cypher` /
+  `cypher_to_script`, driven by a caller-supplied schema that maps the
+  property-graph model onto stored relations (both the relation-per-label and the
+  shared-relation-with-discriminator conventions). v1 covers `MATCH` / `WHERE` /
+  `RETURN` (with `count`/`sum`/`avg`/`min`/`max`/`collect`) / `ORDER BY` / `SKIP`
+  / `LIMIT`, with true bag semantics and null-aware `WHERE`. Datalog stays the
+  native, full-power language — this is a read-only on-ramp (no write clauses).
+  The published PyPI wheel ships without it for now.
+- **Corrupt-database tooling** (banked as 0.8.6) — `::repair_corrupt <relation>`
+  surgically deletes truncated tuples by their intact store keys, a surgical
+  alternative to dropping a database that fails integrity checks. And
+  `::index create` now skips corrupt tuples with a loud error naming the relation
+  and the arity mismatch, instead of panicking — one bad row previously made a
+  database that (re)creates an index at startup unopenable.
+- Two `cozo-bin` fixes — bearer auth is now honored on query-string URLs
+  (`/transact?write=true` no longer rejects a valid token), and the binary now
+  builds bare with a runnable-out-of-the-box default feature combo (`compact` =
+  sqlite + requests + graph-algo).
 
 ## 0.8.5
 

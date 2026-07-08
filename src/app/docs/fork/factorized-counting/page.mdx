@@ -1,0 +1,140 @@
+export const metadata = {
+  title: "Factorized counting",
+  description:
+    "mnestic can rewrite an eligible count()-over-join into Yannakakis-style per-key counting, producing a bit-identical exact answer without materializing the join. Opt-in, default off in 0.10.5.",
+};
+
+# Factorized counting
+
+<Callout type="fork">
+  Specific to mnestic 0.10.5. Opt-in and **default off** this release (a Db-wide
+  kill switch, `set_query_factorization`) so it can soak before any default-on
+  consideration. The always-on `::explain` advisory ships regardless. When it
+  does fire, result sets are unchanged.
+</Callout>
+
+## The problem
+
+A `count()` over a join pays for **every** homomorphic match of its body, even
+though the caller only wants one number. The engine evaluates an aggregate rule
+by driving the compiled join pipeline and streaming each projected match into a
+per-group `+= 1` accumulator: memory stays flat at `O(#groups)`, but CPU is
+`O(#matches)`.
+
+```prolog
+?[count(person)] :=
+    *member[group, person],
+    *knows[friend, person],
+    *lives_in[person, city]
+```
+
+There is no cost-based optimizer and no automatic factorization of general
+shapes — the human is expected to be the optimizer. On a standard
+social-network join workload, an external benchmark measured naive
+count-over-join CozoScript running **4–342× slower** than a columnar engine
+whose optimizer factorizes count aggregation automatically. At tens of millions
+of matches that gap is seconds; at billions of matches the naive form is not
+runnable at all, even though the answer is a single integer.
+
+## What changed
+
+mnestic adds a normal-form pre-pass (`query/factorize.rs`) that rewrites an
+eligible single-clause `count()`-over-positive-join into **Yannakakis-style
+per-key counting sub-rules** — the classical counting DP on an acyclic join.
+Instead of enumerating matches, it propagates per-key counts bottom-up along the
+join tree and sums products across a central edge, so a body with `1.65 × 10⁹`
+matches is counted without ever materializing them.
+
+The rewrite is exact by construction, not an approximation:
+
+- **Bit-identical answer.** The result is the same number, same `Int` type, as
+  naive evaluation — verified by a 400-case differential harness (naive vs
+  factorized, mem + sqlite, exact row-and-type equality).
+- **No Float cliff.** The rewrite accumulates in an internal `int_sum_prod`
+  aggregate that stays in exact `i64` and **errors, never silently wraps, on
+  overflow**. (The hand-authored patterns route their partials through `sum`,
+  which is `f64` and exact only below `2⁵³` — the automatic path has no such
+  caveat.)
+
+## When it fires
+
+The pass is conservative: it fires **only on shapes it can prove exact** and
+declines everything else to unchanged naive evaluation. Eligible means a single
+non-recursive clause whose head is exactly one `count()` (with optional group
+keys) over an all-positive, alpha-acyclic body.
+
+It declines — falling back to exact naive evaluation — on:
+
+- cyclic and non-free-connex bodies (no separator splits them),
+- repeated-variable bodies,
+- negated atoms and recursive rules,
+- bitemporal reads,
+- `count_unique` and mixed-aggregate heads,
+- and **any body containing a `!=` predicate**.
+
+That last exclusion is deliberate. An engine-side `!=` inclusion–exclusion
+auto-rewrite was drafted and then **cut before release** because it miscounted
+on mixed `Int`/`Float` data. So a query like the one below is *not* rewritten
+automatically:
+
+```prolog
+?[count(p2)] :=
+    *knows[p1, p2],
+    *knows[p2, p3],
+    *member[group, p3],
+    p1 != p3
+```
+
+The `!=`, anti-join, and `count_unique` cases still have exact hand-authored
+rewrites — they live in the
+[cardinality-algebra spec](https://github.com/shuruheel/mnestic/blob/main/docs/specs/cardinality-algebra.md),
+which is the reference for every shape the automatic pass declines. The manual
+patterns and the automatic pass agree on every result; the pass simply removes
+the boilerplate for the subset it can prove safe.
+
+## Enabling it
+
+The rewrite is gated behind a Db-wide kill switch, off by default:
+
+```rust
+use cozo::DbInstance;
+
+let db = DbInstance::new("mem", "", "")?;
+db.set_query_factorization(true);   // opt in; default is false in 0.10.5
+
+// Eligible count()-over-join now rewrites transparently — same answer, no
+// join materialization.
+let out = db.run_default(
+    "?[count(person)] := *member[group, person], *knows[friend, person], *lives_in[person, city]",
+)?;
+```
+
+Because it is a whole-Db switch, you turn it on for a workload you have measured
+and leave it off elsewhere. When off, every query evaluates exactly as it did
+before.
+
+## The always-on `::explain` advisory
+
+Independent of the switch, a companion **detector always runs** and annotates
+plans it recognizes as factorizable. So you can see whether a query *would*
+benefit before you flip the switch on:
+
+```prolog
+::explain { ?[count(person)] := *member[group, person], *knows[friend, person], *lives_in[person, city] }
+```
+
+An eligible count-over-join carries a factorization advisory in the `::explain`
+output (also emitted via `log::info!`). A body the pass would decline — a `!=`,
+a cycle, a `count_unique` — carries no advisory, which is itself the signal that
+you are on the naive path and should consult the hand-authored patterns.
+
+## See also
+
+- [Join reorder](/docs/fork/join-reorder) — the companion 0.10.5 pre-pass that
+  fixes a naively-ordered join's atom order (this pass fixes how its `count` is
+  aggregated).
+- [Equality pushdown](/docs/fork/equality-pushdown) — the other rewrite in
+  `query/reorder.rs`; a pure optimization with unchanged results.
+- [Aggregations](/docs/aggregations) — `count` / `count_unique` / `sum`
+  semantics (inherited engine behavior).
+- [What mnestic adds](/docs/fork/overview)

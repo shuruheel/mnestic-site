@@ -1,0 +1,148 @@
+export const metadata = {
+  title: "Interruptibility & query budgets",
+  description:
+    "mnestic makes a running query always stoppable: ::kill and ::running dispatch without blocking, and a per-query wall-clock :timeout budget aborts inside the join enumeration.",
+};
+
+# Interruptibility & query budgets
+
+<Callout type="fork">
+  Specific to mnestic 0.10.5. Two capabilities that share one mechanism: an
+  interruptible `::kill` / `::running`, and a per-query wall-clock budget
+  (`:timeout`). Both ride the same per-query poison flag, now checked deep
+  inside the relational-algebra enumeration.
+</Callout>
+
+## The problem
+
+A naively-ordered join — exactly the shape an LLM agent tends to author — can
+spin for a long time on a large intermediate result while producing no output
+rows. In upstream CozoDB there was no reliable way to stop such a query:
+
+- **`::kill` blocked behind its own target.** `::running` and `::kill` opened a
+  storage transaction _before_ dispatching. On the mem and SQLite backends that
+  meant the `::kill` queued behind the very read query it was trying to kill, so
+  it waited out that query's entire remaining runtime — the exact situation
+  where you need it to return immediately.
+- **The poison flag was never checked inside a join.** The per-query poison
+  (kill) flag was only checked _between_ rule applications. A single-rule join
+  that enumerates for minutes without emitting a row never reached a check
+  point, so it ran to completion no matter how many times you killed it.
+
+An external benchmark surfaced both defects with a members-in-the-same-group
+triangle join that could not be interrupted.
+
+## Interruptible `::kill` and `::running`
+
+Two changes make a running query always stoppable:
+
+**Dispatch before any transaction.** `::running` and `::kill` now touch only the
+in-memory running-query registry — they no longer open a storage transaction, so
+a `::kill` never queues behind the read it is trying to cancel. It returns
+promptly on every backend.
+
+**The poison flag is threaded through enumeration.** The per-query `Poison` is
+now passed through `RelAlgebra::iter` and checked **every 4096 pulls** at every
+operator boundary and raw scan. (The signature change makes the coverage
+compiler-enforced — a new operator cannot forget to check.) A long single-rule
+join that yields no output is finally interruptible, and the added check costs
+within-noise overhead on the point-lookup baseline.
+
+Inspect and cancel with the inherited system ops:
+
+```prolog
+# list running queries and their IDs
+::running
+
+# cancel one by ID
+::kill 42
+```
+
+A killed query raises a distinct **`eval::killed`** diagnostic.
+
+### Python `close()` no longer races a live query
+
+The Python binding held the database in a way that made `close()` take `&mut
+self` while an in-flight `run_script(&self)` still held a shared borrow — a
+concurrent `close()` during a live query raised `Already borrowed`. The handle
+is now an `RwLock<Option<DbInstance>>`; every method takes `&self` and clones the
+`Arc`-backed instance out of a momentary guard, released before the blocking
+engine call. You can now close the handle from another thread while a query runs.
+
+## Per-query wall-clock budget
+
+A query can carry a deadline from three sources:
+
+- **In-script `:timeout <secs>`** — a query option, like `:limit`. The value is
+  seconds (an `f64`, so `:timeout 0.5` is 500 ms).
+- **Per-call** — `Db::run_script_with_options(payload, params, mutability,
+  ScriptRunOptions { timeout })`.
+- **Db-wide default** — `Db::set_default_query_timeout(Option<f64>)`, a guard a
+  query cannot escape.
+
+The effective deadline is the **minimum** of whichever are set. It is computed
+once per `run_script` call and shared across every statement of an
+imperative/multi-statement script and any triggers it fires — so an in-script
+`:timeout` (or a per-call `timeout`) can only _tighten_ the budget, never extend
+past the Db-wide default.
+
+```prolog
+# abort this join if it runs longer than 5 seconds
+?[m1, m2] := *member{ id: m1, group: g },
+             *member{ id: m2, group: g },
+             m1 < m2
+
+:timeout 5
+```
+
+Expiry raises a distinct **`eval::timeout`** diagnostic — separate from
+`eval::killed`, so callers can tell a budget expiry from an operator cancel.
+
+The deadline rides the same 4096-pull check cadence as the interruptibility fix,
+so it aborts promptly inside a long enumeration rather than only at a rule
+boundary. It replaced a per-timed-query detached timer thread, so timed queries
+no longer leak a thread. Absurd or non-finite budgets (`:timeout 1e300`, an HTTP
+`timeout` of `1e400`) clamp to "no deadline" — the query is still `::kill`-able —
+instead of panicking.
+
+### Rollback on abort
+
+A killed or timed-out **mutable** script rolls back cleanly: there is no partial
+commit. The abort surfaces as the corresponding error (`eval::killed` /
+`eval::timeout`) and the database is left in its pre-script state.
+
+### From cozo-bin and Python
+
+`cozo-bin` exposes the budget as a `timeout` field on the HTTP query payload and
+a `--default-query-timeout` CLI flag.
+
+The Python binding adds an optional `timeout=` kwarg to `run_script`, plus
+`set_default_query_timeout` / `default_query_timeout`:
+
+```python
+from mnestic import CozoDbPy
+
+db = CozoDbPy("rocksdb", "./my.db", "{}")
+
+# per-call budget: abort after 2 seconds -> raises eval::timeout
+db.run_script(script, {}, False, timeout=2.0)
+
+# Db-wide default the query cannot escape
+db.set_default_query_timeout(10.0)
+db.default_query_timeout()  # -> 10.0
+```
+
+## Platform note: no wall-clock budget on wasm
+
+wasm has no `std` monotonic clock, so a query built for wasm carries **no**
+wall-clock budget — `:timeout` is inert there rather than panicking on a missing
+clock. A wasm query is still `::kill`-able (that path needs no clock). Only the
+native builds enforce the timeout.
+
+## See also
+
+- [System operations](/docs/system-ops) — `::running` and `::kill` reference
+  (the inherited engine surface these changes make reliable).
+- [Query execution](/docs/query-execution) — how plans are built and inspected
+  with `::explain`.
+- [What mnestic adds](/docs/fork/overview)

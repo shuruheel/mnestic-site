@@ -1,7 +1,7 @@
 export const metadata = {
   title: "What mnestic adds",
   description:
-    "An overview of how mnestic diverges from CozoDB: native 3-way fused recall, BM25 full-text search, faster & non-blocking HNSW builds, equality pushdown, one-call hybrid retrieval, and ULID keys.",
+    "An overview of how mnestic diverges from CozoDB: bitemporality, provenance semirings, interruptible queries with wall-clock budgets, a stat-free join reorder, native 3-way fused recall, BM25 full-text search, equality pushdown, and ULID keys.",
 };
 
 # What mnestic adds
@@ -27,6 +27,129 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 0.7.7.
 
 ## Highlights by release
+
+### 0.10.5 — interruptible queries, wall-clock budgets & a stat-free join reorder
+
+- **`::kill` and `:timeout` now actually interrupt a running query.** `::running`
+  and `::kill` dispatch *before* opening a storage transaction, so a `::kill` no
+  longer queues behind the very query it is trying to stop (the old failure on the
+  mem/SQLite backends). The per-query poison flag is now checked every 4096 pulls
+  inside the relational-algebra enumeration, so even a long single-rule join that
+  emits no rows is finally interruptible. The Python `close()` no longer raises
+  "Already borrowed" against a live `run_script`.
+- **Per-query wall-clock budget** — set a deadline three ways: the in-script
+  `:timeout <secs>` option, a per-call `run_script_with_options`, or a Db-wide
+  `set_default_query_timeout`. The effective deadline is the **minimum** of
+  whichever are set — a `:timeout` can only tighten the budget, never extend past
+  the default. Expiry raises a distinct `eval::timeout` error (a `::kill` raises
+  `eval::killed`); Python `run_script` gains a `timeout=` kwarg. Wasm carries no
+  wall-clock budget (no monotonic clock there).
+- **Deterministic greedy join reorder — default on** — a stat-free, min-new-vars
+  reorder of a conjunction's positive relation atoms, removing the N³ blow-up a
+  naively-ordered query (the kind an LLM authors) falls into (measured 54.5× on
+  the repro; N³ → N²). Results are **unchanged** — it is the identity on any
+  already-greedy order, and it is *not* a cost-based optimizer. Opt out per query
+  with `:reorder written`; a residual Cartesian step is warned and annotated in
+  `::explain`.
+- **Automatic factorized `count()` rewrite — opt-in, default off** — behind
+  `set_query_factorization`, an eligible single-clause `count()`-over-join is
+  rewritten into per-key counting sub-rules that compute a **bit-identical**
+  (exact-i64, `Int`-typed) answer without materializing the join (the benchmark
+  measured 4–342× versus a factorizing optimizer). It fires only on shapes it can
+  prove exact; an always-on detector adds a factorization advisory to `::explain`.
+- **RocksDB now ships in the PyPI `mnestic` wheel** — `CozoDbPy("rocksdb", path)`
+  works straight from `pip install mnestic` (was `compact`/SQLite-only). The sdist
+  stays compact, so the persistent engine is wheel-only.
+- **Bulk `import_relations` into an index-bearing relation now warns** — the bulk
+  path maintains B-tree indexes but not HNSW/FTS/LSH, so imported rows stay
+  invisible to vector/text search until the index is rebuilt; a warning now flags
+  it.
+
+→ [Interruptibility & timeouts](/docs/fork/interruptibility) · [Join reorder](/docs/fork/join-reorder) · [Factorized counting](/docs/fork/factorized-counting)
+
+### 0.10.1 — antichain aggregate & interval primitives
+
+- **Dominance bounded-meet — the antichain / skyline aggregate** —
+  `register_bounded_meet_aggr` opens the bounded-meet category to a host-supplied
+  strict partial order, keeping the non-dominated (Pareto-frontier) set of operands
+  per group, one output row each. `max_survivors` is a mandatory resource guard —
+  overflow is a loud error, never a silent truncation. Rust-embedded only in v1
+  (host closures do not cross the Python/served surfaces).
+- **Interval primitives** — `interval_overlaps(a, b)` builtin and the
+  `interval_coalesce(span)` aggregate over half-open `[start, end)` list intervals.
+  Touching spans do not overlap but do coalesce (`[0,5)` + `[5,10)` = `[0,10)`);
+  empty spans overlap nothing; malformed spans are loud errors, never silent
+  falses.
+- **Correctness fix** — the `bit_and`/`bit_or` meet aggregates now report whether
+  the value actually changed, so a non-changing fold no longer re-enters the
+  semi-naive delta every epoch (the same defect family as the 0.10.0 `and`/`or`
+  changed-bit fix).
+
+### 0.10.0 — bitemporality & provenance semirings
+
+- **Bitemporality** — engine-assigned transaction time alongside Cozo's valid
+  time. A crash-safe monotone commit clock stamps every write to a `TxTime`
+  relation; reads default to the current belief and time-travel with an `@`
+  selector or the `:as_of` query option; `::history` / `::history_gc` (persisted
+  floor) / `::evict` (audited hard deletion) manage the record's lifecycle. Answers
+  "what did we believe at time T about period Y" in-engine, with current-belief
+  reads within ~4–12% of the single-axis baseline.
+- **Provenance semirings** — the same recursive rules can compute existence, cost,
+  confidence, or evidence. `register_custom_aggr` admits user-defined absorptive
+  combines into recursion; `min_cost_k` is a bounded-meet aggregate returning the
+  *k* best derivations per answer **with the evidence chains that justify them**;
+  and `:reconcile` is recompute-based belief revision that keeps derived
+  annotations consistent under base-fact retraction, composed with the tt axis.
+- **Four upstream bugs fixed along the way** — the inverted changed-bit in
+  `and`/`or` meet aggregates, a panic on negated validity atoms, wrong answers from
+  prefix-truncated temporal-column joins, and the braced-`%return` imperative parse
+  panic.
+
+### 0.9.0 — read-only Cypher & corrupt-DB tooling
+
+- **Read-only Cypher query surface** (alpha, opt-in `cypher` feature, off by
+  default) — translate a subset of openCypher to CozoScript so the engine can be
+  evaluated without first learning Datalog. New API: `run_cypher` /
+  `cypher_to_script`, driven by a caller-supplied schema mapping the property-graph
+  model onto stored relations. Datalog stays the native, full-power language; this
+  is a read-only on-ramp (no write clauses). The published PyPI wheel ships without
+  it.
+- **`::repair_corrupt <relation>`** — surgically deletes truncated tuples (short
+  value bytes from interrupted writes) by their intact store keys, giving
+  applications an alternative to dropping a database that fails integrity checks.
+- **Non-panicking `::index create`** — a single truncated tuple used to panic the
+  whole index build (and could make a database unopenable); corrupt tuples are now
+  skipped with a loud error naming the relation, index, and arity mismatch. Both
+  were banked as 0.8.6 and first published here.
+
+### 0.8.5 — flat parallel HNSW builds & snapshot reads
+
+- **Flat in-RAM parallel HNSW bulk build** — `::hnsw create` now builds the graph
+  in contiguous integer-indexed memory (the hnswlib/pgvector/Lucene layout) and
+  inserts in parallel with per-node locks, eliminating the tuple encode/decode and
+  allocator traffic that dominated the old temp-store build.
+  `MNESTIC_INDEX_BUILD_THREADS` controls worker count.
+- **Plain-snapshot read path for read-only scripts** (RocksDB) — immutable scripts
+  no longer open a pessimistic transaction; they read the base DB through a plain
+  MVCC snapshot with no lock-manager bookkeeping (keyed point read p50 28.5 → 23.9
+  µs, −16%, measured).
+- **Batched HNSW neighbour reads** — the search path fetches unvisited neighbours'
+  vectors through one RocksDB `MultiGet` per expansion step instead of a serial
+  point-get per neighbour; the win case is cold-cache / larger-than-RAM data.
+
+### 0.8.4 — per-leg retrieval detail & an FTS concurrency fix
+
+- **Per-leg retrieval detail** — `ReciprocalRankFusion(..., detailed: true)` and
+  `HybridSearch::detailed` switch the output to the long format
+  `[item, fused_score, list_id, leg_rank, leg_score]`, one row per contributing
+  list — the mechanism behind a "why was this retrieved" surface, reconstructing
+  the fused score exactly. Exposed to the Python binding as `detailed: True`.
+- **FTS `avgdl` concurrency fix** — 0.8.3's durable doc-stats counter was one
+  shared storage key rewritten inside every document transaction, making concurrent
+  writers to an FTS-indexed relation conflict on a single row lock (and losing
+  updates through an unlocked read-modify-write). The counter is now process-cached
+  and scan-seeded, with no shared storage key in the hot path; per-query `avgdl`
+  stays O(1).
 
 ### 0.8.3 — native 3-way fused recall & BM25 full-text
 

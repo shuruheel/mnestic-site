@@ -288,6 +288,36 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.10.5",
+    t: "Queries you can always stop",
+    d: "::kill and :timeout now interrupt a query that is genuinely stuck. ::kill dispatches before any storage transaction opens, so on the mem/sqlite backends it no longer queues behind the very query it is trying to kill; and the per-query poison flag is now checked every 4096 pulls inside the relational-algebra enumeration, so even a long single-rule join that emits nothing is finally interruptible. A per-query wall-clock budget rides the same cadence — set it in-script with :timeout, per call, or as a Db-wide default; the effective deadline is the minimum of whichever are set, and expiry raises a distinct eval::timeout (a kill raises eval::killed).",
+    metric: "::kill / :timeout interrupt mid-join · deadline = min of the budgets set · no wall-clock budget on wasm",
+  },
+  {
+    ver: "0.10.5",
+    t: "Naive join order stops being pathological",
+    d: "No pass used to consider join order, so a naively-ordered conjunction — exactly the shape an LLM agent authors — could spin on an N³ intermediate. A stat-free, deterministic greedy pre-pass now reorders the positive relation atoms of an eligible conjunction by fewest new variables, collapsing that blow-up. Results are unchanged: the pass is the identity on any already-greedy-consistent order, so hand-tuned plans stay byte-identical, and it is default on (opt out per query with :reorder written). It is not a cost-based optimizer — there are no cardinality stats — and a genuinely disconnected Cartesian step is warned and annotated in ::explain.",
+    metric: "54.5× on the repro · N³ → N² · default on, :reorder written opts out · results unchanged",
+  },
+  {
+    ver: "0.10.5",
+    t: "Counting without materializing the join",
+    d: "count() over a join streams every match. An opt-in normal-form rewrite instead turns an eligible single-clause count()-over-positive-join into per-key counting sub-rules — a bit-identical, exact-i64 answer computed without enumerating the join at all. It fires only on shapes it can prove exact (a body with any != predicate declines to plain naive evaluation), stays default off this release behind set_query_factorization to soak, and an always-on detector still surfaces a factorization advisory in ::explain.",
+    metric: "4–342× vs a factorizing optimizer · opt-in, default off · bit-identical exact-i64 count",
+  },
+  {
+    ver: "0.10.5",
+    t: "RocksDB, straight from pip",
+    d: "CozoDbPy(\"rocksdb\", path) now works from a plain pip install mnestic — the wheel was compact/SQLite-only before, so the highest-throughput backend was unreachable without building from source. Wheels now ship the storage-rocksdb backend on all five platform legs; the sdist stays compact, so persistence is wheel-only. (Relatedly: a bulk import_relations into an HNSW/FTS/LSH-indexed relation now warns — the bulk path does not maintain those indexes.)",
+    metric: "pip install mnestic ships the rocksdb backend · wheel-only persist · sdist stays compact",
+  },
+  {
+    ver: "0.10.1",
+    t: "Pareto frontiers and intervals, in-engine",
+    d: "register_bounded_meet_aggr opens the bounded-meet category to a host-registered strict partial order: per group, the aggregate keeps only the non-dominated operands — the antichain, the skyline, the Pareto frontier — each survivor its own output row, riding the same stratifier permit and divergence cap as min_cost_k. Alongside it, two interval primitives over half-open [start, end) spans: the interval_overlaps predicate and the interval_coalesce aggregate (touching spans coalesce; empty spans overlap nothing). Plus a bit_and / bit_or changed-bit correctness fix.",
+    metric: "register_bounded_meet_aggr · non-dominated set per group · interval_overlaps / interval_coalesce · Rust-embedded v1",
+  },
+  {
     ver: "0.10.0",
     t: "Bitemporality: an audit trail for belief",
     d: "Every relation can opt into an engine-stamped transaction-time axis alongside valid time. Corrections append instead of overwrite, reads default to the current belief, and time travel answers what the database believed at any past moment — with ::history for the raw timeline, garbage collection that never fakes history, and audited eviction for data-erasure obligations.",
@@ -418,7 +448,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.10.0
+                a maintained fork of CozoDB · v0.10.5
               </span>
             </div>
 
