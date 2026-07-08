@@ -113,6 +113,13 @@ Because it is a whole-Db switch, you turn it on for a workload you have measured
 and leave it off elsewhere. When off, every query evaluates exactly as it did
 before.
 
+<Callout type="fork">
+  Specific to mnestic 0.10.7. The kill switch is now exposed on the **Python**
+  binding — `db.set_query_factorization(True)` flips it and
+  `db.query_factorization()` reads it back. Earlier releases could toggle it only
+  from Rust. The default is still off.
+</Callout>
+
 ## The always-on `::explain` advisory
 
 Independent of the switch, a companion **detector always runs** and annotates

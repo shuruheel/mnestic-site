@@ -62,6 +62,15 @@ best on a deterministic, total ordering:
   rather than a full scan;
 - then **written position** — a stable, unique final tie-break.
 
+<Callout type="note">
+  0.10.7 fixes a tie-break bug in the key-prefix score (`full_key_lookup_bonus`):
+  a full-composite-key filter could be demoted to a partial-key expansion,
+  pulling a high-fan-out edge ahead of a more selective atom and regressing a
+  cyclic-join query (a benchmarker measured LDBC-SNB LSQB Q3 go from ~19s to a
+  timeout; the fix restores it). Result sets are unchanged and the min-new-vars
+  ordering is preserved.
+</Callout>
+
 On the triangle above, that interleaves each new person with the `knows` edge
 that constrains it — equivalent to writing:
 

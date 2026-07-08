@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.10.6) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.10.7) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,25 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.10.7
+
+Two targeted patches on top of 0.10.6. A join-reorder plan-quality fix restores
+a cyclic-join query the 0.10.5 reorder could regress, and the Python binding
+gains the factorization kill switch that was Rust-only. Engine plus the Python
+binding — no `cozorocks`/`mnestic-rocks` change and no query-result change.
+
+- **Fix: the greedy join reorder no longer demotes a full-composite-key filter
+  to a partial-key expansion.** A tie-break bug in `full_key_lookup_bonus` could
+  pull a high-fan-out edge ahead of a more selective atom, regressing a
+  cyclic-join query — a benchmarker measured LDBC-SNB LSQB Q3 go from ~19s to a
+  timeout, and the fix restores it. Result sets are unchanged and the
+  min-new-vars speed-up from 0.10.5 is preserved.
+- **Python: the factorization kill switch is now toggleable.**
+  `db.set_query_factorization(True)` and `db.query_factorization()` are now
+  exposed on the Python binding, so the 0.10.5 factorized-`count()` rewrite —
+  previously reachable only from Rust — can be flipped from Python. The default
+  stays **off**.
 
 ## 0.10.6
 

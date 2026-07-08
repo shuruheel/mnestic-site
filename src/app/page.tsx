@@ -288,6 +288,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.10.7",
+    t: "A join-reorder plan fix, and factorization from Python",
+    d: "Two targeted patches. The default greedy join reorder no longer demotes a full-composite-key filter to a partial-key expansion — a tie-break bug (full_key_lookup_bonus) that could pull a high-fan-out edge ahead of a more selective atom and regress a cyclic-join query (a benchmarker measured LDBC-SNB LSQB Q3 go from ~19s to a timeout; the fix restores it). No query-result change, and the min-new-vars speed-up is preserved. Separately, the Python binding now exposes db.set_query_factorization(True) / db.query_factorization(), so the 0.10.5 factorized-count() kill switch — previously Rust-only — is toggleable from Python. Default stays off.",
+    metric: "LDBC-SNB LSQB Q3 restored · no query-result change · Python factorization toggle · default off",
+  },
+  {
     ver: "0.10.6",
     t: "Legacy databases open again after upgrade",
     d: "An urgent upgrade-safety patch. On 0.10.0–0.10.5 a database created before 0.10.0 could fail to open after upgrading — \"Cannot deserialize relation metadata from bytes\" — because the bitemporality work added a struct field mid-record, which broke positional decoding of legacy relation catalogs and could take the whole database down. 0.10.6 makes catalog decoding tolerant of the legacy layout and switches every catalog write to a self-describing, field-named encoding so it can't recur. No migration: legacy databases open as-is and re-canonicalize on their next write. Anyone who upgraded a pre-0.10.0 database to any 0.10.0–0.10.5 should upgrade.",
@@ -454,7 +460,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.10.6
+                a maintained fork of CozoDB · v0.10.7
               </span>
             </div>
 
