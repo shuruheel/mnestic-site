@@ -288,6 +288,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.10.6",
+    t: "Legacy databases open again after upgrade",
+    d: "An urgent upgrade-safety patch. On 0.10.0–0.10.5 a database created before 0.10.0 could fail to open after upgrading — \"Cannot deserialize relation metadata from bytes\" — because the bitemporality work added a struct field mid-record, which broke positional decoding of legacy relation catalogs and could take the whole database down. 0.10.6 makes catalog decoding tolerant of the legacy layout and switches every catalog write to a self-describing, field-named encoding so it can't recur. No migration: legacy databases open as-is and re-canonicalize on their next write. Anyone who upgraded a pre-0.10.0 database to any 0.10.0–0.10.5 should upgrade.",
+    metric: "legacy catalogs open as-is · self-describing catalog writes · no migration · no query-behavior change",
+  },
+  {
     ver: "0.10.5",
     t: "Queries you can always stop",
     d: "::kill and :timeout now interrupt a query that is genuinely stuck. ::kill dispatches before any storage transaction opens, so on the mem/sqlite backends it no longer queues behind the very query it is trying to kill; and the per-query poison flag is now checked every 4096 pulls inside the relational-algebra enumeration, so even a long single-rule join that emits nothing is finally interruptible. A per-query wall-clock budget rides the same cadence — set it in-script with :timeout, per call, or as a Db-wide default; the effective deadline is the minimum of whichever are set, and expiry raises a distinct eval::timeout (a kill raises eval::killed).",
@@ -448,7 +454,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.10.5
+                a maintained fork of CozoDB · v0.10.6
               </span>
             </div>
 

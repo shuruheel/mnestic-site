@@ -28,6 +28,22 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 
 ## Highlights by release
 
+### 0.10.6 — legacy databases open again after upgrade
+
+- **Fix: relation catalogs written before 0.10.0 no longer fail to open.** An
+  urgent upgrade-safety patch. On 0.10.0–0.10.5 a database created before 0.10.0
+  (or last updated by an index/rename/destroy path) could fail to open with
+  "Cannot deserialize relation metadata from bytes" — the bitemporality work
+  added a `RelationHandle` field mid-struct, which broke positional decoding of
+  the older relation-catalog layout and could take the whole database down. 0.10.6
+  makes catalog decoding tolerant of the legacy layout and switches every catalog
+  write to a **self-describing, field-named** encoding so it can't recur. **No
+  migration** — legacy databases open as-is and re-canonicalize on their next
+  write. Anyone who upgraded a pre-0.10.0 database to any of 0.10.0–0.10.5 should
+  upgrade. Two internal items ride along: the deterministic join-reorder pass is
+  refactored to a pure function with no behavior change, and the
+  `storage-rocksdb` Python-wheel CI is hardened.
+
 ### 0.10.5 — interruptible queries, wall-clock budgets & a stat-free join reorder
 
 - **`::kill` and `:timeout` now actually interrupt a running query.** `::running`

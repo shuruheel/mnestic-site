@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.10.5) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.10.6) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,40 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.10.6
+
+An urgent upgrade-safety patch. The headline fixes a data-availability
+regression the 0.10.0 bitemporality work introduced: a relation catalog last
+written before 0.10.0 (or by an index/rename/destroy path) could fail to open,
+taking the whole database down. **Anyone who upgraded a pre-0.10.0 database to
+any of 0.10.0–0.10.5 should upgrade to 0.10.6.** Engine (`cozo-core`) plus
+Python-wheel CI — no `cozorocks`/`mnestic-rocks` change and no query-behavior
+change.
+
+- **Fix: relation catalogs written before 0.10.0 no longer fail to open**
+  ("Cannot deserialize relation metadata from bytes"). The 0.10.0 bitemporality
+  work inserted a new `RelationHandle` field _mid-struct_, and the pre-0.10.0
+  catalog-write paths encode the struct positionally — so `#[serde(default)]`,
+  which only rescues a _missing trailing_ element, could not recover a relation
+  whose catalog was last written as the older 13-field positional array (any
+  graph created before 0.10.0, or updated by an index/rename/destroy path). It
+  failed to deserialize on open, taking the whole database down. The two-part
+  fix moves the new field to the **last** position so the trailing default
+  applies to legacy layouts, and switches the seven catalog-rewrite paths
+  (`::index`/HNSW/FTS/LSH create, relation rename, index destroy) to a
+  **self-describing, field-named** encoding like the create path — so a future
+  field addition can't reintroduce this class of bug. **No migration:** legacy
+  catalogs stay readable and re-canonicalize to the self-describing form on their
+  next write. Regression-guarded by a real pre-0.10.0 catalog fixture.
+- **Greedy join reorder refactored to a pure function** (internal). The
+  deterministic join-reorder pass shipped in 0.10.5 is now a pure function over a
+  resolved schema view, making it independently unit-testable. No query-plan or
+  behavior change.
+- **Python-wheel CI hardened for `storage-rocksdb`.** The x86_64 manylinux leg
+  now builds on `manylinux_2_28` with `libclang` installed so zstd-sys's bindgen
+  resolves; the aarch64, macOS and Windows legs are unaffected. Wheel-build only
+  — no engine change.
 
 ## 0.10.5
 
