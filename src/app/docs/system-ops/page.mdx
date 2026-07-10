@@ -92,6 +92,53 @@ Display running queries and their IDs.
 Kill a running query specified by `<ID>`. The ID may be obtained by
 `::running`.
 
+## Graph projections
+
+Available in mnestic 0.11.0+. A projection is a named, in-memory adjacency
+structure over stored relations that the [graph
+algorithms](/docs/algorithms#reusing-a-graph-across-queries-mnestic-0110)
+reuse across queries via their `graph:` option, instead of rebuilding it on
+every call.
+
+A projection is **always fresh**: it never serves a transaction data that
+differs from what that transaction's own scan of the source relations would
+return, and writing to a source frees what was built from it. Projections are
+kept in memory only and are **not persisted** — re-create them after a restart.
+
+### `::graph create <NAME> { edges: <REL>, nodes: <REL> }`
+
+Registers a projection. `nodes` is optional; both source names may be written
+bare or quoted. The relations must exist and `edges` must have arity of at
+least two. Index relations, temporary relations, and relations with a `TxTime`
+column cannot be sources.
+
+Nothing is built at create time. Adjacencies materialize on first use, one per
+`(direction, weighted)` combination actually requested.
+
+Naming a `nodes` relation makes isolated vertices real: a vertex that appears
+there but in no edge becomes a genuine degree-0 vertex, ranked by `PageRank`
+and emitted as its own component by `ConnectedComponents`.
+
+```
+::graph create g { edges: knows, nodes: person }
+```
+
+### `::graph drop <NAME>`
+
+Forgets the projection and frees every adjacency built from it.
+
+### `::graph list`
+
+Returns one row per built adjacency — `name`, `edges`, `nodes`, `variant`,
+`est_bytes`, `built_at`, `last_used` — and a single row with null variant
+columns for a projection that has not been used yet.
+
+Total resident size is capped at 512 MiB by default, evicting least-recently-used
+adjacencies first. Hosting applications can change the cap
+(`Db::set_graph_projection_capacity` in Rust,
+`set_graph_projection_capacity` on the Python `CozoDbPy`); `0` disables caching
+while leaving `::graph create`, `::graph list` and `::graph drop` working.
+
 ## Maintenance
 
 ### `::compact`

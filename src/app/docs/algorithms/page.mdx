@@ -16,6 +16,36 @@ If you are using the Cozo libraries in Rust, Python or NodeJS, or if you are
 using the standalone executable, you can also easily define custom fixed rules
 in the hosting environment: see the respective documentations for how to do it.
 
+## Reusing a graph across queries (mnestic 0.11.0+)
+
+Every algorithm below that takes an `edges` relation rebuilds its internal
+adjacency structure from scratch on each call. If you run several algorithms
+over the same graph, or the same algorithm repeatedly, name the graph once with
+[`::graph create`](/docs/system-ops#graph-projections) and pass it with the
+`graph:` option instead of the positional edge relation:
+
+```
+::graph create g { edges: knows, nodes: person }
+
+?[node, group] <~ ConnectedComponents(graph: 'g')
+?[node, rank]  <~ PageRank(graph: 'g', iterations: 20)
+```
+
+The projection is always fresh — writing to `knows` or `person` invalidates it —
+and it is kept in memory only, so re-create it after a restart.
+
+Supported by `ConnectedComponents`, `StronglyConnectedComponents` (`SCC`),
+`PageRank`, `ClusteringCoefficients`, `TopSort`, `BetweennessCentrality`,
+`ClosenessCentrality`, `ShortestPathDijkstra`, `KShortestPathYen`,
+`MinimumSpanningTreePrim`, `MinimumSpanningForestKruskal`, `LabelPropagation`
+and `CommunityDetectionLouvain`. When `graph:` is given, the remaining
+positional inputs shift down by one.
+
+`BFS`, `DFS`, `ShortestPathBFS`, `RandomWalk`, `ShortestPathAStar` and
+`DegreeCentrality` cannot use a projection: they evaluate per-tuple condition,
+heuristic and weight expressions against the edge relation, which a compressed
+adjacency does not carry. Passing `graph:` to them is an error.
+
 ## Utilities
 
 ### Constant(...)
@@ -350,20 +380,28 @@ exploring new data.
 
 ### PageRank(...)
 
-`PageRank(edges[from, to, weight?], undirected: false, theta: 0.85, epsilon: 0.0001, iterations: 10)`
+`PageRank(edges[from, to], nodes[idx]?, undirected: false, theta: 0.85, epsilon: 0.0001, iterations: 20)`
 
 Computes the [PageRank](https://en.wikipedia.org/wiki/PageRank) from the given
-graph with the provided edges, optionally weighted.
+graph with the provided edges.
 
+- `nodes`: An optional second relation naming the vertices (mnestic 0.11.0+).
+  A vertex appearing here but in no edge becomes a real degree-0 vertex: it is
+  ranked, and because it enters `N`, **every other rank changes too**. Without
+  it the vertex set is exactly the set of edge endpoints. Cannot be combined
+  with `graph:` — declare the vertices on the projection with `nodes:` instead.
 - `undirected`: Whether the graph should be interpreted as undirected. Defaults
   to `false`.
 - `theta`: A number between 0 and 1 indicating how much weight in the PageRank
   matrix is due to the explicit edges. A number of 1 indicates no random
-  restarts. Defaults to 0.8.
+  restarts. Defaults to 0.85.
 - `epsilon`: Minimum PageRank change in any node for an iteration to be
-  considered an improvement. Defaults to 0.05.
-- `iterations`: How many iterations to run. Fewer iterations are run if
-  convergence is reached. Defaults to 20.
+  considered an improvement. Defaults to 0.0001. Setting it to `0.0` disables
+  the convergence test, meaning "run exactly `iterations`".
+- `iterations`: The maximum number of iterations to run; fewer are run if
+  convergence is reached. **Defaults to 20 since mnestic 0.11.0** (previously
+  10, which is measurably non-convergent at the default `epsilon`). A warning is
+  logged when this cap stops the run short of `epsilon`.
 - _Returns_: Pairs containing the node label and its PageRank.
 
 ### ClosenessCentrality(...)
