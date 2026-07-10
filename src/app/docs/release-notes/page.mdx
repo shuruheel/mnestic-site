@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.11.0) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.11.1) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,32 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.11.1
+
+**Built-in skyline aggregates.** `pareto_min` and `pareto_max` keep, per group,
+the Pareto frontier of a numeric vector — the points no other point dominates —
+so a query can surface a *contested set* of equally-good answers instead of
+collapsing to a single winner. Pure `cozo-core` — no `cozorocks`/`mnestic-rocks`
+change and no change to any existing query.
+
+- **`pareto_min(v)` / `pareto_max(v)` — the skyline, per group.** Given a numeric
+  vector `v` per row, each keeps the non-dominated frontier under componentwise
+  order — `pareto_min` treats smaller as better on every component, `pareto_max`
+  larger — emitting **one row per survivor**. **Mixed objectives** (minimize
+  price *and* maximize quality) are the sign-flip idiom: negate the maximized
+  components and use `pareto_min`, e.g. `v = [price, -quality]`.
+- **No host registration, reachable from every binding.** The dominance is
+  native (componentwise), so unlike the registered `antichain` bounded-meet from
+  0.10.1 these need no `register_bounded_meet_aggr` — they work from the PyPI
+  wheel, `cozo-bin`, langchain and llama-index through plain `run_script`. They
+  also compose in recursive rules, inheriting the confluence and cycle-pruning of
+  the dominance aggregate they build on.
+- **A malformed operand is a loud error** — a non-list, a non-numeric or NaN
+  component, or an empty vector fails the query rather than silently dropping the
+  row.
+
+→ [Aggregations](/docs/aggregations)
 
 ## 0.11.0
 

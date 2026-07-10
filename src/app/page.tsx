@@ -395,7 +395,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.11.0
+                a maintained fork of CozoDB · v0.11.1
               </span>
             </div>
 
@@ -599,7 +599,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — every fork release, 0.8.0 through 0.11.0.
+            — every fork release, 0.8.0 through 0.11.1.
           </p>
         </section>
 

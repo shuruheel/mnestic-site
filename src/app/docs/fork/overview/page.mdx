@@ -28,6 +28,24 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 
 ## Highlights by release
 
+### 0.11.1 — built-in skyline aggregates
+
+- **`pareto_min` / `pareto_max` keep the whole Pareto frontier, per group.**
+  Given a numeric vector per row, each keeps the non-dominated points under
+  componentwise order (`pareto_min` = smaller is better on every component,
+  `pareto_max` = larger), one row per survivor — a query can surface a
+  *contested set* of equally-good answers instead of collapsing to a single min
+  or max. **Mixed objectives** (minimize price, maximize quality) use the
+  sign-flip idiom: negate the maximized components and use `pareto_min`.
+- **Native dominance — no host registration.** Unlike the registered `antichain`
+  bounded-meet from 0.10.1, the componentwise comparison is built in, so these
+  need no `register_bounded_meet_aggr` and are reachable from **every** binding —
+  the PyPI wheel, `cozo-bin`, langchain, llama-index — through plain
+  `run_script`. They compose in recursive rules too, and a malformed operand
+  (non-list, non-numeric or NaN component, empty vector) is a loud error.
+
+→ [Aggregations](/docs/aggregations)
+
 ### 0.11.0 — cached graph projections
 
 - **Name a graph once and reuse it across queries.** `::graph create g { edges:

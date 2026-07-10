@@ -102,6 +102,43 @@ broken non-deterministically.
 
 `var` must be bytes. Returns the bitwise 'or' of the values.
 
+### pareto_min(v) / pareto_max(v)
+
+`pareto_min(v)`, `pareto_max(v)`
+
+Skyline (Pareto-frontier) aggregates, added in mnestic 0.11.1. `v` is a numeric
+vector (a list of numbers). Per group, each keeps the **non-dominated frontier**
+under componentwise order — `pareto_min` treats smaller as better on every
+component, `pareto_max` larger — emitting **one row per survivor**, so a single
+group can yield several rows. A point is dropped only when some other point is at
+least as good on every component and strictly better on at least one.
+
+Minimizing both coordinates of five 2-D points keeps the lower-left frontier and
+drops the two dominated points (`[3, 3]` and `[2, 6]`):
+
+```prolog
+cand[g, p] <- [['a', [1, 5]], ['a', [2, 2]], ['a', [5, 1]],
+               ['a', [3, 3]], ['a', [2, 6]]]
+surv[g, pareto_min(p)] := cand[g, p]
+?[g, p] := surv[g, p]
+# => ['a', [1, 5]], ['a', [2, 2]], ['a', [5, 1]]
+```
+
+**Mixed objectives** — minimizing some components while maximizing others — are
+expressed by negating the maximized components and using `pareto_min`:
+
+```prolog
+?[frontier] := offer[price, quality],
+               v = [price, -quality],
+               frontier = pareto_min(v)
+```
+
+The dominance is native (componentwise), so unlike the host-registered
+`antichain` bounded-meet these need no registration and are reachable from every
+binding through `run_script`. They compose in recursive rules. A malformed
+operand — a non-list, a non-numeric or `NaN` component, or an empty vector — is a
+loud error, never a silently dropped row.
+
 ## Ordinary aggregations
 
 ### count(var)
