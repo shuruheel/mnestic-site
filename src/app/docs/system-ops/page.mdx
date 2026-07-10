@@ -33,6 +33,12 @@ List all columns for the stored relation `<REL_NAME>`.
 
 List all indices for the stored relation `<REL_NAME>`.
 
+### `::fixed_rules`
+
+List the names of every registered fixed rule — the built-in utilities and
+graph algorithms, plus any custom rules the hosting application has registered.
+These are the names usable on the right of `<~` in a query.
+
 ### `::describe <REL_NAME> <DESCRIPTION>?`
 
 Describe the stored relation `<REL_NAME>` and store it in the metadata. If
@@ -58,6 +64,19 @@ for more details.
 
 Manage HNSW indices. See [Proximity search](/docs/proximity-search) for more
 details.
+
+### `::fts ...`
+
+Manage full-text search indices, with the same
+`::fts create <REL>:<NAME> { ... }` / `::fts drop <REL>:<NAME>` shape as
+`::index`. A full-text index lets a query match stored text by tokens rather
+than by exact value.
+
+### `::lsh ...`
+
+Manage MinHash LSH (locality-sensitive hashing) indices, with the same
+create/drop shape as `::index`. An LSH index supports near-duplicate detection
+over text by Jaccard similarity of shingles.
 
 ### `::show_triggers <REL_NAME>`
 
@@ -145,5 +164,44 @@ while leaving `::graph create`, `::graph list` and `::graph drop` working.
 
 Instructs Cozo to run a compaction job. Compaction makes the database smaller
 on disk and faster for read queries.
+
+### `::repair_corrupt <REL_NAME>`
+
+Available in mnestic. Surgically deletes tuples in `<REL_NAME>` whose stored
+value is shorter than the schema demands — the residue of an interrupted write.
+Where a database that fails an integrity check would otherwise have to be
+dropped wholesale, this repairs the one damaged relation in place. It requires
+write access and cannot run in read-only mode.
+
+## Time travel
+
+Available in mnestic. A relation whose schema declares a `TxTime` column keeps
+the full history of its rows: every write appends a new record stamped with the
+engine's transaction-time clock, rather than overwriting. The operations below
+inspect and prune that history. See
+[Beyond CozoScript](/docs/beyond-cozoscript) for the `TxTime` column type and
+`@` time-travel reads.
+
+### `` ::history <REL_NAME> <KEYS> <LIMIT>? <OFFSET>? ``
+
+Returns every `(valid time, transaction time)` record of the given keys of a
+`TxTime` relation — the whole belief timeline, not just current belief.
+`<KEYS>` is a list of key-lists, e.g. `[[1], [2]]`. `<LIMIT>` and `<OFFSET>`
+are optional bare integers for paging. Read-only; requires at least read access.
+
+### `::history_gc <REL_NAME> <CUTOFF>`
+
+Drops superseded historical records below the transaction-time `<CUTOFF>` (in
+microseconds) and persists a garbage-collection floor, reclaiming space while
+leaving current belief and any history above the cutoff intact. Requires write
+access.
+
+### `` ::evict <REL_NAME> <KEYS> unredacted? ``
+
+Hard-deletes every record — all history — of the given keys, for data-erasure
+obligations such as GDPR. An audit row is written into a companion relation
+`mnestic_evict_audit` in the same transaction; the optional `unredacted`
+keyword records the evicted keys in that audit row rather than a redacted
+digest. Requires write access.
 
 <Attribution page="sysops.html" />
