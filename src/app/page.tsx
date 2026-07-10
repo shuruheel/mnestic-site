@@ -5,6 +5,7 @@ import { Logo, Mark } from "./logo";
    Links
    ────────────────────────────────────────────────────────────── */
 const GITHUB = "https://github.com/shuruheel/mnestic";
+const BENCHMARKS = "https://github.com/shuruheel/mnestic-benchmarks";
 const DOCS = "/docs";
 const CRATE = "https://crates.io/crates/mnestic";
 const UPSTREAM = "https://github.com/cozodb/cozo";
@@ -282,7 +283,7 @@ const capabilities = [
   {
     k: "06",
     t: "Bitemporal time travel",
-    d: "Relations carry valid time and, since 0.10.0, an engine-stamped transaction time. Query the graph as it was — and as it was believed — at any point: memory you can rewind and audit, not just overwrite.",
+    d: "Relations carry valid time and, since 0.10.0, an engine-stamped transaction time. Query the graph as it was, or as it was believed, at any point: memory you can rewind and audit, not just overwrite.",
   },
 ];
 
@@ -290,110 +291,38 @@ const forkItems = [
   {
     ver: "0.11.0",
     t: "Cache a graph once, reuse it across queries",
-    d: "::graph create g { edges: knows, nodes: person } names an in-memory adjacency that twelve graph algorithms reuse via a graph: option, instead of scanning the edges and rebuilding the CSR on every call. It is always fresh — a projection never serves a transaction data differing from what that transaction's own scan of the sources would return, and writing to a source frees what was built from it; under write churn it degrades to build-per-query, never stale. Projections are in-memory and are not persisted. Measured on a 400k-edge graph vs the previous positional form: ConnectedComponents 127 ms → 7.9 ms (16×), PageRank at 20 iterations 150 ms → 10 ms (15×), ClusteringCoefficients 169 ms → 56 ms (3×) — the gain is the cached setup, so it shrinks as the kernel dominates. Also: PageRank's default iterations is now 20 (was 10, a non-convergent below-upstream default — pass iterations: 10 to restore the old numbers); PageRank can take a node relation so edge-less vertices are ranked instead of dropped; an empty edge relation no longer aborts seven algorithms; and multi_transaction no longer deadlocks a process by parking a rayon worker.",
-    metric: "400k edges: CC 16× · PageRank 15× · in-memory, always fresh · BREAKING: PageRank iterations default 10→20",
-  },
-  {
-    ver: "0.10.7",
-    t: "A join-reorder plan fix, and factorization from Python",
-    d: "Two targeted patches. The default greedy join reorder no longer demotes a full-composite-key filter to a partial-key expansion — a tie-break bug (full_key_lookup_bonus) that could pull a high-fan-out edge ahead of a more selective atom and regress a cyclic-join query (a benchmarker measured LDBC-SNB LSQB Q3 go from ~19s to a timeout; the fix restores it). No query-result change, and the min-new-vars speed-up is preserved. Separately, the Python binding now exposes db.set_query_factorization(True) / db.query_factorization(), so the 0.10.5 factorized-count() kill switch — previously Rust-only — is toggleable from Python. Default stays off.",
-    metric: "LDBC-SNB LSQB Q3 restored · no query-result change · Python factorization toggle · default off",
-  },
-  {
-    ver: "0.10.6",
-    t: "Legacy databases open again after upgrade",
-    d: "An urgent upgrade-safety patch. On 0.10.0–0.10.5 a database created before 0.10.0 could fail to open after upgrading — \"Cannot deserialize relation metadata from bytes\" — because the bitemporality work added a struct field mid-record, which broke positional decoding of legacy relation catalogs and could take the whole database down. 0.10.6 makes catalog decoding tolerant of the legacy layout and switches every catalog write to a self-describing, field-named encoding so it can't recur. No migration: legacy databases open as-is and re-canonicalize on their next write. Anyone who upgraded a pre-0.10.0 database to any 0.10.0–0.10.5 should upgrade.",
-    metric: "legacy catalogs open as-is · self-describing catalog writes · no migration · no query-behavior change",
-  },
-  {
-    ver: "0.10.5",
-    t: "Queries you can always stop",
-    d: "::kill and :timeout now interrupt a query that is genuinely stuck. ::kill dispatches before any storage transaction opens, so on the mem/sqlite backends it no longer queues behind the very query it is trying to kill; and the per-query poison flag is now checked every 4096 pulls inside the relational-algebra enumeration, so even a long single-rule join that emits nothing is finally interruptible. A per-query wall-clock budget rides the same cadence — set it in-script with :timeout, per call, or as a Db-wide default; the effective deadline is the minimum of whichever are set, and expiry raises a distinct eval::timeout (a kill raises eval::killed).",
-    metric: "::kill / :timeout interrupt mid-join · deadline = min of the budgets set · no wall-clock budget on wasm",
+    d: "::graph create names an in-memory adjacency that twelve graph algorithms reuse instead of rebuilding it on every call — always fresh, never stale under write churn.",
+    metric: "400k edges: ConnectedComponents 16× · PageRank 15× · ClusteringCoefficients 3×",
   },
   {
     ver: "0.10.5",
     t: "Naive join order stops being pathological",
-    d: "No pass used to consider join order, so a naively-ordered conjunction — exactly the shape an LLM agent authors — could spin on an N³ intermediate. A stat-free, deterministic greedy pre-pass now reorders the positive relation atoms of an eligible conjunction by fewest new variables, collapsing that blow-up. Results are unchanged: the pass is the identity on any already-greedy-consistent order, so hand-tuned plans stay byte-identical, and it is default on (opt out per query with :reorder written). It is not a cost-based optimizer — there are no cardinality stats — and a genuinely disconnected Cartesian step is warned and annotated in ::explain.",
-    metric: "54.5× on the repro · N³ → N² · default on, :reorder written opts out · results unchanged",
+    d: "A deterministic greedy pre-pass reorders join atoms by fewest new variables before evaluation — exactly the shape an LLM agent tends to author. Results are unchanged; hand-tuned plans stay byte-identical.",
+    metric: "54.5× on the repro · N³ → N² · default on, results unchanged",
   },
   {
     ver: "0.10.5",
-    t: "Counting without materializing the join",
-    d: "count() over a join streams every match. An opt-in normal-form rewrite instead turns an eligible single-clause count()-over-positive-join into per-key counting sub-rules — a bit-identical, exact-i64 answer computed without enumerating the join at all. It fires only on shapes it can prove exact (a body with any != predicate declines to plain naive evaluation), stays default off this release behind set_query_factorization to soak, and an always-on detector still surfaces a factorization advisory in ::explain.",
-    metric: "4–342× vs a factorizing optimizer · opt-in, default off · bit-identical exact-i64 count",
-  },
-  {
-    ver: "0.10.5",
-    t: "RocksDB, straight from pip",
-    d: "CozoDbPy(\"rocksdb\", path) now works from a plain pip install mnestic — the wheel was compact/SQLite-only before, so the highest-throughput backend was unreachable without building from source. Wheels now ship the storage-rocksdb backend on all five platform legs; the sdist stays compact, so persistence is wheel-only. (Relatedly: a bulk import_relations into an HNSW/FTS/LSH-indexed relation now warns — the bulk path does not maintain those indexes.)",
-    metric: "pip install mnestic ships the rocksdb backend · wheel-only persist · sdist stays compact",
-  },
-  {
-    ver: "0.10.1",
-    t: "Pareto frontiers and intervals, in-engine",
-    d: "register_bounded_meet_aggr opens the bounded-meet category to a host-registered strict partial order: per group, the aggregate keeps only the non-dominated operands — the antichain, the skyline, the Pareto frontier — each survivor its own output row, riding the same stratifier permit and divergence cap as min_cost_k. Alongside it, two interval primitives over half-open [start, end) spans: the interval_overlaps predicate and the interval_coalesce aggregate (touching spans coalesce; empty spans overlap nothing). Plus a bit_and / bit_or changed-bit correctness fix.",
-    metric: "register_bounded_meet_aggr · non-dominated set per group · interval_overlaps / interval_coalesce · Rust-embedded v1",
-  },
-  {
-    ver: "0.10.0",
-    t: "Bitemporality: an audit trail for belief",
-    d: "Every relation can opt into an engine-stamped transaction-time axis alongside valid time. Corrections append instead of overwrite, reads default to the current belief, and time travel answers what the database believed at any past moment — with ::history for the raw timeline, garbage collection that never fakes history, and audited eviction for data-erasure obligations.",
-    metric: "current-belief reads within ~4–12% of single-axis · nothing comparable in-engine in an embedded database",
+    t: "Queries you can always stop",
+    d: "::kill and :timeout now interrupt a query that's genuinely stuck, checked every 4096 pulls inside even a long single-rule join.",
+    metric: "::kill / :timeout interrupt mid-join · deadline = min of the budgets set",
   },
   {
     ver: "0.10.0",
     t: "Answers that carry their evidence",
-    d: "Provenance-semiring aggregates: register a custom combine for recursive rules, or ask for the k best derivations per answer — each with the exact evidence chain that justifies it. :reconcile keeps derived results consistent when base facts are retracted, recording the whole revision as one auditable belief event.",
+    d: "Provenance-semiring aggregates return the k best derivations per answer, each with its exact evidence chain. :reconcile keeps derived results consistent when base facts are retracted.",
     metric: "min_cost_k top-k proofs · register_custom_aggr · :reconcile belief revision",
-  },
-  {
-    ver: "0.9.0",
-    t: "Cypher reads (alpha)",
-    d: "A read-only openCypher subset translates to CozoScript over your stored relations — evaluate the engine without learning Datalog first. MATCH / WHERE / RETURN with aggregates, ORDER BY, SKIP and LIMIT; Datalog stays the native, full-power language.",
-    metric: "opt-in cypher feature · run_cypher / cypher_to_script",
-  },
-  {
-    ver: "0.8.6",
-    t: "Repair corruption without losing data",
-    d: "A few truncated tuples used to put a whole relation in doubt. ::repair_corrupt now surgically removes only the damaged rows by their intact keys and leaves everything else in place — recovery instead of a rebuild, and never a wholesale delete of your data.",
-    metric: "deletes only short-arity tuples · the rest of your data stays put",
-  },
-  {
-    ver: "0.8.1–0.8.4",
-    t: "Three-way recall in one call",
-    d: "Vector similarity, keyword match, and graph proximity — the three signals behind “what should I recall right now” — fuse in a single typed call, ranked by Reciprocal Rank Fusion and diversified with MMR. It used to take about seven hand-written Datalog rules, and every result can now tell you which signals surfaced it.",
-    metric: "all three signals, one transaction · ~4× faster than stitching it by hand",
-  },
-  {
-    ver: "0.8.1–0.8.5",
-    t: "Index builds that never block reads",
-    d: "Building a vector (HNSW) or full-text index used to lock the table and stall every reader until it finished. Now the build happens off to the side while reads keep flowing the whole time — and the build itself is up to 15× faster.",
-    metric: "40k vectors indexed in ~19 s · 90k reads served mid-build",
   },
   {
     ver: "0.8.3",
     t: "Full-text search that ranks correctly",
-    d: "Keyword search now scores with Okapi BM25 — the ranking standard behind modern search engines — instead of raw term counts. The keyword half of hybrid recall actually surfaces the right passages.",
+    d: "Keyword search now scores with Okapi BM25, the ranking standard behind modern search engines, instead of raw term counts.",
     metric: "fused recall climbs 0.75 → 0.954 on a 40k-chunk corpus",
-  },
-  {
-    ver: "0.8.5",
-    t: "Reads that don’t wait on writers",
-    d: "Read-only queries now read through a plain snapshot instead of opening a transaction, so a busy writer can never block a reader. For an agent recalling while it ingests, that means steady, predictable latency.",
-    metric: "keyed point reads −16% p50, −19% p99",
   },
   {
     ver: "0.8.0",
     t: "Key lookups skip the full scan",
-    d: "Filtering a stored relation by an exact key now compiles to a direct keyed seek instead of scanning every row — the difference between a constant-time lookup and a full table walk on your hottest queries.",
+    d: "Filtering by an exact key now compiles to a direct keyed seek instead of scanning every row — constant-time instead of a full table walk.",
     metric: "~28× faster single-row primary-key lookups",
-  },
-  {
-    ver: "0.8.0",
-    t: "Time-ordered IDs for memory streams",
-    d: "rand_ulid() generates sortable, time-ordered identifiers — ideal for append-only memory you scan by recency, with the creation time recoverable straight from the key.",
-    metric: "lexicographically sortable · time-ordered scans",
   },
 ];
 
@@ -666,6 +595,12 @@ export default function Home() {
               </div>
             ))}
           </div>
+          <p className="mt-6 font-mono text-xs text-[var(--color-paper-faint)]">
+            <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
+              Full release history →
+            </a>{" "}
+            — every fork release, 0.8.0 through 0.11.0.
+          </p>
         </section>
 
         {/* ── Marquee feature: bitemporality ────────────── */}
@@ -761,37 +696,18 @@ export default function Home() {
             engine here that gets all three right.
           </p>
 
-          <div className="mb-12 grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] md:grid-cols-3">
+          <ul className="mb-12 max-w-2xl space-y-3">
             {[
-              {
-                n: "01",
-                t: "It has a graph signal at all",
-                d: "Graph proximity is correlated but distinct from vector and keyword: drop it and you lose recall the other two can't recover. It's the single largest effect in the run, with the graph-less engines (LanceDB) landing far below. This is why graph-augmented retrieval exists.",
-              },
-              {
-                n: "02",
-                t: "One store, one call, no glue",
-                d: "mnestic serves all three signals from one embedded store and fuses them in a single transactional call. SQLite, DuckDB and Kuzu keep them in one process but fuse in app code (three queries + a hand-rolled RRF); LanceDB fuses natively but needs a second system for graph.",
-              },
-              {
-                n: "03",
-                t: "Read-your-writes on every signal",
-                d: "An agent writes a memory and must recall it immediately. mnestic's indexes update in the same transaction, giving 100% fused read-your-writes. DuckDB's full-text index is a build-time snapshot: a new memory is unsearchable by keyword (0%) until a rebuild. A static-corpus drag race hides this entirely.",
-              },
-            ].map((p) => (
-              <div key={p.n} className="bg-[var(--color-ink)] p-7">
-                <span className="font-mono text-xs text-[var(--color-synapse)]">
-                  {p.n}
-                </span>
-                <h3 className="mb-3 mt-4 font-serif text-lg font-medium leading-snug">
-                  {p.t}
-                </h3>
-                <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
-                  {p.d}
-                </p>
-              </div>
+              "Graph proximity is the single largest effect in the run: the graph-less LanceDB lands far below on recall alone.",
+              "mnestic fuses all three signals from one embedded store in a single transactional call; SQLite, DuckDB and Kuzu fuse in app code, and LanceDB still needs a second system for graph.",
+              "mnestic's indexes update in the same transaction as the write, so a new memory is recallable on every signal immediately. DuckDB's full-text index is a build-time snapshot, unsearchable by keyword until rebuilt.",
+            ].map((li) => (
+              <li key={li} className="flex gap-3 text-sm text-[var(--color-paper-dim)]">
+                <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-[var(--color-synapse)]" />
+                {li}
+              </li>
             ))}
-          </div>
+          </ul>
 
           <p className="mb-6 max-w-2xl text-base leading-relaxed text-[var(--color-paper-dim)]">
             On quality, mnestic hits{" "}
@@ -847,66 +763,52 @@ export default function Home() {
             </table>
           </div>
 
-          <div className="mt-8 grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] md:grid-cols-2">
-            <div className="bg-[var(--color-ink)] p-7">
-              <h3 className="mb-3 font-serif text-xl font-medium">
-                The native call is the fast path
-              </h3>
-              <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
-                mnestic&apos;s one-call 3-way fusion runs at{" "}
-                <span className="font-mono text-[var(--color-paper)]">~42 ms p50</span>,{" "}
-                <strong className="text-[var(--color-paper)]">faster than
-                DuckDB&apos;s decomposed path</strong> and about 4× faster than
-                hand-decomposing it yourself. It&apos;s the only engine here that
-                fuses three signals in a single call; LanceDB&apos;s native call
-                covers just two.
-              </p>
-            </div>
-            <div className="bg-[var(--color-ink)] p-7">
-              <h3 className="mb-3 font-serif text-xl font-medium">
-                Latency, in context
-              </h3>
-              <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
-                mnestic isn&apos;t the lowest absolute latency at this scale, but
-                the numbers hold up off the test wheel. Re-measured on the{" "}
-                <span className="font-mono text-[var(--color-paper)]">RocksDB</span>{" "}
-                backend it actually runs, with{" "}
-                <span className="text-[var(--color-paper)]">real
-                sentence-transformer embeddings</span>, the decomposed path&apos;s
-                tail falls (p99{" "}
-                <span className="font-mono text-[var(--color-paper)]">181 ms</span>{" "}
-                vs 258 on the wheel) and the native 3-way call stays around
-                40 ms. What holds is quality and capability: matching the best
-                indexed engine while fusing a signal the others can&apos;t.
-              </p>
-            </div>
+          <div className="mt-8 rounded-xl border border-[var(--color-line)] bg-[var(--color-ink)] p-7">
+            <h3 className="mb-3 font-serif text-xl font-medium">
+              The native call, in context
+            </h3>
+            <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
+              mnestic&apos;s one-call 3-way fusion runs at{" "}
+              <span className="font-mono text-[var(--color-paper)]">~42 ms p50</span>,
+              about 4× faster than hand-decomposing the same query, and it&apos;s the
+              only call here fusing three signals at once; LanceDB&apos;s native call
+              covers just two. It isn&apos;t the lowest absolute latency at this
+              scale, but re-measured on the RocksDB backend it actually runs, with
+              real sentence-transformer embeddings, the tail improves (p99{" "}
+              <span className="font-mono text-[var(--color-paper)]">181 ms</span>{" "}
+              vs 258 on the test wheel) — matching the best indexed engine on
+              quality while fusing a signal the others can&apos;t.
+            </p>
           </div>
 
           <p className="mt-5 font-mono text-xs leading-relaxed text-[var(--color-paper-faint)]">
-            † DuckDB&apos;s full-text index is a build-time snapshot — its fused
-            read-your-writes is 99% overall but 0% for the keyword leg until a
-            rebuild.{" "}
-            Source: the mnestic-benchmarks hybrid suite, summarized in the{" "}
+            † DuckDB&apos;s full-text index is a build-time snapshot: 0% fused
+            read-your-writes on the keyword leg until a rebuild. *SQLite&apos;s
+            recall reflects an exact brute-force scan, not an indexed ANN search.
+            Small scale (40k chunks, 1,000 queries, k=10, 2-hop graph), 2026-05-31,
+            macOS arm64; numbers are hardware-specific. Recall@10 uses synthetic
+            embeddings on the SQLite wheel; latency is separately validated on the
+            RocksDB backend with real sentence-transformer embeddings. Kuzu is
+            excluded: its extension host has been offline since the project&apos;s
+            Oct-2025 archival.{" "}
             <a
-              href={`${GITHUB}/blob/main/CHANGELOG-FORK.md`}
+              href={`${BENCHMARKS}/blob/main/docs/METHODOLOGY.md`}
               target="_blank"
               rel="noreferrer"
               className="link-grow text-[var(--color-paper-dim)]"
             >
-              0.10.0 changelog
+              Full methodology
+            </a>{" "}
+            ·{" "}
+            <a
+              href={`${BENCHMARKS}/blob/main/docs/RESULTS.md`}
+              target="_blank"
+              rel="noreferrer"
+              className="link-grow text-[var(--color-paper-dim)]"
+            >
+              raw results
             </a>
-. Small scale (40k chunks, 10k entities, 50k edges, dim 384) · 1,000
-            queries, k=10, 2-hop graph · 2026-05-31 · macOS arm64. Numbers are
-            hardware-specific.{" "}
-            <strong className="text-[var(--color-paper-dim)]">Recall@10</strong>{" "}
-            is the synthetic text-derived-embedding run on the SQLite-backed wheel,
-            where the vector signal is meaningful by construction;{" "}
-            <strong className="text-[var(--color-paper-dim)]">latency</strong>{" "}
-            is additionally validated on the RocksDB backend with real
-            sentence-transformer embeddings. *SQLite&apos;s recall reflects an
-            exact brute-force KNN scan (no ANN index), not a like-for-like indexed
-            search. Kuzu did not complete (extension host offline since its
-            Oct-2025 archival).
+            .
           </p>
         </section>
 
