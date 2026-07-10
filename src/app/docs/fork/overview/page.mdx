@@ -1,7 +1,7 @@
 export const metadata = {
   title: "What mnestic adds",
   description:
-    "An overview of how mnestic diverges from CozoDB: bitemporality, provenance semirings, interruptible queries with wall-clock budgets, a stat-free join reorder, native 3-way fused recall, BM25 full-text search, equality pushdown, and ULID keys.",
+    "An overview of how mnestic diverges from CozoDB: cached graph projections, bitemporality, provenance semirings, interruptible queries with wall-clock budgets, a stat-free join reorder, native 3-way fused recall, BM25 full-text search, equality pushdown, and ULID keys.",
 };
 
 # What mnestic adds
@@ -27,6 +27,35 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 0.7.7.
 
 ## Highlights by release
+
+### 0.11.0 — cached graph projections
+
+- **Name a graph once and reuse it across queries.** `::graph create g { edges:
+  knows, nodes: person }` builds a named, in-memory adjacency over stored
+  relations that twelve graph algorithms reuse via a `graph:` option, instead of
+  scanning the edges and rebuilding the CSR on every call. On a 400,000-edge
+  graph, reusing the projection took `ConnectedComponents` from 127 ms to 7.9 ms
+  (**16×**), `PageRank` at 20 iterations from 150 ms to 10 ms (**15×**), and
+  `ClusteringCoefficients` from 169 ms to 56 ms (**3×**) — what is cached is the
+  setup, so the gain shrinks as the kernel dominates. The projection is **always
+  fresh** — it never serves a transaction data that differs from its own scan of
+  the sources, and writing to a source frees what was built from it; under write
+  churn it degrades to build-per-query, never stale. Projections are in-memory
+  and **not persisted**, and a 512 MiB LRU ceiling (settable from Rust and
+  Python; `0` disables caching) bounds their footprint.
+- **BREAKING (results): `PageRank`'s default `iterations` is now 20, up from
+  10** — a below-upstream default that is measurably non-convergent at the
+  default `epsilon`. **Pass `iterations: 10` to restore the old numbers.**
+  `PageRank` also now accepts an optional node relation (as `ConnectedComponents`
+  already did), so edge-less vertices are ranked instead of silently dropped, and
+  warns when the iteration cap stops it short of `epsilon`.
+- **Fix: an empty edge relation no longer aborts the process** in seven graph
+  algorithms (it used to panic; they now return no rows, as `PageRank` already
+  did). And **`multi_transaction` no longer deadlocks a process** by parking a
+  `rayon` worker for the transaction's whole lifetime — it now runs on a
+  dedicated thread, which affects every caller of that API.
+
+→ [Graph projections](/docs/fork/graph-projections) · [Utilities & algorithms](/docs/algorithms#reusing-a-graph-across-queries-mnestic-0110) · [System ops](/docs/system-ops#graph-projections)
 
 ### 0.10.7 — a join-reorder plan fix, and factorization from Python
 

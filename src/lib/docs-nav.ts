@@ -45,6 +45,7 @@ export const docsNav: DocGroup[] = [
     group: "mnestic — the fork",
     pages: [
       { slug: "fork/overview", title: "What mnestic adds", short: "Overview" },
+      { slug: "fork/graph-projections", title: "Cached graph projections", short: "Graph projections" },
       { slug: "fork/hybrid-retrieval", title: "Hybrid retrieval (RRF + MMR)", short: "Hybrid retrieval" },
       { slug: "fork/non-blocking-hnsw", title: "Non-blocking HNSW builds", short: "Non-blocking HNSW" },
       { slug: "fork/equality-pushdown", title: "Equality pushdown" },

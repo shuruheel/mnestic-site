@@ -1,0 +1,168 @@
+export const metadata = {
+  title: "Cached graph projections",
+  description:
+    "mnestic can name an in-memory adjacency over stored relations with ::graph create and reuse it across queries via a graph: option, so twelve graph algorithms skip rebuilding the CSR on every call. Always fresh, in-memory only, added in 0.11.0.",
+};
+
+# Cached graph projections
+
+<Callout type="fork">
+  Specific to mnestic 0.11.0. Projections are opt-in per query (pass `graph:`) and
+  **always fresh** — a projection never serves a transaction data that differs
+  from what that transaction's own scan of the sources would return, so results
+  are unchanged. Projections are held in memory only and are **not persisted**.
+</Callout>
+
+## The problem
+
+Every graph algorithm that takes an `edges` relation rebuilds its internal
+adjacency from scratch on each call: it scans the edge relation and builds a
+compressed-sparse-row (CSR) structure before the kernel — PageRank, connected
+components, clustering — ever runs. If you run several algorithms over the same
+graph, or the same algorithm repeatedly, you pay that scan-and-build every time,
+even when the underlying relations have not changed.
+
+On a 400,000-edge graph the setup dominates the cheaper kernels: a single
+`ConnectedComponents` call spends ~127 ms, most of it building the CSR rather
+than finding components.
+
+## What changed
+
+mnestic adds a **named, in-memory projection** over stored relations. Build it
+once, then hand it to any supporting algorithm with a `graph:` option in place of
+the positional edge relation:
+
+```
+::graph create g { edges: knows, nodes: person }
+
+?[node, group] <~ ConnectedComponents(graph: 'g')
+?[node, rank]  <~ PageRank(graph: 'g', iterations: 20)
+```
+
+`nodes` is optional; both source names may be written bare or quoted. Nothing is
+built at create time — adjacencies materialize on first use, one per
+`(direction, weighted)` variant actually requested, and concurrent cold callers
+coalesce into a single build rather than each building their own.
+
+Measured on a 400,000-edge graph (release build; *cold* is the previous
+positional form, i.e. today's behavior):
+
+| kernel | cold | warm | speed-up |
+| --- | --- | --- | --- |
+| `ConnectedComponents` | 127 ms | 7.9 ms | **16×** |
+| `PageRank`, 20 iterations | 150 ms | 10 ms | **15×** |
+| `ClusteringCoefficients` | 169 ms | 56 ms | **3×** |
+
+What is cached is the **setup** — scanning the edge relation and building the CSR
+— so the gain shrinks as the kernel itself dominates: `ClusteringCoefficients`
+spends its time counting triangles, and `CommunityDetectionLouvain` rebuilds a
+coarsened graph per level internally, so only its first build is reused.
+
+## Always fresh, never stale
+
+A projection is a cache you never have to invalidate by hand:
+
+- It **never serves a transaction data that differs** from what that
+  transaction's own scan of the source relations would return — in either
+  direction, so a long-lived reader is never handed an entry newer than its own
+  snapshot.
+- **Writing to a source frees the adjacencies built from it.** Under continuous
+  write churn the cache degrades to build-per-query — the same cost you pay
+  today — and it never goes stale.
+- Projections are held **in memory only and are not persisted.** Re-create them
+  after a restart.
+
+A database that defines no projections is unaffected in the steady state: it
+pays one atomic load per transaction, one set insert per mutation *statement*
+(not per row), and one uncontended mutex acquisition per *writing* commit;
+read-only commits touch none of it.
+
+## Which algorithms can use one
+
+`graph:` is accepted by twelve algorithms, in place of their positional edge
+relation — their remaining positional inputs shift down by one, and optional
+trailing inputs stay optional:
+
+`ConnectedComponents`, `StronglyConnectedComponents` (`SCC`), `PageRank`,
+`ClusteringCoefficients`, `TopSort`, `BetweennessCentrality`,
+`ClosenessCentrality`, `ShortestPathDijkstra`, `KShortestPathYen`,
+`MinimumSpanningTreePrim`, `MinimumSpanningForestKruskal`, `LabelPropagation`
+and `CommunityDetectionLouvain`.
+
+`BFS`, `DFS`, `ShortestPathBFS`, `RandomWalk`, `ShortestPathAStar` and
+`DegreeCentrality` **cannot** use a projection: they evaluate per-tuple
+condition, heuristic and weight expressions against the edge relation, which a
+compressed adjacency does not carry. Passing `graph:` to one of them is now a
+**parse error** rather than a silent slow rebuild. (If you registered a custom
+`FixedRule` that reads an option named `graph`, override the new
+`supports_projection()` to return `true`; `SimpleFixedRule` is exempt
+automatically.)
+
+Naming a `nodes` relation makes isolated vertices real: a vertex that appears
+there but in no edge becomes a genuine degree-0 vertex — `PageRank` counts it in
+`N` and ranks it, and `ConnectedComponents` emits it as its own component. The
+vertex set is the union of the two relations.
+
+## Bounding memory
+
+Cached adjacencies are capped at **512 MiB** by default, evicting
+least-recently-used variants first. Hosting applications can change the cap:
+
+```rust
+use cozo::DbInstance;
+
+let db = DbInstance::new("mem", "", "")?;
+db.set_graph_projection_capacity(1 << 30); // 1 GiB; 0 disables caching
+```
+
+From Python it is `CozoDbPy.set_graph_projection_capacity(bytes)`. Setting the
+cap to `0` turns caching off while leaving `::graph create`, `::graph list` and
+`::graph drop` working — every query rebuilds, exactly as before 0.11.0. A single
+variant larger than the whole ceiling is still built for each query, with a
+warning.
+
+## The PageRank default changed
+
+Two `PageRank` changes ride along with this release:
+
+- **BREAKING (results): the default `iterations` is now 20, up from 10.** Ten was
+  a below-upstream override and measurably non-convergent at the default
+  `epsilon` (`1e-4`) — the ranks still move well above that threshold at
+  iteration 10. **Pass `iterations: 10` to restore the old numbers.** `PageRank`
+  now also warns when the iteration cap stops it short of `epsilon`, instead of
+  silently returning unconverged ranks (`epsilon: 0.0` means "run exactly
+  `iterations`" and stays quiet).
+- **`PageRank` accepts an optional node relation**, as `ConnectedComponents`
+  already did — vertices with no edges are ranked instead of silently dropped.
+  Because they enter `N`, every rank moves. When using a projection, declare the
+  vertices with `nodes:` on the projection instead (a positional nodes relation
+  combined with `graph:` is rejected, since a cached variant's vertex ids are
+  fixed when it is built).
+
+## Two fixes worth calling out
+
+- **An empty edge relation no longer aborts the process.** It used to panic seven
+  graph algorithms — `TopSort`, `ConnectedComponents`,
+  `StronglyConnectedComponents`, `ClusteringCoefficients`,
+  `BetweennessCentrality`, `ClosenessCentrality` and `LabelPropagation` — because
+  the builder sized the graph from its largest edge endpoint and `max` over an
+  empty list is `0`, producing a one-vertex graph the first index then aborted
+  on. They now return no rows, as `PageRank` already did. (Present in upstream
+  CozoDB.)
+- **`multi_transaction` could deadlock a whole process.** It ran its transaction
+  loop on a `rayon` global-pool worker, then parked that worker in a blocking
+  receive for the transaction's entire life — so with as many open transactions
+  as the pool has workers (one, on a single-core host or under a CPU quota),
+  every parallel query in the process blocked forever. It now uses a dedicated
+  thread, as its documentation always claimed. This **affects every caller** of
+  the API, not just graph algorithms.
+
+## See also
+
+- [System ops → Graph projections](/docs/system-ops#graph-projections) — the
+  `::graph create` / `::graph list` / `::graph drop` reference.
+- [Utilities & algorithms](/docs/algorithms#reusing-a-graph-across-queries-mnestic-0110)
+  — which algorithms take `graph:`, and the corrected `PageRank` defaults.
+- [Interruptibility & query budgets](/docs/fork/interruptibility) — `::kill` and
+  `:timeout` now also abort a long CSR build (checked every 4096 tuples).
+- [What mnestic adds](/docs/fork/overview)

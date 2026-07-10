@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.10.7) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.11.0) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,51 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.11.0
+
+**Cached graph projections.** `::graph create g { edges: knows, nodes: person }`
+names an in-memory adjacency that twelve graph algorithms reuse across queries
+via a `graph:` option, instead of scanning the edges and rebuilding the CSR on
+every call. Engine plus the Python binding (for the capacity knob) — no
+query-result change except the PageRank default noted below.
+
+- **New: name a graph once and reuse it.** A projection is a named, in-memory
+  adjacency over stored relations. Build it with `::graph create`, then pass
+  `graph: 'g'` to any of the twelve algorithms that take an `edges` relation
+  (`ConnectedComponents`, `SCC`, `PageRank`, `ClusteringCoefficients`,
+  `TopSort`, `BetweennessCentrality`, `ClosenessCentrality`,
+  `ShortestPathDijkstra`, `KShortestPathYen`, `MinimumSpanningTreePrim`,
+  `MinimumSpanningForestKruskal`, `LabelPropagation`,
+  `CommunityDetectionLouvain`) in place of the positional edge relation.
+  `::graph list` and `::graph drop` inspect and free it.
+- **Always fresh, never stale.** A projection never serves a transaction data
+  that differs from what that transaction's own scan of the sources would
+  return, and writing to a source frees what was built from it. Under write
+  churn it degrades to build-per-query; it never goes stale. Projections are
+  in-memory and are **not persisted** — re-create them after a restart.
+- **Measured on a 400,000-edge graph** (cold = the previous positional form):
+  `ConnectedComponents` 127 ms → 7.9 ms (**16×**), `PageRank` at 20 iterations
+  150 ms → 10 ms (**15×**), `ClusteringCoefficients` 169 ms → 56 ms (**3×**).
+  What is cached is the setup — scanning edges and building the CSR — so the
+  gain shrinks as the kernel dominates.
+- **BREAKING (results): `PageRank`'s default `iterations` is now 20, up from
+  10.** Ten was a below-upstream default and measurably non-convergent at the
+  default `epsilon`. **Pass `iterations: 10` to restore the old numbers.**
+  PageRank now also warns when the iteration cap stops it short of `epsilon`.
+- **`PageRank` accepts an optional node relation**, as `ConnectedComponents`
+  already did, so vertices with no edges are ranked instead of silently
+  dropped (they enter `N`, which moves every rank).
+- **A 512 MiB memory ceiling** on cached adjacencies, settable from Rust
+  (`set_graph_projection_capacity`) and Python; `0` disables caching while
+  leaving `::graph create`/`list`/`drop` working.
+- **Fix: an empty edge relation no longer aborts the process** in seven graph
+  algorithms (`TopSort`, `ConnectedComponents`, `StronglyConnectedComponents`,
+  `ClusteringCoefficients`, `BetweennessCentrality`, `ClosenessCentrality`,
+  `LabelPropagation`) — they now return no rows, as `PageRank` already did.
+- **Fix: `multi_transaction` could deadlock a process** by parking a `rayon`
+  worker for the transaction's whole lifetime; it now runs on a dedicated
+  thread. Affects every caller of that API, not just graph algorithms.
 
 ## 0.10.7
 

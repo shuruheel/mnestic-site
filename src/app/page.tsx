@@ -288,6 +288,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.11.0",
+    t: "Cache a graph once, reuse it across queries",
+    d: "::graph create g { edges: knows, nodes: person } names an in-memory adjacency that twelve graph algorithms reuse via a graph: option, instead of scanning the edges and rebuilding the CSR on every call. It is always fresh — a projection never serves a transaction data differing from what that transaction's own scan of the sources would return, and writing to a source frees what was built from it; under write churn it degrades to build-per-query, never stale. Projections are in-memory and are not persisted. Measured on a 400k-edge graph vs the previous positional form: ConnectedComponents 127 ms → 7.9 ms (16×), PageRank at 20 iterations 150 ms → 10 ms (15×), ClusteringCoefficients 169 ms → 56 ms (3×) — the gain is the cached setup, so it shrinks as the kernel dominates. Also: PageRank's default iterations is now 20 (was 10, a non-convergent below-upstream default — pass iterations: 10 to restore the old numbers); PageRank can take a node relation so edge-less vertices are ranked instead of dropped; an empty edge relation no longer aborts seven algorithms; and multi_transaction no longer deadlocks a process by parking a rayon worker.",
+    metric: "400k edges: CC 16× · PageRank 15× · in-memory, always fresh · BREAKING: PageRank iterations default 10→20",
+  },
+  {
     ver: "0.10.7",
     t: "A join-reorder plan fix, and factorization from Python",
     d: "Two targeted patches. The default greedy join reorder no longer demotes a full-composite-key filter to a partial-key expansion — a tie-break bug (full_key_lookup_bonus) that could pull a high-fan-out edge ahead of a more selective atom and regress a cyclic-join query (a benchmarker measured LDBC-SNB LSQB Q3 go from ~19s to a timeout; the fix restores it). No query-result change, and the min-new-vars speed-up is preserved. Separately, the Python binding now exposes db.set_query_factorization(True) / db.query_factorization(), so the 0.10.5 factorized-count() kill switch — previously Rust-only — is toggleable from Python. Default stays off.",
@@ -460,7 +466,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.10.7
+                a maintained fork of CozoDB · v0.11.0
               </span>
             </div>
 
@@ -920,7 +926,7 @@ export default function Home() {
 cargo add mnestic
 
 # or, with the RocksDB backend:
-# mnestic = { version = "0.10", features = ["storage-rocksdb"] }`}
+# mnestic = { version = "0.11", features = ["storage-rocksdb"] }`}
               />
               <Code
                 lang="rust"
