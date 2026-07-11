@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Cached graph projections",
   description:
-    "mnestic can name an in-memory adjacency over stored relations with ::graph create and reuse it across queries via a graph: option, so twelve graph algorithms skip rebuilding the CSR on every call. Always fresh, in-memory only, added in 0.11.0.",
+    "mnestic can name an in-memory adjacency over stored relations with ::graph create and reuse it across queries via a graph: option, so thirteen graph algorithms skip rebuilding the CSR on every call. Always fresh, in-memory only, added in 0.11.0.",
 };
 
 # Cached graph projections
@@ -79,15 +79,16 @@ read-only commits touch none of it.
 
 ## Which algorithms can use one
 
-`graph:` is accepted by twelve algorithms, in place of their positional edge
+`graph:` is accepted by thirteen algorithms, in place of their positional edge
 relation — their remaining positional inputs shift down by one, and optional
 trailing inputs stay optional:
 
 `ConnectedComponents`, `StronglyConnectedComponents` (`SCC`), `PageRank`,
 `ClusteringCoefficients`, `TopSort`, `BetweennessCentrality`,
 `ClosenessCentrality`, `ShortestPathDijkstra`, `KShortestPathYen`,
-`MinimumSpanningTreePrim`, `MinimumSpanningForestKruskal`, `LabelPropagation`
-and `CommunityDetectionLouvain`.
+`MinimumSpanningTreePrim`, `MinimumSpanningForestKruskal`, `LabelPropagation`,
+`CommunityDetectionLouvain` and, since mnestic 0.12.0,
+[`BudgetedTraversal`](/docs/algorithms#budgetedtraversal).
 
 `BFS`, `DFS`, `ShortestPathBFS`, `RandomWalk`, `ShortestPathAStar` and
 `DegreeCentrality` **cannot** use a projection: they evaluate per-tuple

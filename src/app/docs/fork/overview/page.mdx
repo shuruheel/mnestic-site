@@ -1,7 +1,7 @@
 export const metadata = {
   title: "What mnestic adds",
   description:
-    "An overview of how mnestic diverges from CozoDB: cached graph projections, bitemporality, provenance semirings, interruptible queries with wall-clock budgets, a stat-free join reorder, native 3-way fused recall, BM25 full-text search, equality pushdown, and ULID keys.",
+    "An overview of how mnestic diverges from CozoDB: budgeted weighted traversal, cached graph projections, bitemporality, provenance semirings, interruptible queries with wall-clock budgets, a stat-free join reorder, native 3-way fused recall, BM25 full-text search, equality pushdown, and ULID keys.",
 };
 
 # What mnestic adds
@@ -27,6 +27,29 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 0.7.7.
 
 ## Highlights by release
+
+### 0.12.0 — budgeted weighted traversal
+
+- **`BudgetedTraversal` — the context-fill primitive.** A new `graph-algo`
+  fixed rule: cheapest-first expansion from a set of seeds, over non-negative
+  edge weights, under a **required** global budget of distinct nodes
+  (`max_nodes`), emitting the budget's-worth of cheapest admissible nodes as
+  `(node, cost, parent, depth)`. Deterministic by construction — admission
+  follows a `(cost, node)` total order, and positional edges vs. a cached
+  `graph:` projection produce byte-for-byte identical output. `max_cost`
+  bounds admissible path cost; `max_depth` is an **exact** hop bound (layered
+  labels, never depth-pruned Dijkstra). An optional gate relation plus an
+  `admit:` predicate filters mid-expansion — a gated-out node spends no
+  budget and never bridges — and the loop honors `:timeout` / `::kill`.
+  Weights are consumed as costs; monotone transforms like `-ln(weight)` are
+  the caller's. Measured at the release's merge gate: one call over a cached
+  projection runs **2–4×** faster than the production host-side BFS it
+  replaces.
+- **The optional `rayon` dependency is bounded `>=1.10, <1.11`** — rayon 1.11
+  breaks `graph_builder` 0.4.x (the CSR-builder crate behind `graph-algo`),
+  so a fresh downstream resolve now lands on a working pair.
+
+→ [Utilities & algorithms](/docs/algorithms#budgetedtraversal) · [Graph projections](/docs/fork/graph-projections)
 
 ### 0.11.1 — built-in skyline aggregates
 

@@ -68,12 +68,20 @@ mnestic inherits CozoDB's storage backends. Select them with Cargo features:
 
 ```toml
 # Cargo.toml — enable the RocksDB backend
-mnestic = { version = "0.11", features = ["storage-rocksdb"] }
+mnestic = { version = "0.12", features = ["storage-rocksdb"] }
 ```
 
 <Callout type="note">
   RocksDB compiles a C++ dependency, so the first build is slow. The in-memory
   and SQLite backends need no native toolchain.
+</Callout>
+
+<Callout type="fork">
+  Specific to mnestic 0.12.0. The optional `rayon` dependency is bounded
+  `>=1.10, <1.11`: rayon 1.11 breaks `graph_builder` 0.4.x, the CSR-builder
+  crate behind the `graph-algo` feature, so a fresh resolve could land on a
+  broken pair. The bound makes every fresh build work; it will be relaxed only
+  after a verified `graph-algo` build against a newer rayon.
 </Callout>
 
 ## Your first query

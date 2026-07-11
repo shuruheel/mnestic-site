@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.11.1) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.12.0) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,39 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.12.0
+
+**Budgeted weighted traversal.** `BudgetedTraversal` is a new `graph-algo`
+fixed rule: cheapest-first expansion from a set of seeds, over non-negative
+edge weights, under a required global budget of distinct nodes — the missing
+primitive for filling a fixed context window with the cheapest graph
+neighborhood around what search found. Pure `cozo-core` and purely additive:
+one new reserved rule name, no grammar or planner change, no
+`cozorocks`/`mnestic-rocks` change, and no change to any existing query.
+
+- **The `max_nodes` cheapest distinct admissible nodes, with evidence.** Each
+  admitted node emits `(node, cost, parent, depth)` — the settled
+  shortest-path-tree fragment — deterministic by construction: admission
+  follows a `(cost, node)` total order and the parent/depth witness resolves
+  by strict lexicographic relaxation. Positional edges and a cached `graph:`
+  projection produce byte-for-byte identical output. Weights are consumed as
+  costs — monotone transforms like `-ln(weight)` are the caller's.
+- **`max_cost` bounds admissible path cost; `max_depth` is an exact hop
+  bound** — layered labels, never depth-pruned Dijkstra, so a node whose
+  cheapest path overshoots the hop bound is still found through its cheapest
+  within-bound path.
+- **An optional gate relation plus `admit:` predicate filters
+  mid-expansion.** A gated-out node spends no budget and never bridges to
+  what lies beyond it — semantics a host-side post-filter cannot reproduce.
+- **Interruptible, and measured.** The loop honors `:timeout` / `::kill`, and
+  at the release's merge gate one call over a cached projection ran **2–4×
+  faster** than the production host-side BFS it replaces.
+- **The optional `rayon` dependency is now bounded `>=1.10, <1.11`** — rayon
+  1.11 breaks `graph_builder` 0.4.x, the CSR-builder crate behind
+  `graph-algo`, so a fresh downstream resolve now lands on a working pair.
+
+→ [Utilities & algorithms](/docs/algorithms#budgetedtraversal) · [Graph projections](/docs/fork/graph-projections)
 
 ## 0.11.1
 

@@ -37,9 +37,10 @@ and it is kept in memory only, so re-create it after a restart.
 Supported by `ConnectedComponents`, `StronglyConnectedComponents` (`SCC`),
 `PageRank`, `ClusteringCoefficients`, `TopSort`, `BetweennessCentrality`,
 `ClosenessCentrality`, `ShortestPathDijkstra`, `KShortestPathYen`,
-`MinimumSpanningTreePrim`, `MinimumSpanningForestKruskal`, `LabelPropagation`
-and `CommunityDetectionLouvain`. When `graph:` is given, the remaining
-positional inputs shift down by one.
+`MinimumSpanningTreePrim`, `MinimumSpanningForestKruskal`, `LabelPropagation`,
+`CommunityDetectionLouvain` and, since mnestic 0.12.0,
+[`BudgetedTraversal`](#budgetedtraversal). When `graph:` is given, the
+remaining positional inputs shift down by one.
 
 `BFS`, `DFS`, `ShortestPathBFS`, `RandomWalk`, `ShortestPathAStar` and
 `DegreeCentrality` cannot use a projection: they evaluate per-tuple condition,
@@ -239,6 +240,68 @@ by Dijkstra's algorithm) to find the k-shortest paths between nodes in
   to `false`.
 - _Returns_: 4-tuples containing the starting node, the goal, the cost, and a
   path with the cost.
+
+### BudgetedTraversal(...)
+
+`BudgetedTraversal(edges[from, to, weight?], seeds[node, initial_cost?], gate?[node, ...], max_nodes: expr, max_cost: expr, max_depth: expr, undirected: false, admit: expr)`
+
+<Callout type="fork">
+  Specific to mnestic 0.12.0 — not present in upstream CozoDB.
+</Callout>
+
+Runs a cheapest-first expansion (multi-source Dijkstra) from the `seeds` over
+non-negative edge weights, stopping once `max_nodes` distinct nodes have been
+admitted — the budgeted context-fill primitive: the N cheapest nodes around
+what search found, with the paths that reached them. Accepts
+`graph: 'name'` in place of the positional `edges` relation (the remaining
+positional inputs shift down by one) and produces byte-identical output in
+either form.
+
+```
+context[node, cost, parent, depth] <~ BudgetedTraversal(
+    graph: 'knows', seeds[n], *live[uid, ok],
+    admit: ok, max_nodes: 200, max_cost: 12.0)
+```
+
+- `edges`: the positional edge relation `[from, to, weight?]`. A missing
+  weight column means every edge weighs `1.0`. Weights must be finite and
+  non-negative (zero is legal); a negative, NaN or infinite weight is an
+  error. Weights are consumed *as costs* — if your edges carry similarities
+  or confidences, apply a monotone transform such as `-ln(weight)` yourself.
+- `seeds` (required): column 0 is the node; optional column 1 is that seed's
+  `initial_cost`, a finite number ≥ 0 (defaults to `0.0` when absent; a
+  non-numeric value there is an error). Duplicate seed rows keep the minimum
+  initial cost; columns beyond the first two are ignored. A seed absent from
+  the graph is still admitted and emitted — it simply has no out-edges.
+- `gate` (optional): a relation whose **first column is the node id** and
+  whose remaining columns feed `admit:`. When given, a node (seed or reached)
+  is admissible only if some gate row for it satisfies `admit:` (bare
+  presence of a row, if `admit:` is not set). An inadmissible node spends no
+  budget, emits nothing, and is never expanded through — it does not bridge
+  to what lies beyond it. Gate rows are probed lazily per candidate; the
+  relation is never materialized.
+- `max_nodes` (required): a positive integer — the global budget of distinct
+  admitted nodes, **seeds included**. Deliberately has no default.
+- `max_cost`: a **finite** float ≥ 0. Only nodes whose cheapest admissible
+  path costs at most `max_cost` are admitted, seeds included. Unset means
+  unbounded; NaN and ±infinity are errors.
+- `max_depth`: a positive integer — an **exact** hop ceiling: a node whose
+  cheapest path exceeds the bound is still found through its cheapest
+  within-bound path if one exists (layered labels, never depth-pruned
+  Dijkstra). Unset means unbounded.
+- `undirected`: whether to traverse each edge in both directions. Defaults to
+  `false`.
+- `admit`: an expression evaluated against each probed gate row, with
+  bindings from the `gate` input's columns. Requires the `gate` relation —
+  setting `admit:` without one is an error.
+- _Returns_: 4-tuples `(node, cost, parent, depth)` — the settled
+  shortest-path-tree fragment, one row per admitted node. Roots emit
+  `parent = null` and `depth = 0`; `cost` is a float. Output is
+  deterministic by construction: admission follows the `(cost, node)` total
+  order, and the parent/depth witness resolves by strict lexicographic
+  relaxation — independent of input form or iteration order.
+
+The traversal honors `:timeout` and `::kill`.
 
 ### BreadthFirstSearch(...)
 
