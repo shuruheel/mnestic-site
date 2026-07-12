@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Logo } from "@/app/logo";
 import { DocsSidebar } from "@/components/docs/sidebar";
 import { DocsPager } from "@/components/docs/pager";
+import { DocsSearch } from "@/components/docs/search";
 import { Toc } from "@/components/docs/toc";
 
 const GITHUB = "https://github.com/shuruheel/mnestic";
@@ -33,7 +34,8 @@ export default function DocsLayout({
               / docs
             </span>
           </div>
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4 sm:gap-6">
+            <DocsSearch />
             <Link href="/" className="label link-grow hidden hover:text-[var(--color-paper)] sm:inline-block">
               Home
             </Link>

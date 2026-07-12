@@ -13,9 +13,12 @@
   --color-line: #232830;
   --color-line-bright: #313742;
 
-  --color-paper: #ece7dc; /* warm off-white primary text */
-  --color-paper-dim: #b8b3a8;
-  --color-paper-faint: #6f6e69;
+  /* Text tones, measured against --color-ink. The old dim/faint pair sat at
+     9.4:1 and 3.8:1 — faint failed WCAG AA (4.5:1) everywhere it carried real
+     text: the table of contents, blockquotes, table headers, captions. */
+  --color-paper: #ece7dc; /* warm off-white primary text — 15.9:1 */
+  --color-paper-dim: #c9c4b8; /* body copy — 11.3:1 */
+  --color-paper-faint: #9d9a92; /* labels, captions, secondary — 7.0:1 */
 
   --color-synapse: #c8f24a; /* electric lime accent */
   --color-synapse-deep: #9bc415;

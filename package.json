@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "node scripts/build-search-index.mjs && next dev",
+    "build": "node scripts/build-search-index.mjs && next build",
+    "search-index": "node scripts/build-search-index.mjs",
     "start": "next start",
     "lint": "eslint"
   },
@@ -28,6 +29,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "github-slugger": "^2.0.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
