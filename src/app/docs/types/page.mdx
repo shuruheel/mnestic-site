@@ -1,102 +1,359 @@
 export const metadata = {
   title: "Types",
   description:
-    "Runtime types, literal notation, and the column types available for stored relations in CozoScript.",
+    "The value model of mnestic: every runtime type from Null to Validity, literal syntax, cross-type ordering, the Int/Float key trap, and the column types stored relations can declare — including the fork's TxTime.",
 };
 
 # Types
 
+CozoScript has a small, closed set of runtime types, one total order across all
+of them, and a column-type language for stored relations that coerces values on
+write. This page is the reference for all three, including the sharp edge that
+catches most people at least once: `1` and `1.0` are equal as numbers but
+distinct as sort and storage values.
+
 ## Runtime types
 
-Values in Cozo have the following _runtime types_:
+Every value has one of the following _runtime types_:
 
 - `Null`
 - `Bool`
-- `Number`
+- `Number` — either `Int` (signed, 64 bits) or `Float` (double precision).
+  `Int` is auto-promoted to `Float` when an expression needs it.
 - `String`
 - `Bytes`
 - `Uuid`
-- `List`
-- `Vector`
+- `List` — any number of values of mixed types, nested arbitrarily.
+- `Vector` — fixed length, with either `F32` or `F64` elements.
 - `Json`
-- `Validity`
+- `Validity` — exists for the sole purpose of enabling
+  [time travel](/docs/time-travel) queries.
 
-`Number` can be `Float` (double precision) or `Int` (signed, 64 bits). Cozo will
-auto-promote `Int` to `Float` when necessary.
+One query can produce every one of them:
 
-`List` can contain any number of mixed-type values, including other lists.
+```prolog
+?[type, value] <- [
+  ['null',   null],
+  ['bool',   true],
+  ['int',    299_792_458],
+  ['float',  6.02e23],
+  ['string', 'a string'],
+  ['bytes',  decode_base64('bW5lc3RpYw==')],
+  ['uuid',   to_uuid('550e8400-e29b-41d4-a716-446655440000')],
+  ['list',   [1, 'two', [3.0]]],
+  ['vector', vec([0.25, 0.5])],
+  ['json',   {'kind': 'note', 'pinned': true}],
+  ['validity', validity(1751328000000000)],
+]
+```
 
-`Vector` have fixed length and contain floats. There are two versions: F32
-vectors and F64 vectors.
+```
+["bool",true]
+["bytes","bW5lc3RpYw=="]
+["float",6.02e23]
+["int",299792458]
+["json",{"kind":"note","pinned":true}]
+["list",[1,"two",[3.0]]]
+["null",null]
+["string","a string"]
+["uuid","550e8400-e29b-41d4-a716-446655440000"]
+["validity",[1751328000000000,true]]
+["vector",[0.25,0.5]]
+```
 
-Cozo sorts values according to the above order, e.g. `null` is smaller than
-`true`, which is in turn smaller than the list `[]`.
+<Callout type="note">
+  Results serialize to JSON, which has fewer types than the engine: `Bytes`
+  render as a Base64 string, `Uuid` as its string form, `Vector` as a plain
+  list of numbers, and `Validity` as a `[timestamp, is_assert]` pair. The
+  stored value keeps its engine type — only the display coincides.
+</Callout>
 
-Within each type values are _compared_ according to:
+## Equality and ordering
+
+All values fall into a single total order: by type first, in the exact order of
+the list above (`null` is smaller than every `Bool`, every `Number` is smaller
+than every `String`, and so on), then within each type by the rules below. This
+order is what `:order` and `:sort` use, it is how result rows come back when
+you specify no order (results are sets, returned in ascending order of the
+whole output tuple), and — with one wrinkle noted below — it is the key order
+of stored relations.
+
+```prolog
+vals[x] <- [[true], [-0.5], [42], ['text'], [[1, 2]], [vec([1.0, 2.0])], [null], [false]]
+?[x] := vals[x]
+:order x
+```
+
+```
+[null]
+[false]
+[true]
+[-0.5]
+[42]
+["text"]
+[[1,2]]
+[[1.0,2.0]]
+```
+
+Within each type, values are ordered as follows:
 
 - `false < true`;
-- `-1 == -1.0 < 0 == 0.0 < 0.5 == 0.5 < 1 == 1.0`;
-- Lists are ordered lexicographically by their elements;
-- Bytes are compared lexicographically;
-- Strings are compared lexicographically by their UTF-8 byte representations;
-- UUIDs are sorted in a way that UUIDv1 with similar timestamps are near each other. This is to improve data locality and should be considered an implementation detail. Depending on the order of UUID in your application is not recommended.
-- Json values are compared by their string representation, which is a bit arbitrary and you should not rely on the order.
-- Validity is introduced for the sole purpose of enabling [time travel](/docs/time-travel) queries.
+- numbers order numerically, with `Int` and `Float` interleaved by value; when
+  an `Int` and a `Float` are numerically equal, the `Int` comes first (see the
+  next section);
+- strings order lexicographically by their UTF-8 byte representation;
+- bytes order lexicographically;
+- UUIDs are sorted in a way that keeps UUIDv1 values with similar timestamps
+  near each other. This improves data locality and should be considered an
+  implementation detail — depending on the order of UUIDs in your application
+  is not recommended;
+- lists order lexicographically by their elements;
+- `Json` values are compared by their string representation, which is a bit
+  arbitrary — do not rely on their order;
+- `Validity` ordering is described in [time travel](/docs/time-travel).
+
+The total order is for _sorting_. As _operators_, `==` and `!=` accept any two
+values and never fail (values of different types are unequal, except that
+`Int`/`Float` compare numerically), but the inequality operators `<`, `<=`,
+`>`, `>=` are only defined between two values from the same family: `Null`,
+`Bool`, `Number`, `String`, `Bytes`, or `List`. Every other pairing — including
+two `Uuid` or two `Vector` values — raises an error:
+
+```prolog
+?[x] := x = (1 < 'a')
+```
+
+```
+eval::throw: Evaluation of expression failed
+help: comparison can only be done between the same datatypes, got 1 and "a"
+```
+
+<Callout type="note">
+  One storage-level wrinkle: the on-disk key encoding does not place every
+  type where the runtime order puts it — `Vector` keys sort between `Bool` and
+  `Number`, and `Validity` keys before `Json`. This is only observable in an
+  unordered scan under `:limit` over keys of mixed types. Treat cross-type
+  ordering of stored keys as an implementation detail.
+</Callout>
+
+The unpredictable UUID order makes them poor keys for anything you scan by
+recency. When you want ids that sort by creation time, mnestic's ULIDs are
+plain 26-character strings whose high-order component is a millisecond
+timestamp, so the ordinary string ordering above is creation-time ordering:
+
+```prolog
+?[id] := id = rand_ulid()
+```
+
+```
+["01KX9HM1C5BWDBY40SC85V1YWC"]
+```
+
+<Callout type="fork">
+  `rand_ulid()` and `ulid_timestamp()` landed in mnestic 0.8.0. See
+  [ULID identifiers](/docs/fork/ulid) for the encoding and the recency-scan
+  patterns they enable.
+</Callout>
+
+### Int and Float: equal but distinct
+
+`1 == 1.0` evaluates to `true` — equality and the inequality operators compare
+`Int` and `Float` numerically:
+
+```prolog
+?[eq, neq, lt, ge] := eq = (1 == 1.0), neq = (1 != 1.0), lt = (1 < 1.0), ge = (1 >= 1.0)
+```
+
+```
+[true,false,false,true]
+```
+
+Sorting and storage do _not_ treat them as the same value, though. In the total
+order the `Int` sorts immediately before the numerically-equal `Float`:
+
+```prolog
+nums[x] <- [[2], [1.0], [1], [0.5]]
+?[x] := nums[x]
+:order x
+```
+
+```
+[0.5]
+[1]
+[1.0]
+[2]
+```
+
+Because set semantics uses the same identity, a relation can contain both as
+keys:
+
+```prolog
+:create seen { x: Any }
+```
+
+```prolog
+?[x] <- [[1], [1.0]]
+:put seen { x }
+```
+
+```prolog
+?[x] := *seen[x]
+```
+
+```
+[1]
+[1.0]
+```
 
 <Callout type="warning">
-  `1 == 1.0` evaluates to `true`, but `1` and `1.0` are distinct values, meaning
-  that a relation can contain both as keys according to set semantics. This is
-  especially confusing when using JavaScript, which converts all numbers to
-  float, and python, which does not show a difference between the two when
-  printing. Using floating point numbers in keys is not recommended if the rows
-  are accessed by these keys (instead of accessed by iteration).
+  This is especially confusing from JavaScript, which converts all numbers to
+  floats, and from Python, which prints `1` and `1.0` identically in some
+  contexts. Using floating-point numbers in keys is not recommended if the rows
+  are accessed by those keys rather than by iteration.
 </Callout>
+
+The trap has a second half: writes are coerced by the column type, but query
+constants in key position are not. A `Float` column turns a written `1` into
+`1.0`, and a point access with the `Int` constant `1` then misses it:
+
+```prolog
+:create by_score { score: Float => id: String }
+```
+
+```prolog
+?[score, id] <- [[1, 'm9']]
+:put by_score { score => id }
+```
+
+```prolog
+?[id] := *by_score[1, id]    # Int constant: finds nothing
+```
+
+```
+(no rows)
+```
+
+```prolog
+?[id] := *by_score[1.0, id]  # Float constant: finds the row
+```
+
+```
+["m9"]
+```
+
+A `==` filter compares numerically, so it does match — but the reliable habit
+is to write key constants in the column's own type:
+
+```prolog
+?[id] := *by_score[s, id], s == 1
+```
+
+```
+["m9"]
+```
 
 ## Literals
 
-The standard notations `null` for the type `Null`, `false` and `true` for the
-type `Bool` are used.
+The standard notations `null` for the type `Null`, and `false` and `true` for
+the type `Bool`, are used.
 
 Besides the usual decimal notation for signed integers, you can prefix a number
-with `0x` or `-0x` for hexadecimal representation, with `0o` or `-0o` for octal,
-or with `0b` or `-0b` for binary. Floating point numbers include the decimal dot
-(may be trailing), and may be in scientific notation. All numbers may include
-underscores `_` in their representation for clarity. For example, `299_792_458`
-is the speed of light in meters per second.
-
-Strings can be typed in the same way as they do in JSON using double quotes `""`,
-with the same escape rules. You can also use single quotes `''` in which case
-the roles of double quotes and single quotes are switched. There is also a "raw
-string" notation:
+with `0x` or `-0x` for hexadecimal, with `0o` or `-0o` for octal, or with `0b`
+or `-0b` for binary. Floating-point numbers include the decimal dot (which may
+be trailing) and may use scientific notation. All numbers may include
+underscores `_` for readability:
 
 ```prolog
-___"I'm a raw string"___
+?[hex, oct, bin, sep, trailing, sci] :=
+    hex = 0x2a, oct = 0o52, bin = 0b10_1010,
+    sep = 299_792_458, trailing = 10., sci = 2.5e-3
 ```
 
-A raw string starts with an arbitrary number of underscores, and then a double
-quote. It terminates when followed by a double quote and the same number of
-underscores. Everything in between is interpreted exactly as typed, including any
-newlines. By varying the number of underscores, you can represent any string
-without quoting.
+```
+[42,42,42,299792458,10.0,0.0025]
+```
 
-There is no literal representation for `Bytes` or `Uuid`. Use the appropriate
-functions to create them. If you are inserting data into a stored relation with a
-column specified to contain bytes or UUIDs, auto-coercion will kick in and use
-`decode_base64` and `to_uuid` for conversion.
+<Callout type="fork">
+  Since mnestic 0.8.0, identifiers that merely _begin_ with a keyword literal
+  (`nullable_column`, `trueValue`, `falsey`) parse correctly; upstream CozoDB
+  fails to parse them.
+</Callout>
 
-Lists are items enclosed between square brackets `[]`, separated by commas. A
-trailing comma is allowed after the last item.
+Strings come in three notations, and they differ in how escapes are handled:
 
-There are no literal representations for `Vector` or `Validity`. Use the function
-`vec` to convert a list to a vector.
+- _Single-quoted_ strings `'…'` process JSON-style escapes — `\'`, `\\`, `\n`,
+  `\r`, `\t`, `\b`, `\f`, `\/`, `\uXXXX` — with the roles of single and double
+  quotes switched relative to JSON.
+- _Double-quoted_ strings `"…"` take every character between the quotes exactly
+  as typed, backslashes included, and end at the first double quote.
+- _Raw strings_ generalize the double-quoted form: some number of underscores,
+  then a double quote; the string ends at a double quote followed by the same
+  number of underscores. Everything in between, newlines and quotes included,
+  passes through untouched.
 
-Json objects are enclosed between curly brackets `{}`, with key-value pairs
-separated by commas. For all other Json subtypes, use the function `json` to
-convert normal values to them.
+```prolog
+?[n, m] := n = length('a\nb'), m = length("a\nb")
+```
+
+```
+[3,4]
+```
+
+The single-quoted string is three characters — its `\n` became a newline. The
+double-quoted one keeps the backslash and the `n`.
+
+<Callout type="warning">
+  Escapes are processed **only in single-quoted strings**. The upstream manual
+  describes double quotes as JSON-like with escape rules, but in the engine as
+  shipped a double-quoted string is the zero-underscore raw string: `"\n"` is a
+  backslash and an `n`, and there is no way to put a `"` inside one. Use single
+  quotes when text needs escapes, and raw strings when it contains quotes.
+</Callout>
+
+```prolog
+?[s] := s = ___"a "quoted" word"___
+```
+
+```
+["a \"quoted\" word"]
+```
+
+By varying the number of underscores, you can represent any string without
+escaping.
+
+There is no literal representation for `Bytes` or `Uuid`. Construct them with
+the functions `decode_base64` and `to_uuid`, as in the example at the top of
+this page. When you insert data into a stored relation whose column is declared
+`Bytes` or `Uuid`, strings auto-coerce using those same conversions (see
+[write-time coercion](#write-time-coercion) below).
+
+Lists are written between square brackets `[]`, separated by commas; a trailing
+comma is allowed after the last item.
+
+There is no literal representation for `Vector` or `Validity` either. The
+function `vec` converts a list of numbers into a vector, and
+`validity(ts_micro, is_assert?)` builds a validity value from a microsecond
+timestamp, as in the example at the top of this page. In practice validity
+values mostly arrive through the coercions of `Validity`-typed columns,
+described in [time travel](/docs/time-travel).
+
+Json objects are written between curly braces `{}` as comma-separated
+`key: value` pairs, where both keys and values are expressions:
+
+```prolog
+?[cfg] := cfg = {'retries': 3, 'fallback': null}
+```
+
+```
+[{"fallback":null,"retries":3}]
+```
+
+For the other Json subtypes (a bare Json number, string, or array), use the
+function `json` to convert a normal value.
 
 ## Column types
 
-The following _atomic types_ can be specified for columns in stored relations:
+The following _atomic types_ can be declared for columns of stored relations:
 
 - `Int`
 - `Float`
@@ -106,22 +363,176 @@ The following _atomic types_ can be specified for columns in stored relations:
 - `Uuid`
 - `Json`
 - `Validity`
+- `TxTime` — mnestic only; see [below](#txtime-transaction-time-mnestic-0100)
 
-There is no `Null` type. Instead, if you put a question mark after a type, it is
-treated as _nullable_, meaning that it either takes value in the type or is null.
+There is no `Null` column type. Instead, a question mark after a type makes it
+_nullable_: `String?` takes either a string or `null`.
 
-Two composite types are available. A _homogeneous list_ is specified by square
-brackets, with the inner type in between, like this: `[Int]`. You may optionally
-specify how many elements are expected, like this: `[Int; 10]`. A _heterogeneous
-list_, or a _tuple_, is specified by round brackets, with the element types
-listed by position, like this: `(Int, Float, String)`. Tuples always have fixed
-lengths.
+Two composite types are available. A _homogeneous list_ is written with square
+brackets around the element type, like `[Int]`; you may optionally fix the
+length, like `[Int; 10]`. A _heterogeneous list_, or _tuple_, is written with
+round brackets listing each position's type, like `(Int, Float, String)`;
+tuples always have fixed length.
 
-Vectors are also valid as component types and is written in the syntax
-`<F32; 1024>` for a 1024-element F32 vector. The type can also be F64.
+Vectors are declared as `<F32; 1024>` for a 1024-element vector of `F32`
+(the element type can also be `F64`). In vector declarations `Float` is an
+alias for `F32` and `Double` for `F64` — note the mismatch with the runtime
+`Float` type, which is double-precision: a `<Float; 2>` column stores
+single-precision values. The `memory` relation used throughout these docs declares a
+4-dimensional embedding this way:
 
-A special type `Any` can be specified, allowing all values except null. If you
-want to allow null as well, use `Any?`. Composite types may contain other
-composite types or `Any` types as their inner types.
+```prolog
+:create memory { id: String => kind: String, text: String, importance: Float, at: Float, v: <F32; 4> }
+```
+
+A special type `Any` permits every value except `null`; use `Any?` to also
+allow `null`. Columns declared without any type behave as `Any?`. Composite
+types may contain other composite types or `Any` as their inner types.
+
+Columns can also declare a default value with a `default` clause — see
+[stored relations](/docs/stored-relations#create-and-replace).
+
+### Write-time coercion
+
+When a row is written, each value is checked against the column's declared type
+and coerced where a safe conversion exists. Anything else is a hard error — a
+`:put` never silently mangles a value.
+
+| Declared type | Accepted values |
+| --- | --- |
+| `Int` | `Int`; a `Float` with zero fractional part (stored as the integer) |
+| `Float` | `Float`; any `Int` (stored as the float) |
+| `Bool` | `Bool` only |
+| `String` | `String` only |
+| `Bytes` | `Bytes`; a `String`, decoded as Base64 |
+| `Uuid` | `Uuid`; a `String` in UUID format |
+| `Json` | any value, converted to its JSON representation |
+| `Validity` | a `Validity` value; a `[timestamp, bool]` list; the strings `'ASSERT'`/`'RETRACT'`, an RFC 3339 timestamp, or a `~`-prefixed RFC 3339 timestamp (writes a retraction) — see [time travel](/docs/time-travel) |
+| `<F32; n>` / `<F64; n>` | a `Vector` of exactly that type and length; a list of n numbers; a Base64 `String` of the raw element bytes |
+| `[T]` / `[T; n]` / tuples | a list, with each element coerced recursively and the length enforced |
+
+So a row full of wire-format strings and lists lands fully typed:
+
+```prolog
+:create profile { id: Uuid => avatar: Bytes }
+```
+
+```prolog
+?[id, avatar] <- [['550e8400-e29b-41d4-a716-446655440000', 'aGVsbG8=']]
+:put profile { id => avatar }
+```
+
+```prolog
+?[id, avatar] := *profile{ id, avatar }
+```
+
+```
+["550e8400-e29b-41d4-a716-446655440000","aGVsbG8="]
+```
+
+The `Int` coercion accepts whole floats — the common case of a JSON pipeline
+that turned `7` into `7.0` — but refuses to round:
+
+```prolog
+:create counts { n: Int => label: String }
+```
+
+```prolog
+?[n, label] <- [[7.0, 'seven']]
+:put counts { n => label }
+```
+
+```prolog
+?[n, label] := *counts{ n, label }
+```
+
+```
+[7,"seven"]
+```
+
+```prolog
+?[n, label] <- [[7.5, 'seven and a half']]
+:put counts { n => label }
+```
+
+```
+eval::coercion_failed: data coercion failed: expected type Int, got value 7.5
+```
+
+Fixed lengths on lists and tuples are enforced the same way:
+
+```prolog
+:create calib { t: (Int, Float, String), l: [Int; 3], note: String? }
+```
+
+```prolog
+?[t, l, note] <- [[[1, 2.5, 'x'], [1, 2], null]]
+:put calib { t, l, note }
+```
+
+```
+eval::coercion_bad_list_len: bad list length: expected datatype [Int;3], got length 2
+```
+
+<Callout type="note">
+  Vectors declared as `<F32; n>` store single-precision elements. A written
+  `0.1` reads back as `0.10000000149011612` — the closest `F32` value, widened
+  to double for display. Use `F64` vectors when you need to round-trip
+  double-precision values exactly.
+</Callout>
+
+### `TxTime`: transaction time (mnestic 0.10.0)
+
+<Callout type="fork">
+  The `TxTime` column type landed in mnestic 0.10.0 as part of bitemporality:
+  engine-assigned transaction time alongside the user-controlled `Validity`
+  axis. This section covers only the type; the temporal model — `@` selectors,
+  `:as_of`, `::history` — lives in [time travel](/docs/time-travel). Relations
+  declaring `TxTime` cannot be opened by upstream CozoDB builds.
+</Callout>
+
+A `TxTime` column is stamped by the engine with the transaction's commit time —
+you never write it. Declaring one turns a relation into a system-versioned
+audit log: every write is recorded, and plain reads return the current belief.
+`TxTime` must be the last key column (immediately after `Validity`, if both
+are declared), at most one per relation, never a value column, and never
+nullable; malformed declarations are rejected at `:create` with the corrected
+form in the error message. `_`-prefixed temporary relations cannot declare
+one — they live inside a single transaction and have no commit clock.
+
+```prolog
+:create config_audit { key: String, tt: TxTime => value: String }
+```
+
+Writes omit the `TxTime` column entirely:
+
+```prolog
+?[key, value] <- [['embedder', 'nomic-embed-v2']]
+:put config_audit { key => value }
+```
+
+```prolog
+?[key, tt, value] := *config_audit{ key, tt, value }
+```
+
+```
+["embedder",[1783805642138041,true],"nomic-embed-v2"]
+```
+
+The stamp is microseconds since the UNIX epoch, from a crash-safe monotone
+clock, so it totally orders all commits. Supplying a value yourself is an
+error:
+
+```prolog
+?[key, tt, value] <- [['embedder', [1, true], 'oops']]
+:put config_audit { key, tt => value }
+```
+
+```
+eval::txtime_user_supplied_col: column tt is engine-assigned at commit and cannot
+be supplied
+help: omit the TxTime column from the :put spec; the engine stamps it with the
+transaction's commit time
+```
 
 <Attribution page="datatypes.html" />

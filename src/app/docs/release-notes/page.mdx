@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.12.0) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.12.1) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,80 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.12.1
+
+**Six correctness bugs inherited from upstream CozoDB — and the repair path for
+the worst of them.** Not one is a regression the fork introduced: every one of
+them predates the fork point and has been latent in the engine for years. We
+found them in a line-by-line audit of the code we inherited, and we are naming
+them rather than fixing them quietly. That is what maintenance means, and it is
+the difference a dormant upstream cannot offer: a project nobody is reading
+ships none of these fixes. Engine (`cozo-core`) only — no
+`cozorocks`/`mnestic-rocks` change, no planner change, and the grammar gains
+exactly one system op.
+
+<Callout type="warning">
+  **Upgrade action, if you use full-text search.** The FTS fix below stops new
+  leakage but **cannot evict postings that are already written**. A relation
+  carrying only an FTS index that has ever been updated in place is affected
+  *today*, and upgrading alone does not repair it. Rebuild it once with the new
+  [`::reindex`](/docs/system-ops#reindex-rel_name):
+
+  ```prolog
+  ::reindex my_relation
+  ```
+</Callout>
+
+- **`::reindex <relation>` (new).** Rebuild a relation's HNSW / FTS / LSH indexes
+  in place, from the index configuration the database already stores. It is the
+  repair path for the FTS leak below, and it replaces the "drop and recreate the
+  index" advice the bulk-load paths used to give — which meant reconstructing the
+  original `::hnsw`/`::fts` creation script (extractor, tokenizer, filters,
+  `ef_construction`, `m_neighbours`…) by hand from `::indices` output. Each index
+  is rebuilt against its **own stored manifest**, which matters for LSH: the
+  manifest keeps the derived band geometry but not the weights that produced it,
+  so a drop-and-recreate would silently hand back an index with a different
+  recall profile than the one you asked for. One write transaction, holds the
+  relation's write lock, never auto-invoked; a relation with no such index is a
+  loud no-op, so it stays scriptable across a set of relations.
+- **Full-text postings leaked when a row was updated in place** (affects every
+  release through 0.12.0). Deleting a row's old postings was gated on a flag that
+  counts only *plain B-tree secondary indexes*, so a relation carrying **only** an
+  FTS index never deleted the old document's postings on a `:put` over an existing
+  key. Terms the document no longer contained kept matching it, the index grew
+  without bound, and the BM25 `df`/`avgdl` statistics drifted — measured at a
+  **55% score error** on a two-document corpus. `:rm` and `update` were
+  unaffected. Results change on an affected relation, which is the point: there is
+  deliberately no flag to restore the old behavior, because the old behavior was a
+  leak. **LSH does not leak** despite sitting behind the same gate — its write
+  path is self-cleaning.
+- **The transaction API reported success for a failed commit.**
+  `MultiTransaction::commit()` discarded the `Result` the transaction thread sends
+  back, so a commit that *errored* returned `Ok(())` and the caller believed its
+  data was durable. The HTTP `/transact` endpoint sat directly on top of it,
+  answering `200 {"ok": true}` for transactions that never committed. `abort()`
+  had the same shape.
+- **Change callbacks fired after a failed commit.** In the multi-statement
+  transaction path, subscribers received `Put`/`Rm` events for rows that were
+  never committed — so anything syncing off the change feed (a search mirror, an
+  audit log, a cache) could silently diverge from the database. Callbacks now
+  dispatch only on a successful commit, honoring the contract
+  `register_callback` always advertised.
+- **Two non-default backends fixed.** `newrocksdb` ran an optimistic transaction
+  DB but never armed conflict validation, so two transactions could read a key,
+  both write it, and **both commit** — one acknowledged write silently vanished.
+  `sled`'s `del()` never deleted (upstream **#306**): it wrote the put marker
+  where the delete marker belonged, so `exists` kept answering `true` and the
+  commit re-inserted the key. Both backends now run a transaction-contract suite
+  in CI; until 0.12.1 nothing in CI even compiled them.
+- **`import_from_backup` silently stranded HNSW/FTS/LSH indexes.** It guarded only
+  against B-tree indexes, so an operator could restore a backup and have hybrid
+  retrieval quietly return nothing for the restored rows, with no signal anywhere.
+  It now warns, as `import_relations` already did — and both warnings now point at
+  `::reindex`.
+
+→ [System ops](/docs/system-ops#reindex-rel_name) · [Proximity search](/docs/proximity-search) · [Embedding mnestic](/docs/beyond-cozoscript#open-transactions)
 
 ## 0.12.0
 

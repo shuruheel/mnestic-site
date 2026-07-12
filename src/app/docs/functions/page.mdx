@@ -1,34 +1,73 @@
 export const metadata = {
   title: "Functions & operators",
   description:
-    "Complete reference for the functions and operators available in CozoScript expressions: comparison, boolean, math, vector, JSON, string, list, binary, type, random, regex, and timestamp.",
+    "The complete CozoScript expression catalog: operators and precedence, comparison semantics, math, vector, JSON, string, list, binary, type, random, regex, timestamp, and interval functions — including mnestic's ULID and interval additions.",
 };
 
 # Functions & operators
 
-Functions can be used to build expressions.
+Functions build expressions — the computed parts of a rule: filters,
+unifications with `=`, and the values you write back with `:put`. This page is
+the complete catalog. All functions except those that extract the current time
+and those having names starting with `rand_` are deterministic.
 
-All functions except those that extract the current time and those having names starting with `rand_` are deterministic.
+Most of the catalog composes inside a single rule body. The query below turns
+raw rows from an agent's memory store into a readable digest: it scores each
+memory against a cue vector, blends in the stored importance, tags
+storage-related rows with a regex, and renders the unix timestamp as a date.
+(`memory` holds a text, an importance, a timestamp `at`, and a 4-dimensional
+embedding `v`; the same example relation appears throughout these docs.)
+
+```prolog
+?[when, id, tag, score] := *memory{ id, text, importance, at, v },
+    sim = 1 - cos_dist(v, vec([0.7, 0.1, 0.6, 0.1])),
+    sim > 0.5,
+    score = round(100 * (0.7 * sim + 0.3 * importance)) / 100,
+    tag = if(regex_matches(text, '(?i)compaction|sst'), 'storage', 'other'),
+    when = slice_string(format_timestamp(at), 0, 10)
+:order -score
+```
+
+```
+when         id    tag       score
+2025-07-04   m4    storage   0.94
+2025-07-05   m5    storage   0.93
+2025-07-02   m2    other     0.89
+2025-07-03   m3    storage   0.89
+2025-07-08   m8    other     0.64
+```
 
 ## Non-functions
 
-Functions must take in expressions as arguments, evaluate each argument in turn, and then evaluate its implementation to produce a value that can be used in an expression. We first describe constructs that look like, but are not functions.
+Functions take expressions as arguments, evaluate each argument in turn, and
+then evaluate their implementation to produce a value usable in an expression.
+Before the catalog, here are the constructs that look like functions but are
+not.
 
 These are language constructs that return Horn clauses instead of expressions:
 
 - `var = expr` unifies `expr` with `var`. Different from `expr1 == expr2`.
 - `not clause` negates a Horn clause `clause`. Different from `!expr` or `negate(expr)`.
 - `clause1 or clause2` connects two Horn-clauses by disjunction. Different from `or(expr1, expr2)`.
-- `clause1 and clause2` connects two Horn-clauses by conjunction. Different from `and(expr1, expr2)`.
-- `clause1, clause2` connects two Horn-clauses by conjunction.
+- `clause1, clause2` connects two Horn-clauses by conjunction. There is no
+  clause-level `and` keyword: the comma is the conjunction, and `and` exists
+  only as the expression function `and(...)` / the `&&` operator.
 
-For the last three, `or` binds more tightly than `and`, which in turn binds more tightly than `,`: `and` and `,` are identical in every aspect except their binding powers.
+`or` binds more tightly than `,`, so `a or b, c` means `(a or b), c`:
+
+```prolog
+?[x] := x = 1 or x = 2, x = 2
+```
+
+```
+[2]
+```
 
 These are constructs that return expressions:
 
-- `if(a, b, c)` evaluates `a`, and if the result is `true`, evaluate `b` and returns its value, otherwise evaluate `c` and returns its value. `a` must evaluate to a boolean.
+- `if(a, b, c)` evaluates `a`, and if the result is `true`, evaluates `b` and returns its value, otherwise evaluates `c` and returns its value. `a` must evaluate to a boolean. Only the selected branch is evaluated.
 - `if(a, b)` same as `if(a, b, null)`.
-- `cond(a1, b1, a2, b2, ...)` evaluates `a1`, if the result is `true`, returns the value of `b1`, otherwise continue with `a2` and `b2`. An even number of arguments must be given and the `a`s must evaluate to booleans. If all `a`s are `false`, `null` is returned. If you want a catch-all clause at the end, put `true` as the condition.
+- `cond(a1, b1, a2, b2, ...)` evaluates `a1`, if the result is `true`, returns the value of `b1`, otherwise continues with `a2` and `b2`. An even number of arguments must be given and the `a`s must evaluate to booleans. If all `a`s are `false`, `null` is returned. If you want a catch-all clause at the end, put `true` as the condition.
 
 ## Operators representing functions
 
@@ -67,22 +106,62 @@ These operators have precedence as follows (the earlier rows bind more tightly, 
 
 With the exception of `^`, all binary operators are left associative: `a / b / c` is the same as `(a / b) / c`. `^` is right associative: `a ^ b ^ c` is the same as `a ^ (b ^ c)`.
 
-And the unary operators are:
+The unary operators are:
 
 - `-a` is the same as `minus(a)`
 - `!a` is the same as `negate(a)`
 
-Function applications using parentheses bind the tightest, followed by unary operators, then binary operators.
+Function applications using parentheses bind the tightest, followed by the unary operators, then the binary operators — with one exception: `->` binds more tightly than the unary operators, so `-j->0` is `-(j->0)`.
+
+<Callout type="warning">
+  Two rows differ from C-family languages: `%` binds more loosely than `+` and
+  `-`, and `==` / `!=` bind more tightly than the order comparisons.
+  Parenthesize when in doubt.
+</Callout>
+
+```prolog
+?[a, b, c] := a = 2 + 3 % 4, b = 2 ^ 3 ^ 2, c = -2 ^ 2
+```
+
+```
+[1, 512.0, 4.0]
+```
+
+`2 + 3 % 4` is `(2 + 3) % 4`; `2 ^ 3 ^ 2` is `2 ^ 9`; and `-2 ^ 2` is
+`(-2) ^ 2`, since unary minus binds more tightly than `^`.
 
 ## Equality and comparisons
 
+The filters of most queries end up here. The one rule to internalize: `==`
+compares *values* (numerically across `Int` and `Float`), while the four order
+comparisons require both sides to come from the same value family and raise an
+error otherwise.
+
 ### `eq(x, y)`
 
-Equality comparison. The operator form is `x == y`. The two arguments of the equality can be of different types, in which case the result is `false`.
+Equality comparison. The operator form is `x == y`. Mixed `Int`/`Float`
+arguments are compared numerically, so `1 == 1.0` is `true`; if the two
+arguments are otherwise of different types, the result is `false`.
 
 ### `neq(x, y)`
 
-Inequality comparison. The operator form is `x != y`. The two arguments of the equality can be of different types, in which case the result is `true`.
+Inequality comparison. The operator form is `x != y`. Mixed `Int`/`Float`
+arguments are compared numerically; if the two arguments are otherwise of
+different types, the result is `true`.
+
+```prolog
+?[x, y] := x = (1 == 1.0), y = ('one' == 1)
+```
+
+```
+[true, false]
+```
+
+<Callout type="warning">
+  `==` compares numerically, but stored keys and joins compare *structurally*:
+  a relation can hold both `1` and `1.0` as distinct keys, and a join will not
+  unify them. See the key warning in [Types](/docs/types).
+</Callout>
 
 ### `gt(x, y)`
 
@@ -101,8 +180,11 @@ Equivalent to `x < y`.
 Equivalent to `x <= y`.
 
 <Callout type="note">
-  The four comparison operators can only compare values of the same runtime
-  type. Integers and floats are of the same type `Number`.
+  The four comparison operators are only defined between two values from the
+  same family — `Null`, `Bool`, `Number`, `String`, `Bytes`, or `List`.
+  Comparing `1 < 'a'` raises an error, and so does comparing two `Uuid` or two
+  `Vector` values. Integers and floats are both `Number`. See
+  [Equality and ordering](/docs/types#equality-and-ordering).
 </Callout>
 
 ### `max(x, ...)`
@@ -114,6 +196,9 @@ Returns the maximum of the arguments. Can only be applied to numbers.
 Returns the minimum of the arguments. Can only be applied to numbers.
 
 ## Boolean functions
+
+For combining conditions *inside* an expression — as opposed to the clause
+connectives `,`/`or`/`not`, which operate on Horn clauses.
 
 ### `and(...)`
 
@@ -129,9 +214,21 @@ Negation. Equivalent to `!x`.
 
 ### `assert(x, ...)`
 
-Returns `true` if `x` is `true`, otherwise will raise an error containing all its arguments as the error message.
+Returns `true` if `x` is `true`, otherwise raises an error containing all its arguments as the error message. Useful for turning a should-never-happen condition into a loud failure instead of silently dropped rows.
 
 ## Mathematics
+
+The arithmetic for computing scores in-query: decayed importance, log-scaled
+counts, blended rankings, all next to the data instead of in the host
+language.
+
+```prolog
+?[a, b, c, d] := a = round(-0.5), b = floor(-0.5), c = mod(-7, 3), d = 2 ^ 10
+```
+
+```
+[-1.0, -1.0, -1, 1024.0]
+```
 
 ### `add(...)`
 
@@ -155,7 +252,7 @@ Equivalent to `-x`.
 
 ### `pow(x, y)`
 
-Raises `x` to the power of `y`. Equivalent to `x ^ y`. Always returns floating number.
+Raises `x` to the power of `y`. Equivalent to `x ^ y`. Always returns a floating-point number.
 
 ### `sqrt(x)`
 
@@ -163,7 +260,7 @@ Returns the square root of `x`.
 
 ### `mod(x, y)`
 
-Returns the remainder when `x` is divided by `y`. Arguments can be floats. The returned value has the same sign as `x`. Equivalent to `x % y`.
+Returns the remainder when `x` is divided by `y`. Arguments can be floats. The returned value has the same sign as `x`. Equivalent to `x % y`. An integer divisor of zero raises an error.
 
 ### `abs(x)`
 
@@ -171,7 +268,7 @@ Returns the absolute value.
 
 ### `signum(x)`
 
-Returns `1`, `0` or `-1`, whichever has the same sign as the argument, e.g. `signum(to_float('NEG_INFINITY')) == -1`, `signum(0.0) == 0`, but `signum(-0.0) == -1`. Returns `NAN` when applied to `NAN`.
+Returns `1`, `0` or `-1`, whichever has the same sign as the argument, e.g. `signum(to_float('NEG_INF')) == -1`, `signum(0.0) == 0`, but `signum(-0.0) == -1`. The result is an `Int` even for float arguments; only `NAN` input returns the float `NAN`.
 
 ### `floor(x)`
 
@@ -183,7 +280,7 @@ Returns the ceiling of `x`.
 
 ### `round(x)`
 
-Returns the nearest integer to the argument (represented as Float if the argument itself is a Float). Round halfway cases away from zero. E.g. `round(0.5) == 1.0`, `round(-0.5) == -1.0`, `round(1.4) == 1.0`.
+Returns the nearest integer to the argument (represented as Float if the argument itself is a Float). Rounds halfway cases away from zero. E.g. `round(0.5) == 1.0`, `round(-0.5) == -1.0`, `round(1.4) == 1.0`.
 
 ### `exp(x)`
 
@@ -282,13 +379,33 @@ If you want the approximate distance measured on the surface of the earth instea
 
 ## Vector functions
 
-Now the mathematical functions that operate on floats can also take vectors as arguments, and apply the operation element-wise.
+For constructing embeddings and computing distances directly in expressions —
+handy for exact reranking of a small candidate set, or for one-off similarity
+checks without an index. For approximate search over a large relation, build an
+HNSW index instead (see [Proximity searches](/docs/proximity-search)).
+
+The mathematical functions that operate on floats also take vectors as
+arguments, applying the operation element-wise.
+
+```prolog
+?[id, dist] := *memory{ id, v },
+    dist = round(1000 * cos_dist(v, vec([0.7, 0.1, 0.6, 0.1]))) / 1000
+:order dist
+:limit 3
+```
+
+```
+id    dist
+m4    0.003
+m3    0.023
+m5    0.029
+```
 
 ### `vec(l, type?)`
 
-Takes a list of numbers and returns a vector.
+Takes a list of numbers and returns a vector. Defaults to 32-bit float vectors; pass `'F64'` (or `'Double'`) as the second argument for 64-bit vectors, and `'F32'` (or `'Float'`) is accepted for the default.
 
-Defaults to 32-bit float vectors. If you want to use 64-bit float vectors, pass `'F64'` as the second argument.
+Also accepts an existing vector (converting between element types as requested) and a base64-encoded string of the raw element bytes in native byte order (little-endian on all supported platforms).
 
 ### `rand_vec(n, type?)`
 
@@ -298,7 +415,15 @@ Defaults to 32-bit float vectors. If you want to use 64-bit float vectors, pass 
 
 ### `l2_normalize(v)`
 
-Takes a vector and returns a vector with the same direction but length `1`, normalized using L2 norm.
+Takes a vector and returns a vector with the same direction but length `1`, normalized using the L2 norm.
+
+```prolog
+?[n] := n = l2_normalize(vec([3.0, 4.0], 'F64'))
+```
+
+```
+[[0.6, 0.8]]
+```
 
 ### `l2_dist(u, v)`
 
@@ -314,6 +439,21 @@ Takes two vectors and returns the distance between them, using cosine distance: 
 
 ## JSON functions
 
+For columns that hold schemaless payloads — tool outputs, API responses,
+per-row metadata — queried without unpacking them into typed columns first.
+The `->` operator makes path access read naturally:
+
+```prolog
+?[name, lang, tags] := profile = parse_json('{"name": "Maya", "prefs": {"lang": "rust"}}'),
+    name = profile->'name',
+    lang = get(profile, ['prefs', 'lang']),
+    tags = dump_json(profile->'tags' ~ json([]))
+```
+
+```
+["Maya", "rust", "[]"]
+```
+
 ### `json(x)`
 
 Converts any value to a Json value. This function is idempotent and never fails.
@@ -324,15 +464,15 @@ Returns `true` if the argument is a Json value, `false` otherwise.
 
 ### `json_object(k1, v1, ...)`
 
-Convert a list of key-value pairs to a Json object.
+Converts a list of key-value pairs to a Json object.
 
 ### `dump_json(x)`
 
-Convert a Json value to its string representation.
+Converts a Json value to its string representation.
 
 ### `parse_json(x)`
 
-Parse a string to a Json value.
+Parses a string to a Json value.
 
 ### `get(json, idx, default?)`
 
@@ -342,35 +482,50 @@ Returns the element at index `idx` in the Json `json`.
 
 Raises an error if the requested element cannot be found, unless `default` is specified, in which case `default` is returned.
 
+Leaf values (numbers, strings, booleans, `null`) are returned as plain scalars; nested arrays and objects are returned as Json values.
+
 ### `maybe_get(json, idx)`
 
 Returns the element at index `idx` in the Json `json`. Same as `get(json, idx, null)`. The shorthand is `json->idx`.
 
 ### `set_json_path(json, path, value)`
 
-Set the value at the given path in the given Json value. The path is a list of keys of strings (for indexing objects) or numbers (for indexing arrays). The value is converted to Json if it is not already a Json value.
+Sets the value at the given path in the given Json value. The path is a list of keys of strings (for indexing objects) or numbers (for indexing arrays). The value is converted to Json if it is not already a Json value.
 
 ### `remove_json_path(json, path)`
 
-Remove the value at the given path in the given Json value. The path is a list of keys of strings (for indexing objects) or numbers (for indexing arrays).
+Removes the value at the given path in the given Json value. The path is a list of keys of strings (for indexing objects) or numbers (for indexing arrays).
 
 ### `json_to_scalar(x)`
 
-Convert a Json value to a scalar value if it is a `null`, boolean, number or string, and returns the argument unchanged otherwise.
+Converts a Json value to a scalar value if it is a `null`, boolean, number or string, and returns the argument unchanged otherwise.
 
 ### `concat(x, y, ...)`
 
-Concatenate (deep-merge) Json values. It is equivalent to the operator form `x ++ y ++ ...`.
+Concatenates (deep-merges) Json values. It is equivalent to the operator form `x ++ y ++ ...`.
 
 The concatenation of two Json arrays is the concatenation of the two arrays. The concatenation of two Json objects is the deep-merge of the two objects, meaning that their key-value pairs are combined, with any pairs that appear in both left and right having their values deep-merged. For all other cases, the right value wins.
 
+```prolog
+?[merged] := merged = dump_json(parse_json('{"a": 1, "b": {"x": 1}}') ++ parse_json('{"b": {"y": 2}}'))
+```
+
+```
+["{\"a\":1,\"b\":{\"x\":1,\"y\":2}}"]
+```
+
 ## String functions
+
+Normalization, trimming, and slicing: the plumbing of clean keys and readable
+output. For substring *search* across a whole relation, a
+[full-text index](/docs/proximity-search) scales better than filtering with
+these.
 
 ### `length(str)`
 
 Returns the number of Unicode characters in the string.
 
-Can also be applied to a list or a byte array.
+Can also be applied to a list, a byte array, or a vector.
 
 <Callout type="warning">
   `length(str)` does not return the number of bytes of the string
@@ -391,7 +546,7 @@ Returns `true` if `x` contains the substring `y`, `false` otherwise.
 
 ### `lowercase(x)`
 
-Convert to lowercase. Supports Unicode.
+Converts to lowercase. Supports Unicode.
 
 ### `uppercase(x)`
 
@@ -426,6 +581,18 @@ Tests if `x` ends with `y`.
 
 Converts `str` to the [normalization](https://en.wikipedia.org/wiki/Unicode_equivalence) specified by `norm`. The valid values of `norm` are `'nfc'`, `'nfd'`, `'nfkc'` and `'nfkd'`.
 
+### `slice_string(str, start, end)`
+
+Returns the substring between character index `start` (inclusive) and `end` (exclusive), counted in Unicode characters. Both indices must be non-negative and `start <= end` — unlike `slice` for lists, negative indices are not accepted.
+
+```prolog
+?[date] := date = slice_string(format_timestamp(1751587200), 0, 10)
+```
+
+```
+["2025-07-04"]
+```
+
 ### `chars(str)`
 
 Returns Unicode characters of the string as a list of substrings.
@@ -434,17 +601,40 @@ Returns Unicode characters of the string as a list of substrings.
 
 Combines the strings in `list` into a big string. In a sense, it is the inverse function of `chars`.
 
-<Callout type="warning">
-  If you want substring slices, indexing strings, etc., first convert the string
-  to a list with `chars`, do the manipulation on the list, and then recombine
-  with `from_substrings`.
+<Callout type="note">
+  For a plain character-range substring, use `slice_string`. For anything more
+  involved — indexing, filtering, reordering — convert the string to a list
+  with `chars`, manipulate the list, and recombine with `from_substrings`.
 </Callout>
+
+### `t2s(str)`
+
+Converts Traditional Chinese to Simplified Chinese, e.g. `t2s('憂鬱的臺灣烏龜') == '忧郁的台湾乌龟'`. Non-string arguments are returned unchanged.
 
 ## List functions
 
+Lists are the general-purpose composite value, and this is the largest toolbox:
+construction, access, reshaping, and set operations, all usable inside a single
+expression.
+
+```prolog
+?[xs, top, pairs, u] := xs = int_range(1, 6),
+    top = last(xs),
+    pairs = chunks(xs, 2),
+    u = union([1, 2], [2, 3])
+```
+
+```
+[[1, 2, 3, 4, 5], 5, [[1, 2], [3, 4], [5]], [1, 2, 3]]
+```
+
 ### `list(x, ...)`
 
-Constructs a list from its argument, e.g. `list(1, 2, 3)`. Equivalent to the literal form `[1, 2, 3]`.
+Constructs a list from its arguments, e.g. `list(1, 2, 3)`. Equivalent to the literal form `[1, 2, 3]`.
+
+### `int_range(end)`, `int_range(start, end)`, `int_range(start, end, step)`
+
+Returns the list of integers in the half-open range `[start, end)`, defaulting to `start = 0` and `step = 1`: `int_range(5) == [0, 1, 2, 3, 4]`, `int_range(1, 6) == [1, 2, 3, 4, 5]`. A negative `step` counts down from `start` while greater than `end`.
 
 ### `is_in(el, list)`
 
@@ -470,7 +660,7 @@ Returns the element at index `n` in the list `l`. Same as `get(l, n, null)`. The
 
 Returns the length of the list.
 
-Can also be applied to a string or a byte array.
+Can also be applied to a string, a byte array, or a vector.
 
 ### `slice(l, start, end)`
 
@@ -524,27 +714,29 @@ Computes the set-theoretic difference of the first argument with respect to the 
 
 ## Binary functions
 
+For byte arrays: bitwise operations, boolean bitsets, and base64 transport.
+
 ### `length(bytes)`
 
 Returns the length of the byte array.
 
-Can also be applied to a list or a string.
+Can also be applied to a list, a string, or a vector.
 
 ### `bit_and(x, y)`
 
-Calculate the bitwise and. The two bytes must have the same lengths.
+Calculates the bitwise and. The two byte arrays must have the same lengths.
 
 ### `bit_or(x, y)`
 
-Calculate the bitwise or. The two bytes must have the same lengths.
+Calculates the bitwise or. The two byte arrays must have the same lengths.
 
 ### `bit_not(x)`
 
-Calculate the bitwise not.
+Calculates the bitwise not.
 
 ### `bit_xor(x, y)`
 
-Calculate the bitwise xor. The two bytes must have the same lengths.
+Calculates the bitwise xor. The two byte arrays must have the same lengths.
 
 ### `pack_bits([...])`
 
@@ -569,13 +761,17 @@ Tries to decode the `str` as a [Base64](https://en.wikipedia.org/wiki/Base64)-en
 
 ## Type checking and conversions
 
+Guards and coercions for mixed-type data: checking what a value is before
+using it, and converting at the boundaries where typed columns meet loosely
+typed input.
+
 ### `coalesce(x, ...)`
 
 Returns the first non-null value; `coalesce(x, y)` is equivalent to `x ~ y`.
 
 ### `to_string(x)`
 
-Convert `x` to a string: the argument is unchanged if it is already a string, otherwise its JSON string representation will be returned.
+Converts `x` to a string: the argument is unchanged if it is already a string, a Json string converts to its unquoted content, and any other value converts to its JSON string representation.
 
 ### `to_float(x)`
 
@@ -591,7 +787,7 @@ Converts `null` and `false` to `0.0`, `true` to `1.0`.
 
 ### `to_int(x)`
 
-Converts to an integer. If `x` is a validity, extracts the timestamp as an integer.
+Converts to an integer. Floats are truncated toward zero (`to_int(-1.7) == -1`); strings are parsed; `null` converts to `0` and booleans to `0` or `1`. If `x` is a validity, extracts its timestamp as an integer (in microseconds since the UNIX epoch).
 
 ### `to_unity(x)`
 
@@ -616,7 +812,7 @@ Tries to convert `x` to a UUID. The input must either be a hyphenated UUID strin
 
 ### `uuid_timestamp(x)`
 
-Extracts the timestamp from a UUID version 1, as seconds since the UNIX epoch. If the UUID is not of version 1, `null` is returned. If `x` is not a UUID, an error is raised.
+Extracts the embedded timestamp from a UUID, as seconds since the UNIX epoch. UUID versions that carry a timestamp (1, 6 and 7) decode; versions without one (such as the random version 4) return `null`. If `x` is not a UUID, an error is raised.
 
 ### `is_null(x)`
 
@@ -654,6 +850,10 @@ Checks for bytes.
 
 Checks for lists.
 
+### `is_vec(x)`
+
+Checks for vectors.
+
 ### `is_string(x)`
 
 Checks for strings.
@@ -664,13 +864,16 @@ Checks for UUIDs.
 
 ## Random functions
 
+Sampling and identifier generation. These are the non-deterministic exceptions
+noted at the top of the page.
+
 ### `rand_float()`
 
-Generates a float in the interval `[0, 1]`, sampled uniformly.
+Generates a float in the half-open interval `[0, 1)`, sampled uniformly.
 
 ### `rand_bernoulli(p)`
 
-Generates a boolean with probability `p` of being `true`.
+Generates a boolean with probability `p` of being `true`. `p` must be between `0` and `1`, inclusive.
 
 ### `rand_int(lower, upper)`
 
@@ -682,17 +885,59 @@ Randomly chooses an element from `list` and returns it. If the list is empty, it
 
 ### `rand_uuid_v1()`
 
-Generate a random UUID, version 1 (random bits plus timestamp). The resolution of the timestamp part is much coarser on WASM targets than the others.
+Generates a random UUID, version 1 (random bits plus timestamp). The resolution of the timestamp part is much coarser on WASM targets than the others.
 
 ### `rand_uuid_v4()`
 
-Generate a random UUID, version 4 (completely random bits).
+Generates a random UUID, version 4 (completely random bits).
 
 ### `rand_vec(n, type?)`
 
 Generates a vector of `n` random elements. If `type` is not given, it defaults to `F32`.
 
+### `rand_ulid()`
+
+Returns a fresh [ULID](/docs/fork/ulid) as a 26-character Crockford-base32 string: a 48-bit millisecond timestamp followed by 80 random bits. Because the timestamp is the high-order component, ULIDs sort lexicographically in creation order — ideal keys for append-only streams read back by recency.
+
+### `ulid_timestamp(ulid)`
+
+Extracts the embedded timestamp from a ULID string, as an integer count of milliseconds since the UNIX epoch. Lowercase input and Crockford's confusable aliases (`O`→`0`, `I`/`L`→`1`) are accepted; a malformed or non-canonical ULID raises an error rather than decoding to a wrong timestamp.
+
+```prolog
+?[id, ms] := id = rand_ulid(), ms = ulid_timestamp(id)
+```
+
+```
+["01KX9ED2CAJTBGFC27NFG5P9DR", 1783802268042]
+```
+
+Your values will differ: the id embeds the wall clock at the moment of the call.
+
+<Callout type="fork">
+  `rand_ulid()` and `ulid_timestamp()` are mnestic additions (0.8.0). See
+  [ULID identifiers](/docs/fork/ulid) for why sortable keys suit agentic-memory
+  workloads.
+</Callout>
+
 ## Regex functions
+
+Lightweight pattern matching and extraction inside expressions: pulling a
+number out of a sentence, validating a shape, rewriting a string. For ranked
+search over prose, use a [full-text index](/docs/proximity-search) instead.
+
+```prolog
+?[id, num] := *memory{ id, text },
+    regex_matches(text, '[0-9]+'),
+    num = to_int(regex_extract_first(text, '[0-9]+'))
+```
+
+```
+id    num
+m1    400
+m3    3
+m5    128
+m7    30
+```
 
 ### `regex_matches(x, reg)`
 
@@ -704,7 +949,7 @@ Replaces the first occurrence of the pattern `reg` in `x` with `y`.
 
 ### `regex_replace_all(x, reg, y)`
 
-Replaces all occurrences of the pattern `reg` in `x` with `y`.
+Replaces all occurrences of the pattern `reg` in `x` with `y`, e.g. `regex_replace_all(lowercase('Postgres Connector'), '[^a-z0-9]+', '-') == 'postgres-connector'`.
 
 ### `regex_extract(x, reg)`
 
@@ -781,22 +1026,90 @@ $     the end of the text
 
 ## Timestamp functions
 
+There is no dedicated datetime type: time is plain numbers, in seconds since
+the UNIX epoch, as produced by `now()` and consumed by `format_timestamp`.
+Validities — the timestamped assert/retract values behind
+[time travel](/docs/time-travel) — also appear here, and their timestamps count
+in *microseconds*.
+
+```prolog
+?[utc, tokyo, back] := ts = 1751587200,
+    utc = format_timestamp(ts),
+    tokyo = format_timestamp(ts, 'Asia/Tokyo'),
+    back = parse_timestamp(utc)
+```
+
+```
+["2025-07-04T00:00:00+00:00", "2025-07-04T09:00:00+09:00", 1751587200.0]
+```
+
 ### `now()`
 
-Returns the current timestamp as seconds since the UNIX epoch. The resolution is much coarser on WASM targets than the others.
+Returns the current timestamp as seconds since the UNIX epoch (a float). The resolution is much coarser on WASM targets than the others.
 
 ### `format_timestamp(ts, tz?)`
 
-Interpret `ts` as seconds since the epoch and format as a string according to [RFC3339](https://www.rfc-editor.org/rfc/rfc3339). If `ts` is a validity, its timestamp will be converted to seconds and used.
+Interprets `ts` as seconds since the epoch and formats it as a string according to [RFC3339](https://www.rfc-editor.org/rfc/rfc3339). If `ts` is a validity, its timestamp will be converted to seconds and used.
 
 If a second string argument is provided, it is interpreted as a [timezone](https://en.wikipedia.org/wiki/Tz_database) and used to format the timestamp.
 
 ### `parse_timestamp(str)`
 
-Parse `str` into seconds since the epoch according to RFC3339.
+Parses `str` into seconds since the epoch according to RFC3339.
 
 ### `validity(ts_micro, is_assert?)`
 
-Returns a validity object with the given timestamp in microseconds. If `is_assert` is `true`, the validity will be asserted, otherwise it will be assumed. Defaults to `true`.
+Returns a validity object with the given timestamp in microseconds. If `is_assert` is `true`, the validity is an assertion, otherwise a retraction. Defaults to `true`.
+
+```prolog
+?[v, ts] := v = validity(1751587200000000), ts = to_int(v)
+```
+
+```
+[[1751587200000000, true], 1751587200000000]
+```
+
+## Interval functions
+
+For half-open spans `[start, end)` stored as two-element lists of numbers
+(sessions, shifts, validity windows), tested for overlap without decomposing
+into bound-by-bound comparisons.
+
+<Callout type="fork">
+  `interval_overlaps` is a mnestic addition (0.10.1), together with the
+  `interval_coalesce` aggregate that merges a group's overlapping and adjacent
+  spans — see [Aggregations](/docs/aggregations).
+</Callout>
+
+### `interval_overlaps(a, b)`
+
+Returns `true` if the two intervals share at least one point, under half-open
+`[start, end)` semantics: touching intervals do **not** overlap, and an empty
+interval `[x, x)` contains no point, so it overlaps nothing. Mixed `Int`/`Float`
+bounds are compared numerically.
+
+```prolog
+?[touching, apart, nested, empty] :=
+    touching = interval_overlaps([0, 5], [5, 10]),
+    apart    = interval_overlaps([0, 5], [7, 10]),
+    nested   = interval_overlaps([0, 10], [2, 3]),
+    empty    = interval_overlaps([3, 3], [0, 10])
+```
+
+```
+[false, false, true, false]
+```
+
+Malformed spans — wrong shape, non-numeric or NaN bounds, `start > end` — raise
+an error rather than silently comparing as `false`:
+
+```prolog
+?[x] := x = interval_overlaps([5, 0], [0, 10])
+```
+
+```
+eval::throw: Evaluation of expression failed
+help: 'interval_overlaps' got a malformed interval (start > end): [5, 0]
+```
 
 <Attribution page="functions.html" />

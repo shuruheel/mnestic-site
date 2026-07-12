@@ -28,6 +28,43 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 
 ## Highlights by release
 
+### 0.12.1 — six inherited bugs, found and named
+
+Every bug in this release is **inherited from upstream CozoDB and has been latent
+since before the fork point** — not one is a regression the fork introduced. They
+surfaced in a line-by-line audit of the engine we inherited. Naming them is the
+point: a dormant project ships none of these fixes, because nobody is reading the
+code.
+
+- **`::reindex <relation>` — the repair path.** Rebuild a relation's HNSW / FTS /
+  LSH indexes in place from the index configuration the database already stores.
+  It replaces the "drop and recreate the index" advice the bulk-load paths used to
+  give, which meant reconstructing the original `::hnsw`/`::fts` creation script
+  (extractor, tokenizer, filters, `ef_construction`, `m_neighbours`…) by hand.
+  Each index is rebuilt from its **own stored manifest** — an LSH manifest keeps
+  the derived band geometry but not the weights behind it, so a hand-rolled
+  recreate silently changes the index's recall profile.
+- **Full-text postings leaked on in-place updates** (affects every release through
+  0.12.0). A relation carrying *only* an FTS index never deleted a row's old
+  postings on a `:put` over an existing key: terms the document no longer
+  contained kept matching it, the index grew without bound, and BM25 statistics
+  drifted — a measured **55% score error**. **Existing indexes are already
+  affected**; the fix stops new leakage but cannot evict what was written, so
+  affected relations need one `::reindex`. LSH does not leak.
+- **The transaction API reported success for a failed commit.**
+  `MultiTransaction::commit()` discarded the commit's own result, so a failed
+  commit returned `Ok` — and the HTTP `/transact` endpoint answered
+  `200 {"ok": true}` for transactions that never committed. Change-feed
+  subscribers likewise received events for rows that were never committed.
+- **Two non-default backends fixed.** `newrocksdb` never armed conflict
+  validation, so concurrent updates were silently lost; `sled`'s `del()` never
+  deleted (upstream #306). Both now run a transaction-contract suite in CI.
+- **`import_from_backup` silently stranded HNSW/FTS/LSH indexes** — a restored
+  backup returned nothing from hybrid retrieval, with no signal. It now warns, and
+  both bulk-load warnings point at `::reindex`.
+
+→ [System ops](/docs/system-ops#reindex-rel_name) · [Proximity search](/docs/proximity-search) · [Release history](/docs/release-notes)
+
 ### 0.12.0 — budgeted weighted traversal
 
 - **`BudgetedTraversal` — the context-fill primitive.** A new `graph-algo`
@@ -67,7 +104,7 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
   `run_script`. They compose in recursive rules too, and a malformed operand
   (non-list, non-numeric or NaN component, empty vector) is a loud error.
 
-→ [Aggregations](/docs/aggregations)
+→ [Skyline aggregates](/docs/fork/skyline-aggregates) · [Aggregations](/docs/aggregations)
 
 ### 0.11.0 — cached graph projections
 
@@ -183,6 +220,8 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
   semi-naive delta every epoch (the same defect family as the 0.10.0 `and`/`or`
   changed-bit fix).
 
+→ [Skyline aggregates](/docs/fork/skyline-aggregates)
+
 ### 0.10.0 — bitemporality & provenance semirings
 
 - **Bitemporality** — engine-assigned transaction time alongside Cozo's valid
@@ -202,6 +241,8 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
   `and`/`or` meet aggregates, a panic on negated validity atoms, wrong answers from
   prefix-truncated temporal-column joins, and the braced-`%return` imperative parse
   panic.
+
+→ [Bitemporality](/docs/fork/bitemporality) · [Provenance semirings](/docs/fork/provenance-semirings)
 
 ### 0.9.0 — read-only Cypher & corrupt-DB tooling
 

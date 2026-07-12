@@ -1,21 +1,74 @@
 export const metadata = {
   title: "Aggregations",
   description:
-    "Reference for CozoScript aggregation operators: semi-lattice aggregations usable in recursion, and ordinary and statistical aggregations.",
+    "Reference for CozoScript aggregations in mnestic: the ordinary and semi-lattice catalogs, plus the fork's bounded-meet family — min_cost_k for the k cheapest derivations with evidence chains, pareto_min/pareto_max skyline frontiers, and interval_coalesce.",
 };
 
 # Aggregations
 
-Aggregations in Cozo can be thought of as a function that acts on a stream of
-values and produces a single value (the aggregate).
+An aggregation can be thought of as a function that acts on a stream of values
+and produces a result per group: `count`, `mean`, `min` and the rest of the
+familiar catalog. The engine splits them into two kinds, _ordinary_ and
+_semi-lattice_ aggregations, and the split is load-bearing: only semi-lattice
+aggregations may be applied recursively. mnestic adds a third kind,
+_bounded-meet_ aggregations, which keep several rows per group and may also
+recurse.
 
-There are two kinds of aggregations in Cozo, _ordinary aggregations_ and
-_semi-lattice aggregations_. They are implemented differently in Cozo, with
-semi-lattice aggregations more powerful (only the latter can be used
-recursively).
+Here is what the third kind buys you. The examples on this page run against an
+agent's memory store: a `memory` relation (`id => kind, text, importance, at, …`),
+an `entity` relation with a `mentions` link table, and weighted association
+edges `recalls` (`from, to => strength`). Treating `1 - strength` as edge cost,
+one rule pair finds the two cheapest association trails from the RocksDB
+decision `m2` to every memory reachable from it, each trail carrying its full
+path as evidence:
 
-The power of semi-lattice aggregations derive from the additional properties
-they satisfy: a [semilattice](https://en.wikipedia.org/wiki/Semilattice):
+```prolog
+paths[t, min_cost_k(pack, 2)] := t = 'm2', pack = [['m2'], 0.0]
+paths[t, min_cost_k(pack, 2)] := paths[m, p], *recalls{from: m, to: t, strength},
+                                 pack = [concat(first(p), [t]), last(p) + (1 - strength)]
+
+?[to, path, cost] := paths[to, pack], to != 'm2',
+                     path = first(pack), cost = round(last(pack) * 100) / 100
+
+:order to, cost
+```
+
+```
+to    path                        cost
+m3    ['m2', 'm3']                0.4
+m4    ['m2', 'm3', 'm4']          0.5
+m5    ['m2', 'm5']                0.6
+m5    ['m2', 'm3', 'm4', 'm5']    0.65
+```
+
+For `m5` the query keeps two competing derivations, cheapest first: the direct
+association and the chain through the compaction incident. Doing this without
+the aggregate means re-running a path search per answer in application code.
+`min_cost_k` and the rest of the bounded-meet family are documented
+[below](#bounded-meet-aggregations-mnestic); everything before that is the
+inherited catalog, plus one fork addition (`interval_coalesce`) flagged where
+it appears.
+
+## How aggregations are applied
+
+In a rule head like `?[kind, max(importance)] := ...`, the head variables not
+wrapped in an aggregation act as _grouping variables_: the aggregation is
+applied once per distinct combination of their values. With no grouping
+variables at all, the result is exactly one row.
+
+Aggregations are applied to the rows produced by the rule body using **bag
+semantics**, even though relations are otherwise sets. This is what makes
+`?[count(kind)] := *memory{kind}` return `8` — one per row — rather than `3`,
+one per distinct value; use `count_unique` when you want the latter.
+
+If a rule has several definitions, they must apply identical aggregations in
+the same head positions.
+
+## Semi-lattice aggregations
+
+Semi-lattice aggregations owe their extra power to the additional properties
+they satisfy, those of a
+[semilattice](https://en.wikipedia.org/wiki/Semilattice):
 
 - **idempotency**: the aggregate of a single value `a` is `a` itself,
 - **commutativity**: the aggregate of `a` then `b` is equal to the aggregate of
@@ -23,54 +76,85 @@ they satisfy: a [semilattice](https://en.wikipedia.org/wiki/Semilattice):
 - **associativity**: it is immaterial where we put the parentheses in an
   aggregate application.
 
-In auto-recursive semi-lattice aggregations, there are soundness constraints on
-what can be done on the bindings coming from the auto-recursive parts within the
-body of the rule. Usually you do not need to worry about this at all since the
-obvious ways of using this functionality are all sound, but as for
-non-termination due to fresh variables introduced by function applications, Cozo
-does not (and cannot) check for unsoundness in this case.
+Those laws are what make it sound for a rule to aggregate over its own output:
+recursion through the aggregation converges instead of chasing its tail. The
+classic use is shortest paths: `min` over an accumulating distance, applied to
+a rule that recurses into itself. Over the `recalls` graph, minimum hop
+distance from `m2`:
 
-## Semi-lattice aggregations
+```prolog
+hops[t, min(d)] := *recalls{from: 'm2', to: t}, d = 1
+hops[t, min(d)] := hops[m, e], *recalls{from: m, to: t}, d = e + 1
+
+?[t, d] := hops[t, d]
+
+:order t
+```
+
+```
+t     d
+m3    1
+m4    2
+m5    1
+```
+
+<Callout type="warning">
+  For the head to be treated as semi-lattice — and therefore allowed to
+  recurse — the aggregations must come at the **end** of the rule head.
+  Written as `hops[min(d), t]`, `min` counts as an ordinary aggregation, and
+  the engine does not reliably reject the recursion: the recursive definition
+  can silently contribute nothing. The query above, rewritten that way,
+  returns only the one-hop rows and drops `m4` without an error.
+</Callout>
+
+In auto-recursive semi-lattice aggregations, there are soundness constraints on
+what can be done with the bindings coming from the auto-recursive parts within
+the body of the rule. Usually you do not need to worry about this, since the
+obvious ways of using this functionality are all sound, but as with
+non-termination due to fresh variables introduced by function applications, the
+engine does not (and cannot) check for unsoundness in this case.
 
 ### min(x)
 
-`min(x)`
-
-Aggregate the minimum value of all `x`.
+Aggregate the minimum value of all `x`. Only applicable to numbers; other
+values raise an error, except `null`, which is skipped — a group containing
+only `null`s aggregates to `null`.
 
 ### max(x)
 
-`max(x)`
+Aggregate the maximum value of all `x`. The same rules as `min` apply:
+numbers only, `null`s skipped.
 
-Aggregate the maximum value of all `x`.
+```prolog
+?[kind, max(importance)] := *memory{kind, importance}
+```
+
+```
+kind        max(importance)
+decision    0.9
+insight     0.8
+note        0.7
+```
 
 ### and(var)
 
-`and(var)`
-
-Aggregate the logical conjunction of the variable passed in.
+Aggregate the logical conjunction of the variable passed in. The values must be
+booleans.
 
 ### or(var)
 
-`or(var)`
-
-Aggregate the logical disjunction of the variable passed in.
+Aggregate the logical disjunction of the variable passed in. The values must be
+booleans.
 
 ### union(var)
-
-`union(var)`
 
 Aggregate the unions of `var`, which must be a list.
 
 ### intersection(var)
 
-`intersection(var)`
-
 Aggregate the intersections of `var`, which must be a list.
 
 ### choice(var)
-
-`choice(var)`
 
 Returns a non-null value. If all values are null, returns `null`. Which one is
 returned is deterministic but implementation-dependent and may change from
@@ -78,128 +162,118 @@ version to version.
 
 ### min_cost([data, cost])
 
-`min_cost([data, cost])`
-
-The argument should be a list of two elements and this aggregation chooses the
-list of the minimum `cost`.
+The argument should be a list of two elements, and this aggregation keeps the
+pair with the minimum `cost`, which must be numeric. The whole two-element list
+is returned. The bounded-meet generalization `min_cost_k`
+([below](#min_cost_kpayload-cost-k)) keeps the k cheapest pairs instead of one.
 
 ### shortest(var)
-
-`shortest(var)`
 
 `var` must be a list. Returns the shortest list among all values. Ties will be
 broken non-deterministically.
 
 ### bit_and(var)
 
-`bit_and(var)`
-
-`var` must be bytes. Returns the bitwise 'and' of the values.
+`var` must be bytes. Returns the bitwise 'and' of the values, which must all
+have the same length.
 
 ### bit_or(var)
 
-`bit_or(var)`
-
-`var` must be bytes. Returns the bitwise 'or' of the values.
-
-### pareto_min(v) / pareto_max(v)
-
-`pareto_min(v)`, `pareto_max(v)`
-
-Skyline (Pareto-frontier) aggregates, added in mnestic 0.11.1. `v` is a numeric
-vector (a list of numbers). Per group, each keeps the **non-dominated frontier**
-under componentwise order — `pareto_min` treats smaller as better on every
-component, `pareto_max` larger — emitting **one row per survivor**, so a single
-group can yield several rows. A point is dropped only when some other point is at
-least as good on every component and strictly better on at least one.
-
-Minimizing both coordinates of five 2-D points keeps the lower-left frontier and
-drops the two dominated points (`[3, 3]` and `[2, 6]`):
-
-```prolog
-cand[g, p] <- [['a', [1, 5]], ['a', [2, 2]], ['a', [5, 1]],
-               ['a', [3, 3]], ['a', [2, 6]]]
-surv[g, pareto_min(p)] := cand[g, p]
-?[g, p] := surv[g, p]
-# => ['a', [1, 5]], ['a', [2, 2]], ['a', [5, 1]]
-```
-
-**Mixed objectives** — minimizing some components while maximizing others — are
-expressed by negating the maximized components and using `pareto_min`:
-
-```prolog
-?[frontier] := offer[price, quality],
-               v = [price, -quality],
-               frontier = pareto_min(v)
-```
-
-The dominance is native (componentwise), so unlike the host-registered
-`antichain` bounded-meet these need no registration and are reachable from every
-binding through `run_script`. They compose in recursive rules. A malformed
-operand — a non-list, a non-numeric or `NaN` component, or an empty vector — is a
-loud error, never a silently dropped row.
+`var` must be bytes. Returns the bitwise 'or' of the values, which must all
+have the same length.
 
 ## Ordinary aggregations
 
+Ordinary aggregations fold the group's whole bag of values in one pass. They
+are not sound in self-recursion, and the engine rejects the attempt as
+unstratifiable. The exception to that safety net is a semi-lattice aggregation
+written in a non-tail head position (see the warning in the previous section),
+which slips through as "ordinary" and recurses unsoundly instead of erroring.
+
 ### count(var)
 
-`count(var)`
-
 Count how many values are generated for `var` (using bag instead of set
-semantics).
+semantics). Counting how often each entity is mentioned across the agent's
+memories:
+
+```prolog
+?[name, count(memory)] := *mentions{memory, entity}, *entity{id: entity, name}
+
+:order -count(memory), name
+```
+
+```
+name              count(memory)
+Postgres          3
+RocksDB           3
+Maya              1
+Sam               1
+search-service    1
+```
 
 ### count_unique(var)
-
-`count_unique(var)`
 
 Count how many unique values there are for `var`.
 
 ### collect(var)
 
-`collect(var)`
+Collect all values for `var` into a list. An optional second argument caps the
+list: `collect(var, n)` keeps at most `n` values (`n` must be a positive
+integer).
 
-Collect all values for `var` into a list.
+```prolog
+?[memory, collect(name)] := memory = 'm6', *mentions{memory, entity},
+                            *entity{id: entity, name}
+```
+
+```
+memory    collect(name)
+m6        ['Postgres', 'Sam']
+```
 
 ### unique(var)
-
-`unique(var)`
 
 Collect `var` into a list, keeping each unique value only once.
 
 ### group_count(var)
 
-`group_count(var)`
-
 Count the occurrence of unique values of `var`, putting the result into a list
 of lists, e.g. when applied to `'a'`, `'b'`, `'c'`, `'c'`, `'a'`, `'c'`, the
-results is `[['a', 2], ['b', 1], ['c', 3]]`.
+result is `[['a', 2], ['b', 1], ['c', 3]]`.
 
 ### bit_xor(var)
-
-`bit_xor(var)`
 
 `var` must be bytes. Returns the bitwise 'xor' of the values.
 
 ### latest_by([data, time])
 
-`latest_by([data, time])`
-
 The argument should be a list of two elements and this aggregation returns the
 `data` of the maximum `time`. This is very similar to `min_cost`, the
 differences being that maximum instead of minimum is used, and non-numerical
-costs are allowed. Only `data` is returned.
+costs are allowed. Only `data` is returned. The freshest memory of each kind:
+
+```prolog
+?[kind, latest_by(pack)] := *memory{kind, text, at}, pack = [text, at]
+```
+
+```
+kind        latest_by(pack)
+decision    'Cap SST file size at 128 MB'
+insight     'Slow connector queries trace to a missing tenant_id index'
+note        'The Postgres connector timeout is 30 seconds'
+```
 
 ### smallest_by([data, cost])
 
-`smallest_by([data, cost])`
-
 The argument should be a list of two elements and this aggregation returns the
 `data` of the minimum `cost`. Non-numerical costs are allowed, unlike
-`min_cost`. The value `null` for `cost` are ignored when comparing.
+`min_cost`. A `null` cost is not ignored: `null` compares lower than every
+other value, so a `[data, null]` pack displaces the current minimum and then
+resets the comparison, letting the next pack the engine folds displace it in
+turn. With `null` costs in a group the result is order-dependent; keep costs
+`null`-free.
 
 ### choice_rand(var)
-
-`choice_rand(var)`
 
 Non-deterministically chooses one of the values of `var` as the aggregate. Each
 value the aggregation encounters has the same probability of being chosen.
@@ -210,36 +284,255 @@ value the aggregation encounters has the same probability of being chosen.
   state, which is an implementation restriction unlikely to be lifted.
 </Callout>
 
-### Statistical aggregations
+### interval_coalesce(span)
+
+Merges the group's interval spans into maximal intervals. Each `span` is a
+two-element list `[start, end)` — half-open, with numeric bounds. Overlapping
+**and touching** spans merge (`[0, 5)` plus `[5, 10)` coalesces to `[0, 10)`),
+and the result is a single list of the merged spans in ascending order. A
+malformed span (not a two-element list, non-numeric bounds, or `start > end`)
+is a loud error, never a silently dropped row. Mixed integer and float bounds
+compare numerically, so a span ending at `5` and one starting at `5.0` merge.
+
+Merging each person's on-call hours, where back-to-back shifts become one
+block:
+
+```prolog
+on_call[person, span] <- [
+  ['maya', [9, 12]], ['maya', [12, 14]], ['maya', [15, 17]],
+  ['sam',  [10, 13]], ['sam',  [11, 16]],
+]
+?[person, interval_coalesce(span)] := on_call[person, span]
+```
+
+```
+person    interval_coalesce(span)
+maya      [[9, 14], [15, 17]]
+sam       [[10, 16]]
+```
+
+<Callout type="fork">
+  `interval_coalesce` is a mnestic addition (0.10.1), alongside the
+  `interval_overlaps(a, b)` builtin over the same half-open span shape (see
+  [Functions](/docs/functions)). Under half-open semantics, touching spans do
+  not _overlap_ but do _coalesce_, and an empty span `[x, x)` overlaps nothing.
+</Callout>
+
+## Statistical aggregations
+
+All statistical aggregations are ordinary aggregations.
 
 ### mean(x)
-
-`mean(x)`
 
 The mean value of `x`.
 
 ### sum(x)
 
-`sum(x)`
-
-The sum of `x`.
+The sum of `x`. The accumulator is a 64-bit float, so the result is a float
+even when every input is an integer, and integer sums are exact only up to
+`2^53`.
 
 ### product(x)
 
-`product(x)`
-
-The product of `x`.
+The product of `x`. Like `sum`, it accumulates and returns floats.
 
 ### variance(x)
-
-`variance(x)`
 
 The sample variance of `x`.
 
 ### std_dev(x)
 
-`std_dev(x)`
-
 The sample standard deviation of `x`.
+
+Aggregates over floats inherit float arithmetic, noise included. To present
+rounded values, aggregate first and round in a follow-up rule (functions
+cannot be applied inside a rule head):
+
+```prolog
+avg[kind, mean(importance)] := *memory{kind, importance}
+
+?[kind, avg_importance] := avg[kind, a], avg_importance = round(a * 1000) / 1000
+```
+
+```
+kind        avg_importance
+decision    0.875
+insight     0.775
+note        0.55
+```
+
+## Bounded-meet aggregations (mnestic)
+
+Every aggregation above collapses a group to a single row. mnestic adds a third
+category that keeps a bounded **set** of rows per group — the k cheapest
+candidates, or a Pareto frontier — with each survivor emitted as its own output
+row. Like semi-lattice aggregations, bounded-meet aggregations may be applied
+recursively; unlike them, a better candidate arriving later _displaces_ a worse
+one, so convergence is a bound rather than a guarantee and the engine enforces
+it (details under `min_cost_k` below).
+
+Two rules apply to any bounded-meet head: the aggregate must be the **single**
+aggregated column, in the **last** position of the rule head, and recursion
+into it must be direct — cyclic recursion routed through an intermediate rule
+is rejected as unstratifiable.
+
+<Callout type="fork">
+  The bounded-meet category and `min_cost_k` landed in mnestic 0.10.0 as part
+  of the provenance-semirings work; the built-in skyline aggregates
+  `pareto_min` / `pareto_max` landed in 0.11.1. See
+  [Provenance semirings](/docs/fork/provenance-semirings) and
+  [Skyline aggregates](/docs/fork/skyline-aggregates) for what each is for, and
+  [What mnestic adds](/docs/fork/overview) for the release map.
+</Callout>
+
+### min_cost_k([payload, cost], k)
+
+The direct generalization of `min_cost`: keeps the `k` lowest-cost candidates
+per group instead of one. The aggregated value is a two-element list
+`[payload, cost]` bound in the rule body; `cost` must be numeric and `k` must
+be a positive integer given at the call site. Each surviving pack becomes its
+own output row, ordered by ascending cost. Ties are ordered by comparing the
+whole pack, so results are deterministic; exact-duplicate packs collapse into
+one. A group with fewer than `k` candidates keeps them all.
+
+Non-recursively, it is a per-group top-k. Since lower cost wins, negate a
+score you want maximized. The two most important memories of each kind:
+
+```prolog
+?[kind, min_cost_k(pack, 2)] := *memory{id, kind, importance}, pack = [id, -importance]
+```
+
+```
+kind        min_cost_k(pack)
+decision    ['m2', -0.9]
+decision    ['m5', -0.85]
+insight     ['m4', -0.8]
+insight     ['m8', -0.75]
+note        ['m3', -0.7]
+note        ['m1', -0.6]
+```
+
+Recursively, it computes the **k cheapest derivations per answer, with the
+evidence that justifies them** — the payload accumulates the path while the
+cost accumulates along it, as in the k-cheapest-trails query at the top of
+this page. The engine only consumes the cost; the cost function is yours
+(`1 - strength`, `-ln(w)`, hop counts, dollars).
+
+Because a cheaper derivation displaces a more expensive one, the usual
+fixed-point argument does not guarantee termination: a cost-decreasing cycle
+improves some k-set forever. The engine converts that into a loud error by
+capping evaluation at 4096 changed epochs. Only epochs in which some k-set
+actually improved count toward the cap, so a converged `min_cost_k` rule never
+caps an unrelated recursion sharing its stratum:
+
+```prolog
+edge[f, t, w] <- [[1, 2, -1.0], [2, 1, -1.0]]
+sp[t, min_cost_k(pack, 2)] := t = 1, pack = [[1], 0.0]
+sp[t, min_cost_k(pack, 2)] := sp[m, p], edge[m, t, w],
+                              pack = [concat(first(p), [t]), last(p) + w]
+?[pack] := sp[2, pack]
+```
+
+```
+bounded-meet evaluation did not converge within 4096 changed epochs: some
+k-set kept improving — a cost-decreasing cycle (e.g. negative edge weights
+under 'min_cost_k'), or a graph deeper than the cap
+```
+
+Cycles with **non-negative** total cost are handled fine: a lap around such a
+cycle never improves a pack, so the k-sets settle.
+
+### pareto_min(v) / pareto_max(v)
+
+Skyline (Pareto-frontier) aggregates. `v` is a non-empty list of numbers: a
+point scored on several objectives at once. Per group, each keeps the
+**non-dominated frontier** under componentwise order: `pareto_min` treats
+smaller as better on every component, `pareto_max` larger. A point is dropped
+only when some other point is at least as good on every component and strictly
+better on at least one; every survivor is emitted as its own row, so a single
+group can yield several rows. Where `min` collapses to one winner, a skyline
+surfaces the whole _contested set_ of defensible answers.
+
+Minimizing both coordinates of five 2-D points keeps the lower-left frontier
+and drops the two dominated points (`[3, 3]` and `[2, 6]`):
+
+```prolog
+cand[g, p] <- [['a', [1, 5]], ['a', [2, 2]], ['a', [5, 1]],
+               ['a', [3, 3]], ['a', [2, 6]]]
+surv[g, pareto_min(p)] := cand[g, p]
+
+?[g, p] := surv[g, p]
+```
+
+```
+g    p
+a    [1, 5]
+a    [2, 2]
+a    [5, 1]
+```
+
+**Mixed objectives** — minimizing some components while maximizing others —
+are expressed by negating the maximized components and using `pareto_min`.
+Which memories are worth re-surfacing when nothing else is both fresher and
+more important? Minimize age, maximize importance:
+
+```prolog
+frontier[pareto_min(p)] := *memory{importance, at},
+                           p = [(1751932800.0 - at) / 86400, -importance]
+
+?[id, age_days, importance] := frontier[p], *memory{id, importance, at},
+                               age_days = (1751932800.0 - at) / 86400,
+                               p = [age_days, -importance]
+
+:order age_days
+```
+
+```
+id    age_days    importance
+m8    0.0         0.75
+m5    3.0         0.85
+m2    6.0         0.9
+```
+
+Every other memory is beaten on both axes by one of these three; the second
+rule joins the surviving vectors back to their rows.
+
+Points to know:
+
+- **No registration, every binding.** The dominance is native (componentwise),
+  so unlike the host-registered dominance aggregates these need no Rust-side
+  setup and are reachable from every surface: the Python wheel, `cozo-bin`,
+  anything that can `run_script`.
+- **Recursion.** They compose in recursive rules as bounded-meet aggregates,
+  e.g. accumulating multi-objective path costs the same way `min_cost_k`
+  accumulates a single cost.
+- **Loud errors.** A malformed operand — a non-list, a non-numeric or `NaN`
+  component, or an empty vector — is an error, never a silently dropped row:
+  `a skyline vector component must be a number, got "oops"`. Call-site
+  arguments are also rejected (`pareto_min(p, 3)` is an error), and the two
+  names are reserved against host registration.
+- **Differing lengths survive.** Vectors of different lengths are treated as
+  incomparable, so both stay on the frontier; keep one arity per group.
+- **No cap.** The frontier is never truncated; it is bounded by the group's
+  own row count, like `collect` or `union`. Skyline size grows with the number
+  of dimensions, so keep the objective vector short.
+
+## Host-defined aggregations
+
+When embedding mnestic from Rust, two `Db` registration points open these
+categories to your own operators: `register_custom_aggr` admits a user-defined
+combine as an ordinary or (if it satisfies the semilattice laws) recursion-safe
+semi-lattice aggregate, and `register_bounded_meet_aggr` admits a dominance
+bounded-meet — an antichain/skyline over your own partial order, with a
+mandatory `max_survivors` guard whose overflow is a loud error rather than a
+silent truncation. Registered closures are Rust-embedded only; they do not
+cross the Python or served surfaces. See
+[Beyond CozoScript](/docs/beyond-cozoscript).
+
+<Callout type="fork">
+  `register_custom_aggr` landed in mnestic 0.10.0 and
+  `register_bounded_meet_aggr` in 0.10.1. The built-in `pareto_min` /
+  `pareto_max` cover the common skyline case without any registration.
+</Callout>
 
 <Attribution page="aggregations.html" />

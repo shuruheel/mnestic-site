@@ -1,267 +1,417 @@
 export const metadata = {
   title: "Stored relations & transactions",
   description:
-    "Creating and mutating stored relations, chaining queries into transactions, the query-chain mini-language, indices, triggers, and storing large values.",
+    "Creating and mutating stored relations in mnestic: the write ops from :create to :ensure_not, key vs value columns, atomic multi-query transactions, the imperative query-chain mini-language, secondary indices, triggers, and storing large values.",
 };
 
 # Stored relations & transactions
 
-In CozoDB, data are stored in _stored relations_ on disk.
+Data on disk lives in _stored relations_. This page covers everything about
+writing them: the mutation ops (`:create`, `:put`, `:rm`, and friends), how
+column specs work, how to run several queries in one atomic transaction,
+secondary indices, and triggers. To read stored relations in queries you use
+`*relation[...]` or `*relation{...}` atoms, described in
+[Queries](/docs/queries).
+
+A schema for an agent's episodic memory takes one op:
+
+```prolog
+:create memory {
+    id: String
+    =>
+    kind: String,
+    text: String,
+    importance: Float,
+    at: Float,
+    v: <F32; 4>,
+}
+```
+
+Columns before `=>` are the key, columns after it are values. Writing rows is
+`:put`, and reading them back is a query:
+
+```prolog
+?[id, kind, text, importance, at, v] <- [
+  ['m2', 'decision', 'Chose RocksDB over sled for the write path',            0.9, 1751414400.0, [0.9, 0.1, 0.2, 0.1]],
+  ['m3', 'note',     'Nightly compaction stalls search-service around 03:00', 0.7, 1751500800.0, [0.6, 0.1, 0.8, 0.1]],
+  ['m4', 'insight',  'Compaction stalls correlate with oversized SST files',   0.8, 1751587200.0, [0.7, 0.1, 0.7, 0.1]],
+]
+:put memory { id => kind, text, importance, at, v }
+```
+
+```prolog
+?[id, text, importance] := *memory{id, text, importance}, importance >= 0.8
+```
+
+```
+id    text                                                    importance
+m2    Chose RocksDB over sled for the write path              0.9
+m4    Compaction stalls correlate with oversized SST files    0.8
+```
+
+The rest of this page keeps working in this world. Besides more `memory` rows,
+the examples assume three companion relations: `entity {id => name, kind}` for
+the people and tools the agent knows about, `mentions {memory, entity}` linking
+memories to entities (an all-key relation: with no `=>`, every column is part
+of the key), and `recalls {from, to => strength}`, weighted association edges
+between memories.
 
 ## Stored relations
 
-To query stored relations, use the `*relation[...]` or `*relation{...}` atoms in
-inline or fixed rules, as explained in the [last chapter](/docs/queries). To
-manipulate stored relations, use one of the following query options:
+A mutation is a _query option_: a query produces a result relation, and the op
+says what to do with it. Successful mutations return a single `status` row
+(`OK`) unless [`:returning`](#returning) is given.
 
 ### `:create <NAME> <SPEC>`
 
 Create a stored relation with the given name and spec. No stored relation with
 the same name can exist beforehand. If a query is specified, data from the
 resulting relation is put into the newly created stored relation. This is the
-only stored relation-related query option in which a query may be omitted.
+only stored-relation op for which the query may be omitted.
 
 ### `:replace <NAME> <SPEC>`
 
 Similar to `:create`, except that if the named stored relation exists
 beforehand, it is completely replaced. The schema of the replaced relation need
-not match the new one. You cannot omit the query for `:replace`. If there are
-any triggers associated, they will be preserved. Note that this may lead to
-errors if `:replace` leads to schema change.
+not match the new one. You cannot omit the query for `:replace`.
+
+Three constraints apply:
+
+- A relation with secondary indices cannot be `:replace`d (error
+  `eval::replace_rel_with_indices`); drop the indices first.
+- The old relation's `on replace` triggers run first, and its `on put`/`on rm`
+  triggers apply to the rows written by this `:replace` statement — which can
+  fail if the schema changed under them — but the relation afterwards has
+  **no triggers attached**. Re-attach them with `::set_triggers` if you need
+  them to survive. (See [Triggers](#triggers).)
+- `:replace` cannot run inside a trigger body. Attaching such a trigger
+  succeeds; the first mutation that fires it aborts with
+  `eval::replace_in_trigger`.
 
 ### `:put <NAME> <SPEC>`
 
 Put rows from the resulting relation into the named stored relation. If keys
 from the data exist beforehand, the corresponding rows are replaced with new
-ones.
+ones (an upsert).
 
 ### `:rm <NAME> <SPEC>`
 
-Remove rows from the named stored relation. Only keys should be specified in
-`<SPEC>`. Removing a non-existent key is not an error and does nothing.
+Remove rows from the named stored relation. Only keys are used; removing a
+non-existent key is not an error and does nothing.
 
 ### `:insert <NAME> <SPEC>`
 
-Insert rows from the resulting relation into the named stored relation. If keys
-from the data exist beforehand, an error is raised.
+Like `:put`, but if a key from the data exists beforehand, an error is raised.
+Re-inserting the existing entity `e_sam` fails with:
+
+```
+Assertion failure for ["e_sam", "Sam A.", "person"] of entity: key exists in database
+```
 
 ### `:update <NAME> <SPEC>`
 
-Update rows in the named stored relation. Only keys and any non-keys that you
-want to update should be specified in `<SPEC>`, the other non-keys will keep
-their old values. Updating a non-existent key is an error.
+Update rows in the named stored relation. Specify all keys and only the
+non-keys you want to change; the other non-keys keep their old values.
+Updating a non-existent key is an error.
+
+```prolog
+?[id, importance] <- [['m1', 0.7]]
+:update memory { id => importance }
+```
+
+```prolog
+?[text, importance] := *memory{id: 'm1', text, importance}
+```
+
+```
+text                                          importance
+Maya prefers pull requests under 400 lines    0.7
+```
 
 ### `:delete <NAME> <SPEC>`
 
-Delete rows from the named stored relation. Only keys and any non-keys that you
-want to delete should be specified in `<SPEC>`, the other non-keys will keep
-their old values. Deleting a non-existent key raises an error.
+Like `:rm`, removes whole rows by key, but deleting a non-existent key raises
+an error:
+
+```
+Assertion failure for ["e_ghost"] of entity: key does not exists in database
+```
 
 ### `:ensure <NAME> <SPEC>`
 
-Ensure that rows specified by the output relation and spec exist in the
-database, and that no other process has written to these rows when the enclosing
-transaction commits. Useful for ensuring read-write consistency.
+Assert without writing: every row in the result must already exist in the
+stored relation — the key must exist **and** the stored values must match —
+and no other process may have written to those rows when the enclosing
+transaction commits. Useful for read-write consistency across a
+[chained transaction](#chaining-queries). A value mismatch aborts with:
+
+```
+Assertion failure for ["m3", "m4", 0.5] of recalls: key exists in database, but value does not match
+```
 
 ### `:ensure_not <NAME> <SPEC>`
 
-Ensure that rows specified by the output relation and spec do not exist in the
-database and that no other process has written to these rows when the enclosing
-transaction commits. Useful for ensuring read-write consistency.
+The negation: ensure that the rows (keys) do not exist in the database, and
+that no other process has written to them when the enclosing transaction
+commits.
 
 ### `:returning`
 
-When used in conjunction with the mutation ops `:put`, `:rm`, `:insert`,
-`:update` and `:delete`, instead of returning a status code, the mutated rows
-are returned as a relation. The schema of the returned rows follows the schema
-of the stored relation, with a special field `_kind` added to the front.
-`_kind` can be `"inserted"` or `"replaced"` for `:put`, `:insert` and
-`:update`, and `"requested"` and `"deleted"` for `:rm` and `:delete`. For
-deletion, the non-key fields for `"requested"` rows are filled with `null`.
+Combined with `:put`, `:rm`, `:insert`, `:update` or `:delete`, the mutated
+rows are returned instead of a status code. The returned schema follows the
+stored relation, with a `_kind` field prepended:
+
+```prolog
+?[id, name, kind] <- [['e_ci', 'CI pipeline', 'tool'], ['e_sam', 'Sam Alvarez', 'person']]
+:returning
+:put entity { id => name, kind }
+```
+
+```
+_kind       id      name           kind
+inserted    e_ci    CI pipeline    tool
+inserted    e_sam   Sam Alvarez    person
+replaced    e_sam   Sam            person
+```
+
+For upserting ops `_kind` is `inserted` (the new rows) or `replaced`; a
+`replaced` row reports the **old** values that were overwritten, so a put over
+an existing key yields both. For removals it is `requested` (every key asked
+for, non-keys filled with `null`) or `deleted` (rows that actually existed):
+
+```prolog
+?[id] <- [['e_ci'], ['e_ghost']]
+:returning
+:rm entity { id }
+```
+
+```
+_kind        id         name           kind
+requested    e_ci       null           null
+requested    e_ghost    null           null
+deleted      e_ci       CI pipeline    tool
+```
 
 You can rename and remove stored relations with the system ops `::rename` and
-`::remove`, described in the [system ops](/docs/system-ops) chapter.
+`::remove`, described in [System ops](/docs/system-ops).
+
+<Callout type="fork">
+  **Relations with a `TxTime` column write differently (mnestic 0.10.0,
+  bitemporality).** The engine stamps the column at commit; supplying it
+  yourself is an error (`column tt is engine-assigned at commit and cannot be
+  supplied`). `:put` appends a new belief instead of overwriting, `:rm` appends
+  a retraction instead of physically deleting, the existence checks of
+  `:insert`, `:delete`, `:ensure` and `:ensure_not` evaluate against the
+  current belief, and `:replace` is rejected outright (`replace would silently
+  destroy its history`). A further op, `:reconcile <NAME> <SPEC>`, performs
+  recompute-based belief revision on such relations. See
+  [Time travel](/docs/time-travel) and the
+  [fork overview](/docs/fork/overview) for the temporal model.
+</Callout>
 
 ### Create and replace
 
-The format of `<SPEC>` is identical for all ops, but the semantics is a bit
-different. We first describe the format and semantics for `:create` and
-`:replace`.
+The format of `<SPEC>` is identical for all ops, but the semantics differ
+slightly. For `:create` and `:replace`, the spec defines the schema: columns
+enclosed in curly braces and separated by commas, with `=>` separating _key_
+columns (a composite key) from _value_ columns, as in the `memory` example at
+the top of the page. If all columns are keys, `=>` may be omitted. The order
+of columns matters: rows are stored sorted by key, so the declared key order
+determines which prefix lookups are cheap.
 
-A spec, or a specification for columns, is enclosed in curly braces `{}` and
-separated by commas:
+Each column may declare a type (see [Types](/docs/types)). On a type
+mismatch, the system first tries to coerce the given value, and aborts the
+query with an error if coercion fails. Omitting the type means `Any?`: all
+values are acceptable.
+
+By default a spec's column takes the identically named binding from the query.
+You can specify the correspondence explicitly with `=`, and you _must_ do so
+when the query head contains aggregations, since `count(memory)` is not a
+valid column name:
 
 ```prolog
-?[address, company_name, department_name, head_count] <- $input_data
-
-:create dept_info {
-    company_name: String,
-    department_name: String,
+?[entity, count(memory)] := *mentions{memory, entity}
+:create entity_stats {
+    entity: String,
     =>
-    head_count: Int,
-    address: String,
+    mention_count = count(memory),
 }
 ```
 
-Columns before the symbol `=>` form the _keys_ (actually a composite key) for
-the stored relation, and those after it form the _values_. If all columns are
-keys, the symbol `=>` may be omitted. The order of columns matters. Rows are
-stored in lexicographically sorted order in trees according to their keys.
-
-In the above example, we explicitly specified the types for all columns. In case
-of type mismatch, the system will first try to coerce the values given, and if
-that fails, the query is aborted with an error. You can omit types for columns,
-in which case their types default to `Any?`, i.e. all values are acceptable. For
-example, the above query with all types omitted is:
-
 ```prolog
-?[address, company_name, department_name, head_count] <- $input_data
-
-:create dept_info { company_name, department_name => head_count, address }
+?[entity, mention_count] := *entity_stats{entity, mention_count}
 ```
 
-In the example, the bindings for the output match the columns exactly (though
-not in the same order). You can also explicitly specify the correspondence:
-
-```prolog
-?[a, b, count(c)] <- $input_data
-
-:create dept_info {
-    company_name = a,
-    department_name = b,
-    =>
-    head_count = count(c),
-    address: String = b
-}
+```
+entity       mention_count
+e_maya       1
+e_pg         3
+e_rocksdb    3
+e_sam        1
+e_search     1
 ```
 
-You _must_ use explicit correspondence if the entry head contains aggregation,
-since names such as `count(c)` are not valid column names. The `address` field
-above shows how to specify both a type and a correspondence.
+A column with both a type and a correspondence is written
+`mention_count: Int = count(memory)`.
 
-Instead of specifying bindings, you can specify an expression that generates
-default values by using `default`:
+Instead of a binding, a column can carry a `default` expression, evaluated
+anew for each row that omits it:
 
 ```prolog
-?[a, b] <- $input_data
-
-:create dept_info {
-    company_name = a,
-    department_name = b,
-    =>
-    head_count default 0,
-    address default ''
-}
+:create session { id: String default rand_ulid() => topic: String }
 ```
 
-The expression is evaluated anew for each row, so if you specified a
-UUID-generating function, you will get a different UUID for each row.
+```prolog
+?[topic] <- [['compaction stalls'], ['connector timeouts']]
+:put session { topic }
+```
+
+```prolog
+?[id, topic] := *session{id, topic}
+```
+
+```
+id                            topic
+01KX9F9M5RH80BGZKH0T0PMX1Z    connector timeouts
+01KX9F9M5RK8FMN0C3C3ZS0W2R    compaction stalls
+```
+
+(Your ids — and, since both ULIDs share a millisecond, the row order — will
+differ.) Because the generator runs per row, each row gets a fresh id.
+
+<Callout type="fork">
+  `rand_ulid()` is a mnestic 0.8.0 addition: ULIDs embed a millisecond
+  timestamp in their high-order bits, so key order is creation order — useful
+  for "most recent first" scans with no separate timestamp column. See
+  [ULID identifiers](/docs/fork/ulid).
+</Callout>
 
 ### Put, update, remove, ensure and ensure-not
 
-For `:put`, `:remove`, `:ensure` and `:ensure_not`, you do not need to specify
-all existing columns in the spec if the omitted columns have a default
-generator, or if the type of the column is nullable, in which case the value
-defaults to `null`. For these operations, specifying default values does not
-have any effect and will not replace existing ones.
+For `:put`, `:rm`, `:ensure` and `:ensure_not`, a column may be omitted from
+the spec only if it has a `default` generator in the relation's schema (as
+`session.id` above). A merely nullable column must still be supplied;
+omitting it raises `required column <name> not provided by input`. Bind it to
+`null` explicitly if that is what you mean. Writing `default` clauses in
+the spec of these ops has no effect: defaults belong to the schema declared at
+`:create`/`:replace` time.
 
-For `:update`, you must specify all keys and all columns that you want to
-update.
-
-For `:put` and `:ensure`, the spec needs to contain enough bindings to generate
-all keys and values. For `:rm` and `:ensure_not`, it only needs to generate all
-keys.
+For `:put` and `:ensure`, the spec must generate all keys and all values. For
+`:rm` and `:ensure_not`, it only needs to generate the keys. For `:update`,
+specify all keys plus exactly the columns you want to change.
 
 ## Chaining queries
 
-Each script you send to the engine is executed in its own transaction. To ensure
-consistency of multiple operations on data, you can define multiple queries in a
-single script, by wrapping each query in curly braces `{}`. Each query can have
-its independent query options. Execution proceeds for each query serially, and
-aborts at the first error encountered. The returned relation is that of the last
-query.
+Each script sent to the engine executes in a single transaction. To make
+several operations atomic, put multiple queries in one script, each wrapped in
+curly braces `{}`. Each query has its own query options, execution proceeds
+serially, and the first error aborts the whole transaction. The returned
+relation is that of the last query.
 
-The `:assert (some|none)`, `:ensure` and `:ensure_not` query options allow you
-to express complicated constraints that must be satisfied for your transaction
-to commit.
-
-This example uses three queries to put and remove rows atomically (either all
-succeed or all fail), and ensure that at the end of the transaction an untouched
-row exists:
+This adds a fresh insight, links it into the association graph, asserts an
+invariant with `:ensure`, and reads back the new neighbourhood — all
+atomically:
 
 ```prolog
 {
-    ?[a, b] <- [[1, 'one'], [3, 'three']]
-    :put rel {a => b}
+    ?[id, kind, text, importance, at, v] <- [
+        ['m9', 'insight', 'The 03:00 stall vanished after capping SST size',
+         0.8, 1752019200.0, [0.7, 0.1, 0.6, 0.1]]
+    ]
+    :put memory { id => kind, text, importance, at, v }
 }
 {
-    ?[a] <- [[2]]
-    :rm rel {a}
+    ?[from, to, strength] <- [['m5', 'm9', 0.8]]
+    :put recalls { from, to => strength }
 }
 {
-    ?[a, b] <- [[4, 'four']]
-    :ensure rel {a => b}
+    ?[from, to, strength] <- [['m3', 'm4', 0.9]]
+    :ensure recalls { from, to => strength }
+}
+{
+    ?[to, strength] := *recalls{from: 'm5', to, strength}
 }
 ```
 
-When a transaction starts, a snapshot is used, so that only already committed
-data, or data written within the same transaction, are visible to queries. At
-the end of the transaction, changes are only committed if there are no conflicts
-and no errors are raised. If any mutation activates triggers, those triggers
-execute in the same transaction.
+```
+to    strength
+m9    0.8
+```
 
-There is actually a mini-language hidden behind query chains. What you have seen
-above consists of a number of simple _query expressions_, each expression is a
-complete query enclosed in braces, and the return value is the value of the last
-expression. There are other constructs as well:
+If any part fails — including the `:ensure` finding that another process
+changed the m3-to-m4 edge — nothing is committed. `:assert none`,
+`:assert some`, `:ensure` and `:ensure_not` are the tools for expressing
+transaction-level constraints.
 
-- `%if <cond> %then ... (%else ...) %end` for conditional execution. There is
-  also a negated form beginning with `%if_not`. The `<cond>` part is either a
-  query expression or an ephemeral relation. Either way, the condition ends up
-  being a relation, and a relation is considered falsy if the relation contains
-  no rows and truthy otherwise.
+When a transaction starts, it reads from a snapshot: only already-committed
+data, plus writes made within the same transaction, are visible. At the end,
+changes commit only if there are no conflicts and no errors. If a mutation
+activates triggers, the triggers run inside the same transaction.
 
-- `%loop ... %end` for looping; you can use `%break` and `%continue` inside the
-  loop. You can prefix the loop with `%mark <marker>`, and use
-  `%break <marker>` or `%continue marker` to jump several levels.
+There is a mini-language hidden behind query chains. The chains above are
+simple _query expressions_; the other constructs are:
 
-- `%return <query expression or ephemeral relation, or empty>` for early
+- `%if <cond> %then ... (%else ...) %end` for conditional execution, with a
+  negated form starting `%if_not`. `<cond>` is a query expression or an
+  ephemeral relation; either way the condition is a relation, and a relation
+  is _falsy_ if it contains no rows and _truthy_ otherwise.
+- `%loop ... %end` for looping, with `%break` and `%continue`. Prefix the loop
+  with `%mark <marker>` and use `%break <marker>` / `%continue <marker>` to
+  jump several levels.
+- `%return <query expression, ephemeral relation, or empty>` for early
   termination.
+- `%debug <ephemeral relation>` prints the relation to standard output.
+- `%ignore_error <query expression>` runs the expression, swallowing any error
+  it raises.
+- `%swap <ephemeral relation> <another ephemeral relation>` swaps the contents
+  of two ephemeral relations.
 
-- `%debug <ephemeral relation>` for printing ephemeral relations to standard
-  output.
+An _ephemeral relation_ is visible only inside its transaction and disappears
+when the transaction ends. It is created and used exactly like a stored
+relation, but its name starts with an underscore `_`. Think of ephemeral
+relations as the variables of the mini-language.
 
-- `%ignore_error <query expression>` executes the query expression, but eats any
-  error raised and continues.
+<Callout type="warning">
+  Because an ephemeral relation dies with its transaction, `:create _draft { id }`
+  as a standalone script is a silent no-op: it succeeds, and the relation is
+  gone before the next script runs. Querying `*_draft[id]` afterwards fails
+  with `Cannot find requested stored relation '_draft'`. Ephemeral relations
+  are only useful *inside* a chained script.
+</Callout>
 
-- `%swap <ephemeral relation> <another ephemeral relation>` swaps two ephemeral
-  relations.
-
-What is the _ephemeral relation_ mentioned above? This is a relation that can
-only be seen within the transaction and which is gone when the transaction ends
-(hence it is useless in singleton queries). It is created and used in the same
-way as stored relations, but with names starting with the underscore `_`. You
-can think of them as variables in the chain query mini-language.
-
-Let's see several examples:
+Loop until an ephemeral relation has three rows:
 
 ```prolog
-{:create _test {a}}
+{:create _seen {id}}
 
 %loop
-    %if { len[count(x)] := *_test[x]; ?[x] := len[z], x = z >= 10 }
-        %then %return _test
+    %if { len[count(id)] := *_seen[id]; ?[z] := len[z], z >= 3 }
+        %then %return _seen
     %end
-    { ?[a] := a = rand_uuid_v1(); :put _test {a} }
+    { ?[id] := id = rand_uuid_v1(); :put _seen {id} }
 %end
 ```
 
-The return relation of this query consists of ten random rows. Note that in this
-example, you _must not_ use a constant rule when generating the random value:
-the body of a constant rule is evaluated to a constant only _once_, which will
-make the query loop forever.
+```
+id
+8e9ce19a-7d6a-11f1-b3ef-3d65da68eb9f
+8e9cf3ec-7d6a-11f1-9ea9-74893410b98f
+8e9d02f6-7d6a-11f1-85dc-d1e8aa2c521d
+```
 
-Another one:
+(Your UUIDs will differ.)
+
+Two things in this example repay attention. First, the condition produces a
+row only when the count passes the threshold. Truthiness is _has rows_, so a
+condition that always yields a row is always truthy: writing it as
+`?[x] := len[z], x = z >= 3`, which binds the comparison as a boolean column,
+returns immediately with an empty `_seen` (a single `false` row is still a
+row). Second, the fresh value must come from an inline rule (`:=`), not a
+constant rule: the body of a constant rule (`<-`) is evaluated to a constant
+once, so a constant-rule `rand_uuid_v1()` would put the same row forever and
+the loop would never terminate.
+
+`%debug` shows a loop draining a relation one row per iteration:
 
 ```prolog
 {?[a] <- [[1], [2], [3]]; :replace _test {a}}
@@ -278,10 +428,16 @@ Another one:
 %return _test
 ```
 
-The return relation of this query is empty (a very contrived way of removing
-elements).
+The return relation is empty; on standard output, `%debug` printed:
 
-Finally:
+```
+_test: NamedRows { headers: ["a"], rows: [[2], [3]], next: None }
+_test: NamedRows { headers: ["a"], rows: [[3]], next: None }
+_test: NamedRows { headers: ["a"], rows: [], next: None }
+```
+
+And `%swap` exchanges two ephemeral relations wholesale. Here the result is
+empty because `_test` was swapped with the empty `_test2`:
 
 ```prolog
 {?[a] <- [[1], [2], [3]]; :replace _test {a}}
@@ -290,100 +446,138 @@ Finally:
 %return _test
 ```
 
-The return relation of this query is empty as well, since the two ephemeral
-relations have been swapped.
+Any query in a script can be postfixed with `as <name>` (the name starting
+with an underscore) to store its result in an ephemeral relation, as if by
+`:replace`:
 
-For any query occurring in a script, you can postfix it with `as <name>` where
-name is an identifier starting with the underscore, and the result of the query
-will be stored in an ephemeral relation with the given name. The ephemeral
-relation is created as if there is an `:replace` directive.
+```prolog
+{ ?[id] := *memory{id, kind}, kind == 'decision' } as _decisions
+%return _decisions
+```
 
-We use this functionality to run ad-hoc iterative queries. As the basic query
-language is already Turing complete, you can actually write any algorithm without
-this mini-language, but the way of writing may be very contrived. Try
-implementing PageRank with a basic query. You will end up with many recursive
-aggregations. Next try with chained queries. A breeze.
+```
+id
+m2
+m5
+```
+
+The basic query language is already Turing-complete, so the mini-language adds
+no expressive power — but iterative algorithms are far more direct as chained
+queries. PageRank as a single Datalog query is a tangle of recursive
+aggregations; as a chained loop it is a few lines.
 
 ### Multi-statement transaction
 
-CozoDB also supports multi-statement transactions in the hosting language for
-selected libraries (currently Rust, Python, NodeJS) and the standalone
-executable. The way to use it is to request a transaction first, do your queries
-and mutations against the transaction, and finally commit or abort the
-transaction. This is more flexible than using the chaining query mini-language,
-but is specific to each hosting environment. Please refer to the respective
-documentation of the environments.
+You can also hold a transaction open across multiple round trips from the
+hosting environment: request a transaction, run queries and mutations against
+it, then commit or abort. mnestic exposes this in the Rust API
+(`DbInstance::multi_transaction`), the Python binding, and the standalone server's
+`/transact` HTTP endpoints. It is more flexible than the chaining
+mini-language, but the surface is specific to each host environment — see
+[Beyond CozoScript](/docs/beyond-cozoscript).
+
+<Callout type="fork">
+  Since mnestic 0.11.0, `multi_transaction` runs on a dedicated thread instead
+  of parking a rayon worker for the transaction's whole lifetime — a
+  long-lived open transaction can no longer starve the pool and deadlock the
+  process.
+</Callout>
 
 ## Indices
 
-Since version 0.5, it is possible to create indices on stored relations. In
-CozoDB, indices are simply reordering of columns of the original stored relation.
-As an example, let's say we have a relation:
+Indices on stored relations are reorderings of the original columns.
+Consider finding every decision the agent has recorded:
 
 ```prolog
-:create r {a => b}
+?[id] := *memory{id, kind: 'decision'}
 ```
 
-but we often want to run queries like `?[a] := *r{a, b: $value}`. Without
-indices, this will result in a full-scan. In this case we can do:
+`memory` is keyed on `id` alone, so this is a full scan. `::explain` (op and
+ref columns shown) confirms it: `load_stored` reads all of `:memory`, and the
+`kind` constraint is applied by a materialized join after the fact:
+
+```
+op                 ref
+unify              *5
+load_stored        :memory
+stored_mat_join
+out
+```
+
+Create an index whose key starts with `kind`:
 
 ```prolog
-::index create r:idx {b, a}
+::index create memory:by_kind {kind, id}
 ```
 
-You do _not_ specify functional dependencies when creating indices (and in this
-case there are none anyway).
-
-In CozoDB, indices are read-only stored relations that you can query directly:
+You do _not_ specify functional dependencies when creating an index (here
+there are none anyway). Rows already in the relation are indexed immediately;
+there is no separate backfill step. An index is a read-only stored relation
+that you can query directly:
 
 ```prolog
-?[a] := *r:idx {a, b: $value}
+?[id] := *memory:by_kind{kind: 'decision', id}
 ```
 
-In this case, running the original query will also use the index, and hence is
-equivalent to the explicit form (which you can confirm with `::explain`).
-However, CozoDB is very conservative in using indices in that if there is any
-chance that the use of an index might decrease performance, then CozoDB will not
-use an index. Currently, this means that only in situations when using an index
-can avoid a full-scan will the index be used. This behaviour ensures that you
-will not need to fight against suboptimal use of indices with difficult tricks:
-just be explicit.
+```
+id
+m2
+m5
+```
+
+The original query now compiles to the same plan automatically, as a keyed
+prefix lookup on the index:
+
+```
+op                    ref
+unify                 *5
+load_stored           :memory:by_kind
+stored_prefix_join
+out
+```
+
+The engine is deliberately conservative about choosing indices: it has no
+cost-based optimizer, and an index is only chosen when a prefix of the index's
+key is bound, the case where it avoids a full scan. You never have to fight
+the planner away from a bad index choice; when in doubt, query the index
+explicitly.
+
+<Callout type="fork">
+  Index matching is prefix-only, and it composes with the mnestic 0.8.0
+  equality pushdown: an equality post-filter such as
+  `*memory{id, kind}, kind == 'decision'` is rewritten into a bound prefix
+  before index selection runs, so both query shapes reach the prefix join
+  above. Upstream compiled the post-filter form to a full scan. See
+  [Equality pushdown](/docs/fork/equality-pushdown).
+</Callout>
+
+You need not specify all columns when creating an index; the database
+completes them to form a key. Creating `::index create mentions:by_entity {entity}`
+on `mentions {memory, entity}` actually builds the index `{entity, memory}`,
+as `::columns mentions:by_entity` shows:
+
+```
+column    is_key    index    type      has_default    default_expr
+entity    true      0        String    false          null
+memory    true      1        String    false          null
+```
 
 To drop an index:
 
 ```prolog
-::index drop r:idx
+::index drop mentions:by_entity
 ```
 
-In CozoDB, you do not need to specify all columns when creating an index, and the
-database will complete the specified columns to a key. This means that if your
-stored relation is:
+Indices can be used as inputs to fixed rules, and are eligible in time-travel
+queries as long as their last key column is of type `Validity`.
 
-```prolog
-:create r {a, b => c, d, e}
-```
-
-and you created an index as:
-
-```prolog
-::index create r:i {d, b}
-```
-
-the database will automatically run the following index creation instead:
-
-```prolog
-::index create r:i {d, b, a}
-```
-
-You can see what columns are actually created by running `::columns r:i`.
-
-Indices can be used as inputs to fixed rules. They may also be eligible in
-time-travel queries, as long as their last key column is of type `Validity`.
+B-tree indices are one of four index families. See
+[Proximity searches](/docs/proximity-search) for the other three: HNSW vector
+indices (`::hnsw`), full-text search (`::fts`) and MinHash-LSH (`::lsh`).
 
 ## Triggers
 
-CozoDB supports triggers attached to stored relations. You attach triggers to a
-stored relation by running the system op `::set_triggers`:
+Triggers attach to a stored relation with the system op `::set_triggers`:
 
 ```prolog
 ::set_triggers <REL_NAME>
@@ -391,92 +585,158 @@ stored relation by running the system op `::set_triggers`:
 on put { <QUERY> }
 on rm { <QUERY> }
 on replace { <QUERY> }
-on put { <QUERY> } # you can specify as many triggers as you need
+on put { <QUERY> } # as many triggers as you need
 ```
 
-`<QUERY>` can be any valid query.
+`<QUERY>` is any valid query, with one exception: it may not contain a
+`:replace` op. `::set_triggers` itself accepts such a body; the mutation that
+fires the trigger is what aborts, with `eval::replace_in_trigger`.
 
-The `on put` triggers will run when new data is inserted or upserted, which can
-be activated by `:put`, `:create` and `:replace` query options. The implicitly
-defined rules `_new[]` and `_old[]` can be used in the triggers, and contain the
-added rows and the replaced rows respectively.
+- **`on put`** triggers run when rows are inserted or upserted: `:put`,
+  `:insert` and `:update` all activate them, as does the data written by a
+  `:replace` on the relation. Inside the trigger, the implicitly defined rules
+  `_new[]` and `_old[]` hold the added rows and the overwritten rows
+  respectively, each with the relation's full column list as bindings. For
+  fresh inserts `_old[]` is empty.
+- **`on rm`** triggers run when rows are deleted: `:rm` and `:delete` activate
+  them. `_new[]` holds the _keys requested_ for deletion — key columns only,
+  and a key appears even if no such row existed — while `_old[]` holds the
+  rows actually deleted, with both keys and non-keys.
+- **`on replace`** triggers are activated by a `:replace` op and run before
+  any `on put` triggers.
 
-The `on rm` triggers will run when data is deleted, which can be activated by a
-`:rm` query option. The implicitly defined rules `_new[]` and `_old[]` can be
-used in the triggers, and contain the keys of the rows for deleted rows (even if
-no row with the key actually exists) and the rows actually deleted (with both
-keys and non-keys).
+All triggers for a relation are specified together in one `::set_triggers`
+op; running it again replaces the whole set, and running it with an empty body
+removes all triggers. `::show_triggers <REL_NAME>` lists what is attached.
 
-The `on replace` triggers will be activated by a `:replace` query option. They
-are run before any `on put` triggers.
-
-All triggers for a relation must be specified together, in the same
-`::set_triggers` system op. If used again, all the triggers associated with the
-stored relation are replaced. To remove all triggers from a stored relation, use
-`::set_triggers <REL_NAME>` followed by nothing.
-
-As an example of using triggers to maintain an index manually, suppose we have
-the following relation:
+Association edges are worth querying in both directions, so keep a manually
+maintained reverse-edge relation in sync with `recalls`:
 
 ```prolog
-:create rel {a => b}
+:create recalled_by { to: String, from: String }
 ```
 
-and the manual index is:
-
 ```prolog
-:create rel.rev {b, a}
-```
-
-To manage the manual index automatically:
-
-```prolog
-::set_triggers rel
+::set_triggers recalls
 
 on put {
-    ?[a, b] := _new[a, b]
-
-    :put rel.rev{ b, a }
+    ?[to, from] := _new[from, to, strength]
+    :put recalled_by { to, from }
 }
 on rm {
-    ?[a, b] := _old[a, b]
-
-    :rm rel.rev{ b, a }
+    ?[to, from] := _old[from, to, strength]
+    :rm recalled_by { to, from }
 }
 ```
 
-With the index set up, you can use `*rel.rev{..}` in place of `*rel{..}` in your
-queries.
+Triggers only see writes made after they are attached, so backfill the
+existing rows once, manually:
 
-Note that unlike indices, there are ingestion APIs for which triggers are
-explicitly _not_ run. Also, if you want to manually manage indices with
-triggers, you have to populate the existing values manually as well.
+```prolog
+?[to, from] := *recalls{from, to}
+:put recalled_by { to, from }
+```
+
+From here on the pair stays in sync: a new edge into `m2` appears in the
+reverse relation in the same transaction.
+
+```prolog
+?[from, to, strength] <- [['m9', 'm2', 0.4]]
+:put recalls { from, to => strength }
+```
+
+```prolog
+?[from] := *recalled_by{to: 'm2', from}
+```
+
+```
+from
+m1
+m9
+```
+
+Removing the edge removes its mirror image the same way. (For a pure column
+reordering like this, [`::index create`](#indices) does the same job with the
+backfill and both triggers for free; write the triggers yourself when the
+maintained data is not a reordering.)
+
+Cascading cleanup is such a case. Deleting a memory should also delete its
+`mentions` rows, something no index can express:
+
+```prolog
+::set_triggers memory
+
+on rm {
+    ?[memory, entity] := _new[memory], *mentions{memory, entity}
+    :rm mentions { memory, entity }
+}
+```
+
+```prolog
+?[id] <- [['m7']]
+:rm memory { id }
+```
+
+Before, `?[memory] := *mentions{memory, entity: 'e_pg'}` returned
+`m6, m7, m8`; after the single `:rm`, it returns:
+
+```
+memory
+m6
+m8
+```
 
 <Callout type="warning">
-  Triggers do not propagate. That is, if a trigger modifies a relation that has
-  triggers associated, those latter triggers will not run. This is different
-  from the behaviour in earlier versions. We changed it since trigger
-  propagation creates more problems than it solves.
+  Triggers do not propagate: if a trigger's own mutation hits a relation that
+  also has triggers, those do not run. In the cascade above, if `mentions` had
+  an `on rm` trigger, deleting `m7` from `memory` would not fire it. (Early
+  CozoDB versions propagated triggers; this was changed upstream because
+  propagation created more problems than it solved.) Chains of derived writes
+  need to be expressed in one trigger.
+</Callout>
+
+<Callout type="warning">
+  `:replace` does not keep triggers attached. The old triggers fire one last
+  time for the rows the `:replace` itself writes, but afterwards
+  `::show_triggers` on the relation shows nothing. Re-attach the triggers with
+  `::set_triggers` after a `:replace`.
+</Callout>
+
+Triggers are also explicitly _not_ run by the bulk ingestion APIs
+(`import_relations`, `import_from_backup`); if imports must activate them,
+use parameterized queries instead.
+
+<Callout type="fork">
+  The bulk import paths maintain B-tree indices but **not** HNSW, FTS or LSH
+  indices — bulk-imported rows stay invisible to vector, text and similarity
+  search until those indices are rebuilt with
+  [`::reindex`](/docs/system-ops#reindex-rel_name) (mnestic 0.12.1). Both paths
+  now warn loudly instead of corrupting silently: `import_relations` since
+  mnestic 0.10.5, and `import_from_backup` since 0.12.1, where it had been
+  entirely silent — a restored backup returned nothing from hybrid retrieval with
+  no signal anywhere. See
+  [`import_relations`](/docs/beyond-cozoscript#import_relationsself-data).
 </Callout>
 
 ## Storing large values
 
-There is a limit to the amount of data you can store in a single value or single
-row. The precise limit depends on the storage engine. For the in-memory engine
-it is obviously RAM-bound. For the SQLite engine the keys as a whole and the
-values as a whole are each stored as a single BLOB field in SQLite, and are
-subject to [their limit](https://www.sqlite.org/limits.html). For the RocksDB
-engine, which is the recommended setup if you are thinking of storing large
-values, the keys as a whole are stored as a RocksDB key, which has a limit of
-8MB, and keys should be kept small for performance. For values, CozoDB utilizes
-the [BlobDB](https://github.com/facebook/rocksdb/wiki/BlobDB) functionality of
-RocksDB, and you are only limited by RAM and disk sizes.
+There is a limit to how much data fits in a single value or row, and it
+depends on the storage engine. For the in-memory engine the limit is RAM. For
+the SQLite engine, the keys as a whole and the values as a whole are each
+stored as a single BLOB field, subject to
+[SQLite's limits](https://www.sqlite.org/limits.html). For the RocksDB engine,
+the keys as a whole form a RocksDB key, which has a hard limit of 8MB and
+should be kept much smaller for performance. Values have no comparable hard
+limit. The stock build does not enable RocksDB's
+[BlobDB](https://github.com/facebook/rocksdb/wiki/BlobDB) mode; if you store
+many large values, you can supply a RocksDB options file (a file named
+`options` inside the database directory) that enables it and tunes value
+storage.
 
-Performance-wise, if large values are present, currently these values will be
-read into memory if the row is touched in the query. So it is recommended to
-store large values in a dedicated key-value relation in the database, with all
-the metadata stored in a separate relation. At query time, you should
-search/filter/join the metadata relation to find the rows you want, and then
-join them with the dedicated large value relation at the last stage.
+Performance-wise, any large value in a row touched by a query is read into
+memory whole. If you store large payloads, keep them in a dedicated key-value
+relation and the metadata in a separate one: search, filter and join on the
+metadata relation first, and join the large-value relation last, when the row
+set is already small.
 
 <Attribution page="stored.html" />

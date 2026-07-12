@@ -1,104 +1,818 @@
 export const metadata = {
   title: "Beyond CozoScript",
   description:
-    "APIs that fall outside the CozoScript query model: exporting and importing relations, backup and restore, importing from a backup, and change callbacks.",
+    "Embedding mnestic in your program: the Rust API and Python binding — parameterized scripts, timeouts, open transactions, change callbacks, custom rules and aggregates, one-call hybrid search, read-only Cypher, and bulk export, import, backup and restore.",
 };
 
 # Beyond CozoScript
 
-Most functionalities of the CozoDB database are accessible via the CozoScript
-API. However, other functionalities either cannot conform to the "always return
-a relation" constraint, or are of such a nature as to make a separate API
-desirable. These are described here.
+Everything in the previous chapters flows through one call: hand the engine a
+CozoScript string, get a relation back. This page covers the rest of the
+embedding surface — the APIs that cannot return a relation (backups, change
+streams), the ones that extend the engine from the host language (custom rules
+and aggregates), the Python binding, and the standalone server. mnestic is an
+embedded database: your program links the engine directly, and none of the
+calls below involve a network hop unless you deliberately run the server.
 
-The calling convention and even names of the APIs may differ on different target
-languages; please refer to the respective language-specific documentation. Here
-we use the Python API as an example to describe what they do.
+## The Rust API
 
-## `export_relations(self, relations)`
+The crate is published as [`mnestic`](https://crates.io/crates/mnestic) but its
+importable library name stays `cozo`, so all imports read `use cozo::…`; see
+[Installation](/docs/install) for the feature flags and backend choices. The
+entry point is `DbInstance`, an enum that dispatches over the compiled-in
+storage backends. If you implement the `Storage` trait yourself, you can use
+the generic `Db<S>` directly; `DbInstance` is the convenience wrapper the
+bindings and the server are built on.
 
-Export the specified `relations`. It is guaranteed that the exported data form a
-consistent snapshot of what was stored in the database.
+Errors are [`miette`](https://docs.rs/miette) reports (`cozo::Error` re-exports
+`miette::Error`); the snippets below run inside a function returning
+`miette::Result<()>`. For FFI-style embedding there are string-in/string-out
+twins of most methods (`run_script_str`, `export_relations_str`,
+`backup_db_str`, …) that fold errors into a JSON payload instead of returning
+`Result`, which is what binding mnestic over a C ABI builds on.
+
+### Opening a database
+
+```rust
+pub fn new(engine: &str, path: impl AsRef<Path>, options: &str) -> Result<Self>
+```
+
+```rust
+use cozo::DbInstance;
+
+let db = DbInstance::new("sqlite", "./memory.db", "")?;
+```
+
+| Engine | Cargo feature | Notes |
+| --- | --- | --- |
+| `"mem"` | always available | Non-persistent; `path` is ignored. |
+| `"sqlite"` | `storage-sqlite` (in the default set) | Single-file persistence; also required for backup/restore. |
+| `"rocksdb"` | `storage-rocksdb` | The high-concurrency persistent backend; `path` is a directory. |
+| `"sled"` | `storage-sled` | Experimental; slower than SQLite for typical workloads, no time travel. Its `del()` never actually deleted until mnestic 0.12.1 (upstream #306). |
+| `"newrocksdb"` | `storage-new-rocksdb` | Experimental next-generation RocksDB backend; not part of any default build. It silently lost concurrent updates until mnestic 0.12.1 — conflict validation was never armed. |
+| `"tikv"` | `storage-tikv` | Experimental distributed client; no time travel. `path` is ignored, and it is the only engine that reads `options` (JSON with `end_points` and `optimistic`). |
+
+`options` is ignored by every engine except `tikv`; pass `""`. An engine name
+that was not compiled in fails at runtime with a clear error, so a build that
+wants RocksDB must enable the `storage-rocksdb` feature.
+
+### Running scripts
+
+```rust
+pub fn run_script(
+    &self,
+    payload: &str,
+    params: BTreeMap<String, DataValue>,
+    mutability: ScriptMutability,
+) -> Result<NamedRows>
+```
+
+`params` supplies query parameters: each map entry becomes a `$name` variable
+in the script. Always pass user-supplied values this way rather than
+formatting them into the script string; parameters are typed values, never
+re-parsed, so there is nothing to inject into. `mutability` declares intent:
+`ScriptMutability::Immutable` rejects any mutation in the script and lets the
+engine take its read-only path. `run_default(payload)` is shorthand for a
+mutable script with no parameters.
+
+```rust
+use std::collections::BTreeMap;
+use cozo::{DataValue, DbInstance, ScriptMutability};
+
+let db = DbInstance::new("sqlite", "./memory.db", "")?;
+
+db.run_default(
+    ":create memory { id: String => kind: String, text: String, importance: Float }",
+)?;
+
+let params = BTreeMap::from([
+    ("id".to_string(), DataValue::from("m2")),
+    ("kind".to_string(), DataValue::from("decision")),
+    ("text".to_string(), DataValue::from("Chose RocksDB over sled for the write path")),
+    ("importance".to_string(), DataValue::from(0.9)),
+]);
+db.run_script(
+    "?[id, kind, text, importance] <- [[$id, $kind, $text, $importance]]
+     :put memory { id => kind, text, importance }",
+    params,
+    ScriptMutability::Mutable,
+)?;
+
+let hits = db.run_script(
+    "?[text, importance] := *memory{ id: $id, text, importance }",
+    BTreeMap::from([("id".to_string(), DataValue::from("m2"))]),
+    ScriptMutability::Immutable,
+)?;
+println!("{}", hits.into_json());
+```
+
+```
+{"headers":["text","importance"],"next":null,"rows":[["Chose RocksDB over sled for the write path",0.9]]}
+```
+
+The result type is `NamedRows`, a plain struct: `headers: Vec<String>`,
+`rows: Vec<Vec<DataValue>>`, and `next: Option<Box<NamedRows>>` (populated
+when an imperative script's `%return` yields several relations). `into_json()`
+converts it to the `{"headers": …, "rows": …, "next": …}` shape the bindings
+and the HTTP API return.
+
+One script is one transaction: a mutable script either commits everything it
+did or nothing, including multi-statement `{ … } { … }` scripts. See
+[Stored relations & transactions](/docs/stored-relations#chaining-queries).
+
+<Callout type="fork">
+  On the RocksDB backend, `Immutable` scripts read through a plain MVCC
+  snapshot with no lock-manager bookkeeping (mnestic 0.8.5), so declaring
+  read-only intent buys performance as well as safety. See
+  [What mnestic adds](/docs/fork/overview).
+</Callout>
+
+### Timeouts and cancellation
+
+Two knobs bound how long a query may run, both fork additions:
+
+```rust
+pub fn run_script_with_options(
+    &self,
+    payload: &str,
+    params: BTreeMap<String, DataValue>,
+    mutability: ScriptMutability,
+    options: ScriptRunOptions,
+) -> Result<NamedRows>
+
+pub fn set_default_query_timeout(&self, secs: Option<f64>)
+```
+
+`ScriptRunOptions` currently carries one option, a per-call wall-clock budget
+in seconds; build it with `ScriptRunOptions::new().with_timeout(secs)` or
+struct-update syntax so future options do not break your call sites.
+`set_default_query_timeout` arms a Db-wide default that every subsequent query
+inherits (`None` clears it; `default_query_timeout()` reads it back). The
+effective deadline is the **minimum** of the per-call timeout, any in-script
+`:timeout`, and the Db default — a script can tighten its budget but never
+escape the handle-wide guard. The deadline covers the whole script, and expiry
+aborts before any commit, so a timed-out mutable script leaves no partial
+writes.
+
+```rust
+use cozo::ScriptRunOptions;
+
+db.set_default_query_timeout(Some(30.0)); // guard for every query on this handle
+
+let err = db
+    .run_script_with_options(
+        "?[count(a)] := r = int_range(0, 500), a in r, b in r, c in r, (a + b + c) % 7 == 0",
+        BTreeMap::new(),
+        ScriptMutability::Immutable,
+        ScriptRunOptions::new().with_timeout(0.5), // tighter budget for this call
+    )
+    .unwrap_err();
+// err: "Query exceeded its time budget"  (error code `eval::timeout`)
+```
+
+A budget expiry raises `eval::timeout`; an explicit `::kill` raises the
+distinct `eval::killed`, so callers can distinguish a policy expiry from an
+operator's kill.
+
+<Callout type="fork">
+  `ScriptRunOptions`, `set_default_query_timeout`, and interruption that
+  actually works mid-join landed in mnestic 0.10.5. Wasm builds carry no
+  wall-clock budget (no monotonic clock there). The mechanics (poison-flag
+  cadence, `::running`, `::kill`) are on
+  [Interruptibility & query budgets](/docs/fork/interruptibility).
+</Callout>
+
+### Holding a transaction open
+
+A single script is one transaction. To hold a transaction open across several
+round trips from your program — read, decide in host code, write, then commit
+— use `multi_transaction`:
+
+```rust
+pub fn multi_transaction(&self, write: bool) -> MultiTransaction
+```
+
+```rust
+let tx = db.multi_transaction(true); // write = true
+
+tx.run_script(":create note { id: String => text: String }", BTreeMap::new())?;
+tx.run_script(
+    "?[id, text] <- [['n1', 'first']] :put note { id => text }",
+    BTreeMap::new(),
+)?;
+// reads inside the transaction see its own uncommitted writes
+let mid = tx.run_script("?[id, text] := *note{ id, text }", BTreeMap::new())?;
+tx.commit()?; // or tx.abort()
+```
+
+`MultiTransaction` exposes `run_script(payload, params)`, `commit()`, and
+`abort()`; after a commit or abort the handle is spent. A write transaction
+may block other reads for its duration on some backends; the RocksDB backend
+is guaranteed not to. Underneath sits the channel-based
+`run_multi_transaction(write, payloads, results)` (a `Receiver` of
+`TransactionPayload::Query/Commit/Abort` commands and a `Sender` of results);
+the server's `/transact` endpoints ride the same `MultiTransaction` wrapper.
+
+<Callout type="fork">
+  **Check the result of `commit()`.** Before mnestic 0.12.1, `commit()` discarded
+  the result the transaction thread sends back and returned `Ok(())` even when the
+  commit had **failed** — so a caller believed its data was durable when it was
+  not, and the server's `/transact` endpoint answered `200 {"ok": true}` for
+  transactions that never committed. (`abort()` had the same shape;
+  `run_script` on the same type always propagated correctly.) This was inherited
+  from upstream CozoDB and affects every release through 0.12.0. Since 0.12.1 a
+  failed commit is returned as an error.
+</Callout>
+
+<Callout type="fork">
+  Since mnestic 0.11.0 the transaction loop runs on a dedicated thread instead
+  of parking a rayon worker for the transaction's whole lifetime. Before that,
+  enough open transactions (or one open transaction racing a parallel query on
+  a single-core host) deadlocked every rayon-using query in the process.
+</Callout>
+
+### Change callbacks
+
+Register a callback to be notified when a stored relation changes:
+
+```rust
+pub fn register_callback(
+    &self,
+    relation: &str,
+    capacity: Option<usize>,
+) -> (u32, Receiver<(CallbackOp, NamedRows, NamedRows)>)
+```
+
+Events are delivered on a [crossbeam](https://docs.rs/crossbeam) channel after
+the writing transaction **successfully commits** — you never observe a
+rolled-back write. `capacity: None` gives an unbounded channel; `Some(n)`
+bounds it, and a full bounded channel blocks the writing call (after its
+commit) until the consumer catches up, so size it for your consumer. Each
+event is `(op, new_rows, old_rows)`:
+
+| `op` | `new_rows` | `old_rows` |
+| --- | --- | --- |
+| `CallbackOp::Put` | the rows as written (full tuples) | the prior values of any keys that already existed (empty for fresh inserts) |
+| `CallbackOp::Rm` | the keys the removal asked for (key columns only) | the full rows that actually existed and were removed |
+
+```rust
+let (id, receiver) = db.register_callback("recalls", None);
+
+db.run_default(
+    "?[from, to, strength] <- [['m5', 'm2', 0.45]]
+     :put recalls { from, to => strength }",
+)?;
+
+let (op, new_rows, old_rows) = receiver.recv().unwrap();
+// op        = Put
+// new_rows  = {"headers":["from","to","strength"],"rows":[["m5","m2",0.45]]}
+// old_rows  = {"headers":["from","to","strength"],"rows":[]}
+
+db.unregister_callback(id); // returns true if the id was live
+```
+
+Overwriting that row with strength `0.5` fires a second `Put` whose
+`old_rows` carries `["m5","m2",0.45]` — the replaced tuple — and removing it
+fires `(Rm, [["m5","m2"]], [["m5","m2",0.5]])`. If you drop the receiver, the
+engine unregisters the callback the next time it tries to send.
+
+<Callout type="fork">
+  **The "only after a successful commit" contract is only actually honored since
+  mnestic 0.12.1.** In the multi-statement transaction path
+  (`run_multi_transaction`, and so the server's `/transact`), callbacks were
+  dispatched unconditionally after the commit attempt — so subscribers received
+  `Put`/`Rm` events for rows that were **never committed**, and anything syncing
+  off the change feed (a search mirror, an audit log, a cache) could silently
+  diverge from the database. Inherited from upstream CozoDB; the single-statement
+  path always honored the contract. *Known limitation, unchanged:* dispatch is
+  synchronous on the committing thread over bounded channels, so a slow subscriber
+  can stall writers.
+</Callout>
+
+Callbacks are available from Rust, from the Python binding (as a Python
+callable), and from the standalone server (as a server-sent-event stream on
+`/changes/:relation`). They do not fire for the bulk import APIs below, and
+are unavailable on wasm targets.
+
+### Custom fixed rules
+
+A fixed rule is an operator implemented in the host language that a query
+invokes with `<~`, like the built-in graph algorithms. It receives realized
+input relations and an options map, and returns rows. The classic use is
+pulling host-side capabilities into Datalog: an embedding model, a feature
+store, an HTTP service.
+
+```rust
+pub fn register_fixed_rule<R>(&self, name: String, rule_impl: R) -> Result<()>
+where
+    R: FixedRule + 'static,
+```
+
+Implement the `FixedRule` trait for full control (arity checking, option
+validation, cancellation polling), or use `SimpleFixedRule` for the common
+case: a return arity plus a closure from
+`(Vec<NamedRows>, BTreeMap<String, DataValue>)` to `Result<NamedRows>`:
+
+```rust
+use cozo::{DataValue, NamedRows, SimpleFixedRule};
+
+// stand-in for a real embedding model: any host code works here
+fn embedding_of(text: &str) -> DataValue {
+    let words = text.split_whitespace().count() as f64;
+    let chars = text.len() as f64;
+    DataValue::List(vec![
+        DataValue::from(words / 10.0),
+        DataValue::from(chars / 100.0),
+    ])
+}
+
+db.register_fixed_rule(
+    "Embed".to_string(),
+    SimpleFixedRule::new(2, |inputs, _options| {
+        let rows = inputs[0]
+            .rows
+            .iter()
+            .map(|row| {
+                let text = row[0].get_str().unwrap_or_default();
+                vec![row[0].clone(), embedding_of(text)]
+            })
+            .collect();
+        Ok(NamedRows::new(vec![], rows))
+    }),
+)?;
+
+let out = db.run_default(
+    "texts[text] := *memory{ kind: 'decision', text }
+     ?[text, vec] <~ Embed(texts[])
+     :order text",
+)?;
+```
+
+```
+{"headers":["text","vec"],"next":null,"rows":[["Cap SST file size at 128 MB",[0.7,0.27]],["Chose RocksDB over sled for the write path",[0.8,0.42]]]}
+```
+
+Registering a name twice is an error; `unregister_fixed_rule` removes a custom
+rule (built-in rules cannot be unregistered). The same mechanism is exposed to
+Python (`register_fixed_rule(name, arity, callable)`) and to server clients
+(`/rules/:name`).
+
+### Custom aggregates
+
+<Callout type="fork">
+  `register_custom_aggr` landed in mnestic 0.10.0 and
+  `register_bounded_meet_aggr` in 0.10.1, as part of the provenance-semirings
+  work. Both are **Rust-embedded only**: host closures do not cross the Python
+  or served surfaces. The semantics side (which aggregates may recurse, and
+  why) is covered in [Aggregations](/docs/aggregations).
+</Callout>
+
+```rust
+pub fn register_custom_aggr<F>(&self, name: String, is_meet: bool, factory: F) -> Result<()>
+where
+    F: Fn() -> Box<dyn MeetAggrObj> + Send + Sync + 'static,
+```
+
+A custom aggregate is a fold you define: `MeetAggrObj` supplies `init_val()`
+and `update(&self, left: &mut DataValue, right: &DataValue) -> Result<bool>`,
+where the returned bool reports whether `left` actually changed (semi-naive
+evaluation uses it to detect convergence). With `is_meet: false` the aggregate
+works in ordinary rule heads; with `is_meet: true` it is also admitted into
+recursive rules, and the operation **must** then be an absorptive semilattice
+operation (idempotent, commutative, associative; `max`-like, not `sum`-like)
+or recursion will not converge to a well-defined answer.
+
+Noisy-or — the probability that at least one of several independent signals
+fires — is a combine no built-in covers. It is not idempotent, so it registers
+with `is_meet: false`:
+
+```rust
+use cozo::{DataValue, MeetAggrObj};
+
+struct NoisyOr;
+
+impl MeetAggrObj for NoisyOr {
+    fn init_val(&self) -> DataValue {
+        DataValue::from(0.0)
+    }
+    fn update(&self, left: &mut DataValue, right: &DataValue) -> miette::Result<bool> {
+        let l = left.get_float().unwrap_or(0.0);
+        let r = right.get_float().unwrap_or(0.0);
+        *left = DataValue::from(1.0 - (1.0 - l) * (1.0 - r));
+        Ok(true)
+    }
+}
+
+db.register_custom_aggr("noisy_or".to_string(), false, || Box::new(NoisyOr))?;
+
+// how strongly the graph as a whole recalls each memory,
+// treating inbound association strengths as independent evidence
+let out = db.run_default(
+    "evidence[to, noisy_or(strength)] := *recalls{ to, strength }
+     ?[to, belief] := evidence[to, b], belief = round(b * 1000) / 1000
+     :order -belief",
+)?;
+```
+
+```
+{"headers":["to","belief"],"next":null,"rows":[["m5",0.937],["m4",0.9],["m8",0.7],["m3",0.6],["m7",0.5],["m2",0.2]]}
+```
+
+Names must be lowercase identifiers; built-in aggregate **and** built-in
+function names are reserved (the collision would otherwise be silent).
+Duplicates error: `unregister_custom_aggr` first to replace. Programs already
+parsed keep the registration they resolved.
+
+### Dominance (antichain) aggregates
+
+```rust
+pub fn register_bounded_meet_aggr<F>(
+    &self,
+    name: String,
+    dominates: F,
+    max_survivors: usize,
+) -> Result<()>
+where
+    F: Fn(&DataValue, &DataValue) -> bool + Send + Sync + 'static,
+```
+
+A registered dominance aggregate keeps, per group, every operand not dominated
+by another — the Pareto frontier under your own strict partial order, one
+survivor per output row. `dominates` must be irreflexive and transitive, pure,
+and must not panic (debug builds probe irreflexivity and asymmetry and error
+loudly); it sees only the aggregated operand, so pack every field it inspects
+into that value. `max_survivors` is a mandatory resource guard: a frontier
+exceeding it is a loud error, never a silent truncation.
+
+For plain componentwise dominance over numeric vectors you do not need to
+register anything: the built-in `pareto_min` / `pareto_max` aggregates
+(mnestic 0.11.1) cover it from every binding. Registration is for orders they
+cannot express. Epsilon-dominance, for example — "meaningfully cheaper and no
+worse" — thins a frontier of near-ties:
+
+```rust
+// a dominates b when it is at least 0.05 cheaper AND no worse on quality
+db.register_bounded_meet_aggr(
+    "eps_frontier".to_string(),
+    |a, b| match (a, b) {
+        (DataValue::List(a), DataValue::List(b)) => {
+            let f = |v: &DataValue, d: f64| v.get_float().unwrap_or(d);
+            f(&a[0], f64::MAX) + 0.05 <= f(&b[0], f64::MAX) && f(&a[1], 0.0) >= f(&b[1], 0.0)
+        }
+        _ => false,
+    },
+    64,
+)?;
+
+let out = db.run_default(
+    "candidates[route, p] <- [
+        ['via-cache',  [0.30, 0.70]],
+        ['via-index',  [0.32, 0.90]],
+        ['via-scan',   [0.80, 0.95]],
+        ['via-rescan', [0.90, 0.95]],
+     ]
+     best[eps_frontier(p)] := candidates[_route, p]
+     ?[p] := best[p]",
+)?;
+```
+
+```
+{"headers":["p"],"next":null,"rows":[[[0.3,0.7]],[[0.32,0.9]],[[0.8,0.95]]]}
+```
+
+`via-rescan` is gone (`via-scan` is 0.1 cheaper at equal quality) while the
+three contested trade-offs survive. Nothing fingerprints a
+registered algebra: re-registering a different `dominates` under the same name
+changes what later reads of persisted output mean, so version aggregate names
+like schemas (`eps_frontier_v2`). `unregister_bounded_meet_aggr` removes one.
+
+### One-call hybrid retrieval
+
+```rust
+pub fn hybrid_search(&self, q: &HybridSearch) -> Result<NamedRows>
+```
+
+`hybrid_search` runs an HNSW vector leg, a full-text leg, and optional
+graph-proximity legs, fuses them with Reciprocal Rank Fusion, and optionally
+diversifies with MMR — in one read-only, injection-safe call.
+`hybrid_search_script` returns the CozoScript it would run, for inspection.
+
+```rust
+use cozo::HybridSearch;
+
+let recalls = db.hybrid_search(&HybridSearch {
+    relation: "memory".into(),
+    vector_index: "semantic".into(),
+    query_vector: vec![0.7, 0.1, 0.6, 0.1], // from your embedder
+    vector_k: 4,
+    fts_index: "by_text".into(),
+    query_text: "compaction stalls".into(),
+    fts_k: 4,
+    limit: 5,
+    ..HybridSearch::default()
+})?;
+```
+
+```
+{"headers":["id","score"],"next":null,"rows":[["m4",0.03278688524590164],["m3",0.03225806451612903],["m5",0.015873015873015872],["m2",0.015625]]}
+```
+
+<Callout type="fork">
+  The one-call API landed in mnestic 0.8.1; typed graph legs (`GraphLeg`) in
+  0.8.3; per-leg `detailed` output in 0.8.4. All fields, defaults, and the
+  underlying `RRF`/`MMR` fixed rules are documented on
+  [Hybrid retrieval](/docs/fork/hybrid-retrieval).
+</Callout>
+
+### Read-only Cypher
+
+<Callout type="fork">
+  Landed in mnestic 0.9.0 as an **alpha**, behind the off-by-default `cypher`
+  Cargo feature (it adds no dependencies). The published PyPI wheel ships
+  without it. Datalog remains the native, full-power language — this is a
+  read-only on-ramp for evaluating the engine without learning CozoScript
+  first.
+</Callout>
+
+With the `cypher` feature enabled, `run_cypher` translates a subset of
+openCypher to CozoScript and runs it read-only. Because mnestic stores plain
+relations rather than a fixed property graph, you supply a
+`CypherGraphSchema` mapping labels and relationship types onto stored
+relations: either one relation per label, or a shared relation with a
+discriminator column (both conventions are supported):
+
+```rust
+use cozo::{CypherGraphSchema, EdgeMap, NodeMap};
+
+let schema = CypherGraphSchema {
+    nodes: vec![NodeMap {
+        label: "Memory".into(),
+        relation: "memory".into(),
+        id_col: "id".into(),
+        label_col: None,   // set for shared relations with a type column
+        label_value: None,
+        filter: None,      // reserved in v1: the translator errors if set
+    }],
+    edges: vec![EdgeMap {
+        rel_type: "RECALLS".into(),
+        relation: "recalls".into(),
+        from_col: "from".into(),
+        to_col: "to".into(),
+        type_col: None,
+        type_value: None,
+        eid_col: None,     // set when parallel edges need their own identity
+        filter: None,
+    }],
+};
+
+let rows = db.run_cypher(
+    "MATCH (a:Memory)-[:RECALLS]->(b:Memory) WHERE a.importance >= $min \
+     RETURN b.text AS text ORDER BY text",
+    &schema,
+    BTreeMap::from([("min".to_string(), DataValue::from(0.85))]),
+)?;
+```
+
+```
+{"headers":["text"],"next":null,"rows":[["Cap SST file size at 128 MB"],["Nightly compaction stalls search-service around 03:00"]]}
+```
+
+The v1 subset: `MATCH` with fixed-length directed patterns, labels and inline
+property maps; `WHERE` (comparisons, boolean operators, `IN`,
+`IS NULL`/`IS NOT NULL`, `STARTS WITH`/`CONTAINS`); `RETURN` with aliases and
+`DISTINCT`; `ORDER BY`/`SKIP`/`LIMIT`; and `count`/`collect`/`sum`/`avg`/
+`min`/`max` with implicit grouping. Bag semantics are preserved (a
+non-`DISTINCT` `count(*)` counts duplicate paths like real Cypher), and
+relationship uniqueness within a `MATCH` is enforced. Not supported, by
+design or yet: every write clause, variable-length paths `[*m..n]`,
+`shortestPath`, `OPTIONAL MATCH`, `WITH` pipelines, `CALL`, and undirected
+relationships. Cypher literals travel as query parameters, never spliced into
+the script.
+
+`cypher_to_script(query, &schema)` returns the generated CozoScript and its
+literal-parameter map without running it. For the query above:
+
+```
+cy_match[a, b, cyp_1] := *memory{id: a, importance: cyp_0}, *memory{id: b, text: cyp_1}, *recalls{from: a, to: b}, (!is_null(cyp_0) && !is_null($min) && (cyp_0 >= $min))
+?[cy_ret_0, a, b] := cy_match[a, b, cyp_1], cy_ret_0 = cyp_1
+:order +cy_ret_0
+```
+
+The `a, b` columns in the head are the hidden binding key that preserves bag
+semantics; the API truncates rows to the `RETURN` columns before you see them.
+The full grammar, translation rules, and known divergences live in the
+[cypher-read spec](https://github.com/shuruheel/mnestic/blob/main/docs/specs/cypher-read.md).
+
+## Bulk export, import, backup
+
+These APIs move whole relations in and out of a database without a query. The
+method names below follow the Python binding; the Rust equivalents on
+`DbInstance` are `export_relations`, `import_relations`, `backup_db`,
+`restore_backup`, and `import_from_backup`, each with a `_str` JSON variant
+for FFI. The standalone server exposes them as `/export/:relations`,
+`/import`, `/backup`, and `/import-from-backup`.
+
+### `export_relations(self, relations)`
+
+Export the specified `relations`. It is guaranteed that the exported data form
+a consistent snapshot of what was stored in the database.
 
 - **`relations`**: names of the relations in a list.
 - **Returns**: a dict with string keys for the names of relations, and values
-  containing all the rows.
+  containing all the rows in `{"headers": …, "rows": …}` form.
 
-## `import_relations(self, data)`
+### `import_relations(self, data)`
 
-Import data into a database. The data are imported inside a transaction, so that
-either all imports are successful, or none are. If conflicts arise because of
-concurrent modification to the database, via either CozoScript queries or other
-imports, the transaction will fail.
+Import data into a database. The data are imported inside a transaction, so
+that either all imports are successful, or none are. If conflicts arise
+because of concurrent modification to the database, via either CozoScript
+queries or other imports, the transaction will fail.
 
-The relations to import into must exist beforehand, and the data given must match
-the schema defined.
+The relations to import into must exist beforehand, and the data given must
+match the schema defined.
 
 This API can be used to batch-put or remove data from several stored relations
 atomically. The `data` parameter can contain relation names such as `"rel_a"`,
 or relation names prefixed by a minus sign such as `"-rel_a"`. For the former
 case, every row given for the relation will be `put` into the database, i.e.
 upsert semantics. For the latter case, the corresponding rows are removed from
-the database, and you should only specify the key part of the rows. As for `rm`
-in CozoScript, it is not an error to remove non-existent rows.
+the database, and you should only specify the key part of the rows. As for
+`rm` in CozoScript, it is not an error to remove non-existent rows.
 
-<Callout type="warning">
-  Triggers are not run for direct imports.
-</Callout>
-
-- **`data`**: should be given as a dict with string keys, in the same format as
-  returned by `export_relations`. For example:
+- **`data`**: a dict with string keys, in the same format as returned by
+  `export_relations`. For example:
   `{"rel_a": {"headers": ["x", "y"], "rows": [[1, 2], [3, 4]]}, "rel_b": {"headers": ["z"], "rows": []}}`
 
-## `backup(self, path)`
+<Callout type="warning">
+  Triggers and [change callbacks](#change-callbacks) are not run for direct
+  imports. If you need them to fire, write with parameterized queries instead.
+</Callout>
 
-Backup a database to the specified path. The exported data is guaranteed to form
-a consistent snapshot of what was stored in the database.
+<Callout type="fork">
+  The bulk path maintains B-tree indices but **not** HNSW, FTS, or LSH
+  indices: imported rows stay invisible to vector, text, and similarity
+  search until those indices are rebuilt (drop and recreate them, or load via
+  `:put`). Since mnestic 0.10.5 an import into a relation carrying such
+  indices logs a loud warning instead of corrupting silently.
+</Callout>
 
-This backs up everything: you cannot choose what to back up. It is also much more
-efficient than exporting all stored relations via `export_relations`, and only a
-tiny fraction of the total data needs to reside in memory during backup.
+<Callout type="fork">
+  Since mnestic 0.10.0, for a relation with a `TxTime` column the
+  transaction-time value is engine-assigned and cannot be imported: supplying
+  the tt column is an error, `-`-prefixed deletes are rejected (use `:rm`),
+  and the whole import is stamped as one belief event. See
+  [Time travel](/docs/time-travel).
+</Callout>
 
-This function is only available if the `storage-sqlite` feature flag was on when
-compiling. The flag is on for all pre-built binaries except the WASM binaries.
-The backup produced by this API can then be used as an independent SQLite-based
-CozoDB database. If you want to store the backup for future use, you should
-compress it to save a lot of disk space.
+### `backup(self, path)`
 
-- **`path`**: the path to write the backup into. For a remote database, this is
-  a path on the remote machine.
+Backup a database to the specified path (Rust: `backup_db`). The backup is
+guaranteed to be a consistent snapshot of what was stored in the database.
 
-## `restore(self, path)`
+This backs up everything: you cannot choose what to back up. It is also much
+more efficient than exporting all stored relations via `export_relations`, and
+only a tiny fraction of the total data needs to reside in memory during
+backup.
 
-Restore the database from a backup. Must be called on an empty database.
+The backup file is itself a complete SQLite-backed mnestic database, produced
+from any backend; you can open it directly with the `sqlite` engine. Backup
+is only available when the `storage-sqlite` feature was on at compile time;
+the feature is in the default set and in all published wheels and binaries
+except wasm builds. If you store backups for future use, compress them — they
+shrink a lot.
+
+- **`path`**: the path to write the backup into. When calling the server's
+  `/backup` endpoint, this is a path on the server's machine.
+
+### `restore(self, path)`
+
+Restore the database from a backup (Rust: `restore_backup`). Must be called on
+an empty database — restoring into a database that already contains data is an
+error.
 
 This restores everything: you cannot choose what to restore.
 
-- **`path`**: the path to the backup. You cannot restore remote databases this
-  way: use the executable directly.
+- **`path`**: the path to the backup. You cannot restore a running server's
+  database over HTTP: use the executable's `--restore` flag at startup
+  instead.
 
-## `import_from_backup(self, path, relations)`
+### `import_from_backup(self, path, relations)`
 
-Import stored relations from a backup.
+Import stored relations from a backup file.
 
 In terms of semantics, this is like `import_relations`, except that data comes
-from the backup file directly, and you can only `put`, not `rm`. It is also more
-memory-efficient than `import_relations`.
+from the backup file directly, and you can only `put`, not `rm`. It is also
+more memory-efficient than `import_relations`.
 
-<Callout type="warning">
-  Triggers are not run for direct imports.
-</Callout>
-
-- **`path`**: path to the backup file. For remote databases, this is a path on
-  the remote machine.
+- **`path`**: path to the backup file. For the server, this is a path on the
+  server's machine.
 - **`relations`**: a list containing the names of the relations to import. The
   relations must exist in the database.
 
-## Callbacks
+<Callout type="warning">
+  Triggers and callbacks are not run for direct imports. This path copies raw
+  rows and maintains **no** indices at all: it refuses a destination relation
+  that has B-tree indices (use `import_relations` there), and it will not
+  reject — but also will not maintain — HNSW/FTS/LSH indices, so rebuild those
+  after importing with [`::reindex`](/docs/system-ops#reindex-rel_name). Until
+  mnestic 0.12.1 it stranded those indices **silently**: a restored backup
+  returned nothing from hybrid retrieval, with no signal anywhere. It now warns,
+  as `import_relations` already did. Relations with a `TxTime` column cannot be
+  imported from a backup at all, because their rows carry the source store's
+  commit clock; restore the full store instead.
+</Callout>
 
-It is possible to register callbacks so that you get notified when requested
-stored relations change. Currently, this functionality is available for Rust,
-Python and NodeJS libraries and the standalone executable only. Refer to the
-respective documentation for how to use it.
+## The Python binding
+
+```bash
+pip install mnestic
+```
+
+The wheel embeds the whole engine — no server, no native toolchain. Since
+mnestic 0.10.5 it bundles the RocksDB backend on every supported platform
+(the sdist stays SQLite-only, so the RocksDB engine is wheel-only). The
+`langchain-mnestic` and `llama-index-vector-stores-mnestic` packages layer
+idiomatic integrations on top; see [Installation](/docs/install#python).
+
+```python
+from mnestic import CozoDbPy
+
+db = CozoDbPy("mem", "", "{}")   # engine, path, options — like DbInstance::new
+
+db.run_script(
+    ":create memory { id: String => kind: String, text: String, importance: Float }",
+    {}, False)                   # (query, params, immutable)
+
+db.run_script(
+    "?[id, kind, text, importance] <- [[$id, $kind, $text, $importance]] "
+    ":put memory { id => kind, text, importance }",
+    {"id": "m2", "kind": "decision",
+     "text": "Chose RocksDB over sled for the write path", "importance": 0.9},
+    False)
+
+hits = db.run_script(
+    "?[text, importance] := *memory{ id: $id, text, importance }",
+    {"id": "m2"}, True, timeout=5.0)
+print(hits)
+```
+
+```
+{'headers': ['text', 'importance'], 'next': None, 'rows': [['Chose RocksDB over sled for the write path', 0.9]]}
+```
+
+`run_script(query, params, immutable, timeout=None)` mirrors the Rust call:
+`params` is a dict of `$`-parameters, `immutable` maps to `ScriptMutability`,
+and the `timeout=` keyword (mnestic 0.10.5) is the per-call wall-clock budget.
+Failures raise `Exception` whose argument is the structured error report: a
+dict with `message`, `code` (for example `eval::timeout`), and source spans.
+
+The rest of the surface, all verified against the published wheel:
+
+| Method | Notes |
+| --- | --- |
+| `set_default_query_timeout(secs)` / `default_query_timeout()` | Db-wide default budget, as in Rust (0.10.5). |
+| `set_query_factorization(bool)` / `query_factorization()` | Toggle the opt-in factorized-`count()` rewrite (0.10.7); see [Factorized counting](/docs/fork/factorized-counting). |
+| `hybrid_search(query_dict)` | One-call hybrid retrieval; the dict mirrors the Rust `HybridSearch` fields, including `graph_legs`, `mmr`, and `detailed: True` for per-leg rows (0.8.4). |
+| `register_callback(relation, fn)` | `fn(op, new_rows, old_rows)` is called on a worker thread per committed change; `op` is `"Put"`/`"Rm"`, the rows plain lists. Returns an id for `unregister_callback(id)`. |
+| `register_fixed_rule(name, arity, fn)` | `fn(inputs, options)` returns a list of rows of length `arity`; `unregister_fixed_rule(name)` removes it. |
+| `multi_transact(write)` | Returns a transaction handle with `run_script(query, params)`, `commit()`, `abort()`. |
+| `export_relations(list)` / `import_relations(dict)` | As [above](#bulk-export-import-backup). |
+| `backup(path)` / `restore(path)` / `import_from_backup(path, relations)` | As above. |
+| `set_graph_projection_capacity(bytes)` | Ceiling for cached [graph projections](/docs/fork/graph-projections) (0.11.0); `0` disables caching. |
+| `close()` | Releases the handle; later calls raise "database closed". Safe to call while queries are in flight (0.10.5). |
+| `mnestic.eval_expressions(expr, params, bindings)` / `mnestic.variables(query, params)` | Module-level helpers: evaluate a CozoScript expression, or list a query's `$`-parameters. |
+
+`run_cypher(query, schema_dict, params)` exists only in wheels built with the
+`cypher` feature; the published wheel does not include it (alpha).
+
+## The standalone server
+
+`cozo-bin` wraps the same `DbInstance` in an HTTP server and a REPL. It is not
+published as a binary — build it from the
+[repository](https://github.com/shuruheel/mnestic):
+
+```bash
+cargo run -p cozo-bin -- server --engine sqlite --path ./memory.db
+# serves on 127.0.0.1:9070 by default; `repl` instead of `server` for a console
+# add --features storage-rocksdb to the build for --engine rocksdb
+```
+
+Queries go to `POST /text-query`; the bulk APIs above map to
+`/export/:relations`, `/import`, `/backup`, and `/import-from-backup`; change
+callbacks stream as server-sent events from `/changes/:relation`; custom fixed
+rules can be served back over `/rules/:name`; and `/transact` +
+`/transact/:id` drive a held-open multi-transaction. `--token-table` enables
+token auth, `--restore` restores a backup at startup, and
+`--default-query-timeout` (mnestic 0.10.5) arms the Db-wide budget from the
+command line.
+
+## Other language bindings
+
+Upstream CozoDB shipped C, Java, NodeJS, Swift, and wasm bindings. Their code
+remains in the mnestic tree but they are excluded from the workspace and not
+built, published, or maintained by the fork; Python is the one revived
+binding. If you need another language today, the practical routes are the
+server's HTTP API or the C-ABI-friendly `_str` methods on `DbInstance`. A
+binding will be reactivated when there is a concrete need.
 
 <Attribution page="nonscript.html" />

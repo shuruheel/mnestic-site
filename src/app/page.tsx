@@ -289,6 +289,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.12.1",
+    t: "Six inherited bugs, found and named",
+    d: "A line-by-line audit of the inherited engine found full-text postings leaking on every in-place update, a transaction API that reported success for a failed commit, and change events fired for writes that never landed. All predate the fork. ::reindex is the repair path.",
+    metric: "55% BM25 score error, fixed · 200 {\"ok\": true} on a failed commit, fixed",
+  },
+  {
     ver: "0.12.0",
     t: "Fill a context window straight from the graph",
     d: "BudgetedTraversal expands cheapest-first from what search found, under a hard budget of distinct nodes — deterministic, gated mid-expansion, interruptible. One call replaces a host-side BFS loop.",
@@ -401,7 +407,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.12.0
+                a maintained fork of CozoDB · v0.12.1
               </span>
             </div>
 
@@ -605,7 +611,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — every fork release, 0.8.0 through 0.12.0.
+            — every fork release, 0.8.0 through 0.12.1.
           </p>
         </section>
 
@@ -834,7 +840,7 @@ export default function Home() {
 cargo add mnestic
 
 # or, with the RocksDB backend:
-# mnestic = { version = "0.12", features = ["storage-rocksdb"] }`}
+# mnestic = { version = "0.12.1", features = ["storage-rocksdb"] }`}
               />
               <Code
                 lang="rust"

@@ -68,12 +68,29 @@ mnestic inherits CozoDB's storage backends. Select them with Cargo features:
 
 ```toml
 # Cargo.toml — enable the RocksDB backend
-mnestic = { version = "0.12", features = ["storage-rocksdb"] }
+mnestic = { version = "0.12.1", features = ["storage-rocksdb"] }
 ```
 
 <Callout type="note">
   RocksDB compiles a C++ dependency, so the first build is slow. The in-memory
   and SQLite backends need no native toolchain.
+</Callout>
+
+<Callout type="warning">
+  **Upgrading to 0.12.1 with an existing database? If you use full-text search,
+  you have one action to take.** Full-text postings leaked on every in-place
+  update of a relation carrying only an FTS index — a bug inherited from upstream
+  CozoDB that affects **every release through 0.12.0**. The fix stops new leakage
+  but **cannot evict postings already written**, so an existing index is affected
+  today and upgrading alone does not repair it. Rebuild each affected relation
+  once with the new [`::reindex`](/docs/system-ops#reindex-rel_name):
+
+  ```prolog
+  ::reindex my_relation
+  ```
+
+  It is a maintenance operation — it holds the relation's write lock for the
+  rebuild. See [Release history](/docs/release-notes) for the full 0.12.1 batch.
 </Callout>
 
 <Callout type="fork">

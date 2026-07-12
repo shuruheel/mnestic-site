@@ -1,0 +1,290 @@
+export const metadata = {
+  title: "Skyline aggregates",
+  description:
+    "pareto_min and pareto_max keep the whole Pareto frontier per group instead of collapsing to one winner — multi-objective ranking as an ordinary aggregate, usable inside recursive rules where a hand-rolled dominance test cannot go, reachable from every binding with no registration.",
+};
+
+# Skyline aggregates
+
+Ranking questions in a memory store are rarely about one number. Which memories
+should an agent resurface about a project: the most important, or the most
+recent? The strongest association, or the shortest chain of reasoning? A `max`
+answers by picking a winner, which means silently discarding the candidates that
+were better on the axis it ignored.
+
+The honest answer to a multi-objective question is a **set**: the candidates that
+nothing else beats on every axis at once — the Pareto frontier, or _skyline_.
+mnestic computes it as an ordinary aggregate.
+
+<Callout type="fork">
+  Specific to mnestic. The bounded-meet aggregate category landed in 0.10.0 with
+  `min_cost_k`; host-registered dominance (`register_bounded_meet_aggr`) in
+  0.10.1; the built-in `pareto_min` / `pareto_max` in **0.11.1**.
+</Callout>
+
+## What a single winner hides
+
+The examples here run on an agent's memory graph: episodic memories `m1`–`m8`
+(`memory`, keyed `id`, with `kind`, `text`, `importance` and a timestamp `at`),
+the people, tools and projects it knows about (`entity`, keyed `id`, with `name`
+and `kind`), a `mentions` link table joining the two, and weighted association
+edges `recalls` (`from, to => strength`).
+
+Take the memories the agent holds about each entity, and ask for the most
+important one:
+
+```prolog
+?[name, max(importance)] := *mentions{memory: mem, entity},
+                            *memory{id: mem, importance},
+                            *entity{id: entity, name}
+:order name
+```
+
+```
+name              max(importance)
+Maya              0.6
+Postgres          0.75
+RocksDB           0.9
+Sam               0.5
+search-service    0.7
+```
+
+For RocksDB the winner is `m2`, at importance 0.9. Here is the group it won:
+
+```prolog
+?[id, text, importance, day] := *mentions{memory: id, entity: 'e_rocksdb'},
+                                *memory{id, text, importance, at},
+                                day = (at - 1751328000.0) / 86400
+:order -importance
+```
+
+```
+id    text                                                    importance    day
+m2    Chose RocksDB over sled for the write path              0.9           1.0
+m5    Cap SST file size at 128 MB                             0.85          4.0
+m4    Compaction stalls correlate with oversized SST files    0.8           3.0
+```
+
+(`at` is a unix timestamp; dividing by 86400 turns it into days since the oldest
+memory, so a larger `day` is more recent.)
+
+`m2` is the most important of the three, and the oldest. `m5` is three days
+fresher and 0.05 less important, and the query threw it away, because a `max`
+over one column cannot represent a tie between two columns. Both are defensible
+answers to "what should I resurface about RocksDB"; only one came back.
+
+## The frontier, per group
+
+`pareto_max` keeps every candidate that nothing else beats on **every**
+component. Score each memory as a two-objective point — importance, and how
+recent it is — and the aggregate answers per entity:
+
+```prolog
+frontier[entity, pareto_max(p)] := *mentions{memory: mem, entity},
+                                   *memory{id: mem, importance, at},
+                                   p = [importance, (at - 1751328000.0) / 86400]
+
+?[name, id, importance, day] := frontier[entity, p],
+                                *entity{id: entity, name},
+                                *mentions{memory: id, entity},
+                                *memory{id, importance, at},
+                                day = (at - 1751328000.0) / 86400,
+                                p = [importance, day]
+:order name, day
+```
+
+```
+name              id    importance    day
+Maya              m1    0.6           0.0
+Postgres          m8    0.75          7.0
+RocksDB           m2    0.9           1.0
+RocksDB           m5    0.85          4.0
+Sam               m6    0.5           5.0
+search-service    m3    0.7           2.0
+```
+
+(The second rule joins the surviving vectors back to the rows they came from.)
+
+RocksDB now returns **two** rows. `m2` and `m5` are genuinely contested — each
+beats the other on one axis — and `m4` is gone: `m5` is both more important and
+more recent, so it dominates. Postgres, by contrast, still returns one row, and
+that is informative: `m8` beats every other Postgres memory on both axes at
+once. A group with one survivor is a settled question; a group with several is
+an open one. That distinction is what a `max` cannot express.
+
+## The same answer by hand
+
+A skyline over a finished candidate set does not strictly need an aggregate.
+Materialize the candidates, define dominance as a self-join, and subtract it
+with a negation:
+
+```prolog
+cand[e, m, i, d] := *mentions{memory: m, entity: e},
+                    *memory{id: m, importance: i, at},
+                    d = (at - 1751328000.0) / 86400
+dominated[e, m] := cand[e, m, i, d], cand[e, other, i2, d2], other != m,
+                   i2 >= i, d2 >= d, or(i2 > i, d2 > d)
+
+?[name, id, importance, day] := cand[e, id, importance, day],
+                                not dominated[e, id],
+                                *entity{id: e, name}
+:order name, day
+```
+
+That returns the same six rows. It is worth knowing, and worth being clear about
+what it costs. Dominance is restated by hand, and the restatement grows with the
+question: every objective you add puts another `>=` clause in `dominated` and
+another disjunct in the strictness test, and the rule stays a self-join of the
+whole candidate set. The aggregate is one name in one head position, and it
+composes with the rest of the query like any other aggregation.
+
+The harder limit is where the formulation stops working altogether. Pruning by
+dominance *during* a fixpoint — dropping a partial result the moment something
+dominates it — means negating a relation that is defined over the very rule
+being computed:
+
+```prolog
+reach[to, hops, str] := *recalls{from: 'm2', to, strength}, hops = 1, str = strength
+reach[to, hops, str] := reach[m, h, s], *recalls{from: m, to, strength},
+                        hops = h + 1, str = s + strength, not dominated[to, hops, str]
+dominated[to, h, s] := reach[to, h2, s2], reach[to, h, s], h2 <= h, s2 >= s,
+                       or(h2 < h, s2 > s)
+
+?[to, hops, str] := reach[to, hops, str]
+```
+
+```
+eval::unstratifiable
+
+  × Query is unstratifiable
+  help: The rule 'dominated' is in the strongly connected component
+        ["dominated", "reach"], and is involved in at least one forbidden
+        dependency (negation, non-meet aggregation, or algorithm-application).
+```
+
+Negation may read a relation the engine has already finished, never one it is
+still deriving ([stratification](/docs/query-execution#stratification)). So the
+hand-rolled skyline is always a post-pass over a completed candidate set. Inside
+recursion it has no equivalent, and that is where the aggregate earns its place.
+
+## `pareto_min` and `pareto_max`
+
+The operand is a non-empty list of numbers: one point scored on several
+objectives. Per group the aggregate keeps the points that no other point
+dominates under the componentwise (product) order — `pareto_min` treating
+smaller as better on every component, `pareto_max` larger — and emits each
+survivor as its own row. A malformed operand is a loud error rather than a
+silently dropped row; the full contract (errors, differing arities, reserved
+names) is on the
+[aggregations reference](/docs/aggregations#pareto_minv--pareto_maxv).
+
+**Mixed objectives** — minimize some components, maximize others — are expressed
+by negating the maximized ones and using `pareto_min`. That is why there are two
+names rather than one with a direction argument, and why call-site arguments are
+rejected outright: direction lives in the aggregate's name and mixed objectives
+use the sign flip, so there is nothing left for an argument to say.
+`p = [price, -quality]` is the idiom; the recursion below uses it.
+
+Two design properties are worth knowing before you rely on it.
+
+**Survivors come back in a canonical order**, not the order they arrived in. An
+antichain has no natural order, so emitting insertion order would leak
+evaluation scheduling into the results of a query whose answer is a set. The
+engine keeps the survivor buffer in the standard value order instead, so
+permuting the input rows gives byte-identical output.
+
+**There is no truncation knob**, and there will not be one. An antichain has no
+canonical k-subset: dropping a survivor un-prunes everything that only it
+dominated, and which one you drop would depend on arrival order. Every
+principled way to bound a skyline (representative-k, k-dominant) is a different
+operator with its own objective, not a cap on this one. Exact duplicates collapse
+— structurally identical points become a single survivor — so the frontier is
+bounded by the group's distinct operand count, the way `collect` is bounded by
+its group. A join back to the source rows, as in the example above, can still
+return several rows for one survivor when two rows score the identical point.
+The real control is dimensionality: skyline size grows with the number of
+objectives, so keep the vector short.
+
+## In recursive rules
+
+A skyline aggregate is a bounded-meet aggregate, so it may be used recursively,
+and it prunes as it goes: a partial result that something dominates is dropped
+mid-fixpoint instead of being accumulated and filtered afterwards.
+
+Walk the `recalls` association graph out from `m2`, with two objectives that
+genuinely conflict — take the fewest hops, but accumulate the most association
+strength:
+
+```prolog
+reach[to, pareto_min(p)] := *recalls{from: 'm2', to, strength}, p = [1, -strength]
+reach[to, pareto_min(p)] := reach[m, q], *recalls{from: m, to, strength},
+                            p = [get(q, 0) + 1, get(q, 1) - strength]
+
+?[to, hops, strength] := reach[to, p], hops = get(p, 0), strength = -get(p, 1)
+:order to, hops
+```
+
+```
+to    hops    strength
+m3    1       0.6
+m4    2       1.5
+m5    1       0.4
+m5    3       2.35
+```
+
+`m5` is reachable two ways and both survive: one weak hop straight there
+(strength 0.4), or a three-hop chain through the compaction memories that
+accumulates 2.35. Neither dominates. A `min_cost_k` over either objective alone
+would have to pick a side; the skyline hands both to the caller, which is what a
+ranker actually wants to reason over.
+
+<Callout type="note">
+  A candidate arriving later can *displace* one already on the frontier, so
+  bounded-meet recursion is a guarded approximation rather than a classical
+  fixpoint: the final frontier is the antichain of the candidates that ever
+  surfaced. Pruning is exact when the body's accumulation preserves dominance —
+  as adding a hop and a strength does above, since the same increment lands on
+  both candidates and componentwise dominance survives it. Under an accumulation
+  that does not, a pruned partial result is gone even if extending it would have
+  produced a survivor. An evaluation that keeps displacing survivors forever
+  dies with a loud error after 4096 changed epochs rather than running forever.
+  The same reading and the same backstop govern `min_cost_k`; see
+  [Provenance semirings](/docs/fork/provenance-semirings).
+</Callout>
+
+Cycles are otherwise pruned like anything else: a lap that never improves the
+frontier adds nothing, and the fixpoint settles.
+
+## Your own order: registered dominance (0.10.1)
+
+Componentwise dominance covers most skylines, but not all of them. When the
+order you need is not "better on every component" — epsilon-dominance
+("meaningfully cheaper and no worse", which thins a frontier of near-ties), a
+subsumption order over sets, a domain-specific authority ranking — a Rust host
+can register one:
+`register_bounded_meet_aggr(name, dominates, max_survivors)`. The closure must
+be a strict partial order (irreflexive, transitive) and pure; debug builds probe
+irreflexivity and asymmetry and error loudly if the closure lies. `max_survivors`
+is a mandatory resource guard, and overflowing it is an error rather than a
+silent truncation, for the same reason the built-ins have no cap: an antichain
+has no canonical k-subset to truncate to.
+
+Registered closures are Rust-embedded only: they do not cross the Python wheel,
+`cozo-bin`, or the served surfaces. The built-in `pareto_min` / `pareto_max` do,
+which is why they exist — they are reachable from **every** binding through a
+plain `run_script`, with no registration and no FFI. Reach for registration only
+when the built-in order genuinely cannot express yours. Mechanics:
+[Host-defined aggregations](/docs/aggregations#host-defined-aggregations) and
+[Dominance (antichain) aggregates](/docs/beyond-cozoscript#dominance-antichain-aggregates).
+
+## See also
+
+- [Aggregations → pareto_min / pareto_max](/docs/aggregations#pareto_minv--pareto_maxv)
+  — the full reference: semantics, operand contract, errors.
+- [Aggregations → Bounded-meet aggregations](/docs/aggregations#bounded-meet-aggregations-mnestic)
+  — the category both families ride, and its head-shape rules.
+- [Provenance semirings](/docs/fork/provenance-semirings) — `min_cost_k` and
+  custom combines, the other half of the bounded-meet machinery: k cheapest
+  derivations under a total order, where the skyline is the frontier under a
+  partial one.
+- [What mnestic adds](/docs/fork/overview)

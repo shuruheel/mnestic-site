@@ -1,302 +1,373 @@
 export const metadata = {
   title: "Proximity searches",
   description:
-    "HNSW vector indices, MinHash-LSH near-duplicate indexing, full-text search, and text tokenization in CozoScript.",
+    "Vector search with HNSW indices, BM25 full-text search, and MinHash-LSH near-duplicate detection in mnestic: every creation option, the search-atom syntax, scoring semantics, and the tokenizer inventory.",
 };
 
 # Proximity searches
 
-These kinds of proximity indices allow Cozo to perform fast searches for similar
-data. The HNSW index is a graph-based index that allows for fast approximate
-nearest neighbor searches. The MinHash-LSH index is a locality sensitive hash
-index that allows for fast approximate nearest neighbor searches. The FTS index
-is a full-text search index that allows for fast string matches.
+Exact joins answer "what did I store?"; proximity indices answer "what is *near*
+this?". mnestic maintains three kinds on stored relations: **HNSW** for
+approximate nearest-neighbour search over vectors, **FTS** for full-text search
+over strings, and **MinHash-LSH** for near-duplicate detection. All three are
+queried through the same *search atom* (`~relation:index{ ... }`) inside
+ordinary Datalog, so proximity results join, recurse, and aggregate like any
+other rows.
 
-## HNSW (Hierarchical Navigable Small World) indices for vectors
-
-Cozo supports vector proximity search using the HNSW (Hierarchical Navigable
-Small World) algorithm.
-
-To use vector search, you first need to have a stored relation with vectors
-inside, for example:
+The examples on this page use the agent-memory relation from the rest of these
+docs — eight episodic memories (notes, decisions, insights) carrying a toy
+4-dimensional embedding:
 
 ```prolog
-:create table {k: String => v: <F32; 128>}
+:create memory { id: String => kind: String, text: String, importance: Float, at: Float, v: <F32; 4> }
 ```
 
-Next you create a HNSW index on a table containing vectors. You use the
-following system operator to create the index:
+One index and one query give the agent semantic recall. Given a cue vector,
+the three memories about the compaction incident come back nearest-first:
 
 ```prolog
-::hnsw create table:index_name {
-    dim: 128,
-    m: 50,
+::hnsw create memory:semantic {
+    dim: 4,
     dtype: F32,
     fields: [v],
-    distance: L2,
-    ef_construction: 20,
-    filter: k != 'foo',
-    extend_candidates: false,
-    keep_pruned_connections: false,
+    distance: Cosine,
+    m: 16,
+    ef_construction: 50,
 }
 ```
 
-The parameters are as follows:
+```prolog
+?[id, text, d] := ~memory:semantic{ id, text |
+        query: q,
+        k: 3,
+        ef: 50,
+        bind_distance: dist,
+    }, q = vec([0.7, 0.1, 0.6, 0.1]), d = round(dist * 1000) / 1000
 
-- The dimension `dim` and the data type `dtype` (defaults to F32) has to match the dimensions of any vector you index.
-- The `fields` parameter is a list of fields in the table that should be indexed.
-- The indexed fields must only contain vectors of the same dimension and data type, or `null`, or a list of vectors of the same dimension and data type.
-- The `distance` parameter is the distance metric to use: the options are `L2` (default), `Cosine` and `IP`.
-- The `m` controls the maximal number of outgoing connections from each node in the graph.
-- The `ef_construction` parameter is the number of nearest neighbors to use when building the index: see the HNSW paper for details.
-- The `filter` parameter, when given, is bound to the fields of the original relation and only those rows for which the expression evaluates to `true` are indexed.
-- The `extend_candidates` parameter is a boolean (default false) that controls whether the index should extend the candidate list with the nearest neighbors of the nearest neighbors.
-- The `keep_pruned_connections` parameter is a boolean (default false) that controls whether the index should keep pruned connections.
+:order d
+```
 
-You can insert data as normally done into `table`. For vectors, use a list of
-numbers and it will be verified to have the correct dimension and converted. If
-you want to be more explicit, you can use the `vec` function.
+```
+['m4', 'Compaction stalls correlate with oversized SST files',  0.003]
+['m3', 'Nightly compaction stalls search-service around 03:00', 0.023]
+['m5', 'Cap SST file size at 128 MB',                           0.029]
+```
 
-After the index is created, you can use vector search inside normal queries in a
-similar manner to stored relations. For example:
+The rest of this page is the systematic reference: creation options for each
+index kind, the full search-atom parameter set, scoring, and the tokenizers
+shared by FTS and LSH.
+
+## HNSW (Hierarchical Navigable Small World) indices for vectors
+
+HNSW is a graph-based index for approximate nearest-neighbour search. To use
+it you need a stored relation with at least one vector column, such as
+`v: <F32; 4>` above (or `<F64; 1536>`, and so on).
+
+### Creating an HNSW index
+
+The general shape is:
 
 ```prolog
-?[dist, k, v] := ~table:index_name{ k, v |
+::hnsw create <relation>:<index_name> {
+    dim: <dimension>,          # required
+    fields: [<vector columns>],# required
+    m: <max degree>,           # required
+    ef_construction: <breadth>,# required
+    dtype: F32,                # default
+    distance: L2,              # default
+    filter: <expr>,            # optional
+    extend_candidates: false,  # default
+    keep_pruned_connections: false,  # default
+}
+```
+
+| Option | Required / default | Meaning |
+| --- | --- | --- |
+| `dim` | required | Dimension of the indexed vectors. Must equal the declared dimension of every column in `fields`; a mismatch is rejected at creation (`Cannot create HNSW index with field v of dimension 4 (expected 3)`). |
+| `fields` | required | The columns to index. Each must be a vector column of matching `dim` and `dtype`; a field may also hold `null` (the row is skipped) or a **list** of such vectors (each element is indexed separately). |
+| `m` (alias `m_neighbours`) | required | Maximal number of outgoing connections per node in the graph. Layer 0 allows up to `2 * m`. |
+| `ef_construction` (alias `ef`) | required | Candidate-pool breadth while building; larger values give a better graph, slower build. See the [HNSW paper](https://arxiv.org/abs/1603.09320). |
+| `dtype` | `F32` | Element type of the indexed vectors: `F32` or `F64`. |
+| `distance` (alias `dist`) | `L2` | Distance metric: `L2`, `Cosine`, or `IP` (inner product). |
+| `filter` | none | An expression over the relation's columns; only rows where it evaluates to `true` are indexed. |
+| `extend_candidates` | `false` | Also consider the candidates' own neighbours when selecting links. |
+| `keep_pruned_connections` | `false` | Retain some connections that the selection heuristic would discard. |
+
+Omitting a required option is an error (`ef_construction must be set`,
+`m_neighbours must be set`), so effectively every index names its four core
+parameters.
+
+You insert data into the base relation as usual. A plain list of numbers is
+verified against the column's declared dimension and converted; use the `vec`
+function when you want to be explicit.
+
+<Callout type="fork">
+  **Index builds are flat, in-RAM, and parallel since mnestic 0.8.5.**
+  `::hnsw create` assembles the graph in contiguous integer-indexed memory (the
+  hnswlib/pgvector layout) with parallel insertion; `MNESTIC_INDEX_BUILD_THREADS`
+  controls the worker count (unset or `0` = all cores, `1` = serial insertion in
+  scan order). Parallel insertion means the exact link set varies between builds
+  — recall does not. Since **0.8.2** the build also no longer blocks readers of
+  the base relation on the RocksDB backend: see
+  [Non-blocking HNSW builds](/docs/fork/non-blocking-hnsw).
+</Callout>
+
+<Callout type="warning">
+  **Bulk imports bypass proximity indices.** The bulk paths
+  (`import_relations`, `import_from_backup`) maintain B-tree indexes but not
+  HNSW, FTS, or LSH: imported rows stay invisible to proximity search until the
+  index is rebuilt with [`::reindex`](/docs/system-ops#reindex-rel_name)
+  (mnestic 0.12.1). Both paths log a warning when this happens — `import_relations`
+  since mnestic 0.10.5, `import_from_backup` since 0.12.1, where it was silent.
+  Separately, none of the proximity indices can be created on a bitemporal
+  `TxTime` relation (see [Time travel](/docs/time-travel)).
+</Callout>
+
+<Callout type="warning">
+  **Full-text postings leaked on in-place updates before mnestic 0.12.1.** A
+  relation carrying **only** an FTS index (no plain secondary index) never deleted
+  a row's old postings on a `:put` over an existing key — an upstream CozoDB bug
+  affecting every release through 0.12.0. Terms the document no longer contained
+  kept matching it, the index grew without bound, and BM25 statistics drifted
+  (measured: a 55% score error). **The 0.12.1 fix stops new leakage but cannot
+  evict postings already written** — an affected index must be rebuilt once with
+  [`::reindex`](/docs/system-ops#reindex-rel_name). LSH was never affected: its
+  write path is self-cleaning.
+</Callout>
+
+### Searching with the `~` atom
+
+After the index is created, vector search is available inside normal queries,
+anywhere a stored relation could appear. The atom starts with `~`; inside the
+braces, arguments **before** the vertical bar are named column bindings with
+exactly the same semantics as in a stored-relation atom (bound values act as
+filters, unbound names introduce fresh variables), and arguments **after** the
+bar are search parameters:
+
+```prolog
+?[id, kind, text] := ~memory:semantic{ id, kind, text |
         query: q,
-        k: 2,
-        ef: 20,
+        k: 3,
+        ef: 50,
+        filter: kind == 'decision',
+    }, q = vec([0.7, 0.1, 0.6, 0.1])
+```
+
+```
+['m2', 'decision', 'Chose RocksDB over sled for the write path']
+['m5', 'decision', 'Cap SST file size at 128 MB']
+```
+
+| Parameter | Required / default | Meaning |
+| --- | --- | --- |
+| `query` | required | An expression evaluating to a vector of the indexed type and dimension. If it is a variable, the variable must be bound elsewhere in the rule. |
+| `k` | required | Positive integer: how many results to return. |
+| `ef` | required | Positive integer: the candidate-pool breadth during the search. Larger `ef` = better recall, slower search. Keep `ef >= k`. |
+| `bind_distance` | none | Binds the distance between the query vector and the matched vector. |
+| `bind_vector` | none | Binds the matched vector itself. |
+| `bind_field` | none | Binds the name of the matched column (useful with multiple `fields`). |
+| `bind_field_idx` | none | Binds the position of the matched vector within a list-valued field, or `null` for a plain vector field. |
+| `radius` | none | Positive float: drop results farther than this distance from the query vector. |
+| `filter` | none | An expression evaluated on each candidate row; only rows where it is `true` are returned. |
+
+How the pieces interact: the graph search first collects a candidate pool of
+up to `ef` rows; `radius` and `filter` then prune that pool, and the nearest
+`k` survivors are returned. When a `filter` is present the engine prunes the
+whole `ef`-wide pool rather than the top `k` alone, so it can still fill `k`
+results past rejected candidates, but never by looking beyond `ef`. A
+selective filter therefore wants a larger `ef`. If any of the `bind_*`
+parameters name an already-bound variable, they act as equality filters on the
+results instead of binding.
+
+Two more parameters in action. `radius` keeps only the compaction cluster even
+though `k` asks for five:
+
+```prolog
+?[id, d] := ~memory:semantic{ id |
+        query: q,
+        k: 5,
+        ef: 50,
+        radius: 0.05,
         bind_distance: dist,
-        bind_vector: bv,
+    }, q = vec([0.7, 0.1, 0.6, 0.1]), d = round(dist * 1000) / 1000
+
+:order d
+```
+
+```
+['m4', 0.003]
+['m3', 0.023]
+['m5', 0.029]
+```
+
+and the `bind_field`/`bind_field_idx` pair reports where the match came from
+(`null` field index because `v` is a single vector, not a list of vectors):
+
+```prolog
+?[id, f, fi, d] := ~memory:semantic{ id |
+        query: q,
+        k: 1,
+        ef: 50,
+        bind_distance: dist,
         bind_field: f,
         bind_field_idx: fi,
-        filter: 1 + 1 == 2,
-        radius: 0.1
-    }, q = vec([200, 34])
+        bind_vector: bv,
+    }, q = vec([0.7, 0.1, 0.6, 0.1]), d = round(dist * 1000) / 1000
 ```
 
-The `~` followed by the index name signifies a vector search. In the braces,
-arguments before the vertical line are named bindings, with exactly the same
-semantics as in normal stored relations with named fields (i.e. they may be
-bound, or if they are unbound, the introduce fresh variables), and arguments
-after the vertical line are query parameters.
-
-There are three required parameters: `query` is an expression that evaluates to
-a query vector of the expected type, and if it evaluates to a variable, the
-variable must be bound inside the rule; `k` controls how many results to return,
-and `ef` controls the number of neighbours to consider during the search
-process.
-
-Next, there are three bind parameters that can bind variables to data that are
-only available in index or during the search process: `distance` binds the
-distance between the query vector and the result vector; `vector` binds the
-result vector; and `field` binds the field name of the result vector. The
-`field_idx` parameter binds the index of the field in the `fields` list of the
-index in case `field` resolves to a list of vectors, otherwise it is `null`. In
-case any of the bind parameters are bound to existing variables, they act as
-filters after `k` results are returned.
-
-The parameter `filter` takes an expression that can only refer to the fields of
-the original relation, and only those rows for which the expression evaluates to
-`true` are returned, and this filtering results occurs during the search
-process, so the algorithm will strive to return `k` results even if it must
-filter out a larger number of rows. `radius` controls the largest distance any
-return vector can have from the query vector, and this filtering process also
-happens during the search.
-
-The vector search can be used in any place where a stored relation may be used,
-even inside recursive rules (but be careful of non-termination).
-
-As with normal indices, you can use the index relation as a read-only but
-otherwise normal relation in your query. You query the index directly by:
-
-```prolog
-?[fr_k, to_k, dist] := *table:index_name {layer: 0, fr_k, to_k, dist}
+```
+['m4', 'v', null, 0.003]
 ```
 
-It is recommended to always specify `layer`, otherwise a full scan is required.
+The search atom can be used even inside recursive rules (be careful of
+non-termination).
 
-The schema for the above index is the following:
+<Callout type="fork">
+  **Batched neighbour reads (mnestic 0.8.5).** On the RocksDB backend the
+  search path fetches all unvisited neighbours' vectors per expansion step
+  through one `MultiGet` instead of a serial point-get per neighbour. Neutral
+  when the working set is cache-resident; the win case is cold-cache or
+  larger-than-RAM data.
+</Callout>
+
+### The index as a graph relation
+
+The index itself is readable as a normal (read-only) relation, which makes the
+proximity graph a queryable object in its own right. Its schema, with key
+columns before the `=>` (`::columns memory:semantic` lists the same columns,
+with an `is_key` flag marking this split):
 
 ```prolog
 {
     layer: Int,
-    fr_k: String?,
-    fr__field: Int?,
-    fr__field_idx: Int?,
-    to_k: String?,
-    to__field: Int?,
-    to__field_idx: Int?,
+    fr_id: String,
+    fr__field: Int,
+    fr__sub_idx: Int,
+    to_id: String,
+    to__field: Int,
+    to__sub_idx: Int,
     =>
     dist: Float,
-    hash: Bytes,
+    hash: Bytes?,
     ignore_link: Bool,
 }
 ```
 
-Layer is the layer in the HNSW hierarchy of graphs, with `0` the most detailed
-layer, `-1` the layer more abstract than `0`, `-2` the even more abstract layer,
-etc. There is also a special layer `1` containing at most one row with all other
-keys set to null.
+`layer` is the level in the HNSW hierarchy: `0` is the most detailed layer
+containing every indexed vector, `-1` is more abstract, `-2` more abstract
+still, and so on. There is also a special layer `1` holding at most one row
+(with the other key columns `null`, despite the declared types): the
+entry-point marker for searches. The `fr_*` and `to_*` groups mirror the base
+relation's key columns (here `id`), plus which column (`__field`) and which
+list position (`__sub_idx`, `-1` for plain vector fields) the endpoint vector
+came from.
 
-The `fr_*` and `to_*` fields mirror the indices of the indexed relation, and the
-`fr__*` and `to__*` fields indicate which vectors inside the original rows this
-edge connects.
+For a row linking two different vectors, `dist` is the distance between them
+and `hash` is `null`. For a self-loop (`fr` equals `to`), `dist` stores the
+node's out-degree and `hash` a hash of the vector, used for conflict
+detection. `ignore_link` marks links to be skipped during search; the graph is
+guaranteed symmetric, but the two directions may have different `ignore_link`
+values (they are never both `true`).
 
-`dist` is the distance between the two vectors when the row represents a link
-between two different vectors, otherwise the link is a self-loop and `dist`
-contains the degree of the node; `hash` is the hash of the vector, and
-`ignore_link` is a boolean that indicates whether this link should be ignored
-during the search process. The graph is guaranteed to be symmetric, but the
-incoming and outgoing links may have different `ignore_link` values, and they
-cannot both be `true`.
-
-Walking the index graph at layer 0 amounts to probabilistically visiting "near"
-neigbours. More abstract layers are renormalized versions of the proximity graph
-and are harder to work with but are even more interesting theoretically.
-
-To drop an HNSW index:
+Always constrain `layer`: it is the leading key column, so grounding it (and
+optionally the `fr_*` columns after it) turns the read into a prefix scan;
+otherwise the whole index is scanned. Walking layer 0 amounts to
+probabilistically visiting "near" neighbours:
 
 ```prolog
-::hnsw drop table:index_name
+?[to_id, d] := *memory:semantic{ layer: 0, fr_id: 'm4', to_id, dist },
+    to_id != 'm4',
+    d = round(dist * 1000) / 1000
+
+:order d
 ```
 
-## MinHash-LSH for near-duplicate indexing of strings and lists
-
-To use locality sensitive search on a relation containing string values, for
-example:
-
-```prolog
-:create table {k: String => v: String?}
+```
+['m5', 0.05]
+['m1', 0.738]
 ```
 
-You can create a MinHash-LSH index on the `v` field by:
+Which links exist is probabilistic (level assignment is random, and parallel
+builds insert in nondeterministic order), so your exact rows will differ from
+one build to the next; the nearest-neighbour guarantees of the search atom are
+unaffected. The more abstract layers are renormalized versions of the
+proximity graph — theoretically interesting, harder to put to practical use.
+
+### Dropping an HNSW index
 
 ```prolog
-::lsh create table:index_name {
-    extractor: v,
-    extract_filter: !is_null(v),
-    tokenizer: Simple,
-    filters: [],
-    n_perm: 200,
-    target_threshold: 0.7,
-    n_gram: 3,
-    false_positive_weight: 1.0,
-    false_negative_weight: 1.0,
-}
-```
-
-This creates a MinHash-LSH index on the `v` field of the table. The index
-configuration includes the following parameters:
-
-- `extractor: v` specifies that the `v` field will be used as the feature extractor. This parameter takes an expression, which must evaluate to a string, a list of values to be indexed, or `null`. If it evaluates to `null`, then the row is not indexed.
-- `extract_filter: !is_null(v)`: this is superfluous in this case, but in more general situations you can use this to skip indexing rows based on arbitary logic.
-- `tokenizer: Simple` and `filters: []` specifies the tokenizer to be used, see a later section for tokenizer.
-- `n_perm: 200` sets the number of permutations for the MinHash LSH index. Higher values will result in more accurate results at the cost of increased CPU and storage usage.
-- `target_threshold: 0.7` sets the target threshold for similarity comparisons when searching.
-- `n_gram: 3` sets the size of the n-gram used for [shingling](https://en.wikipedia.org/wiki/W-shingling).
-- `false_positive_weight: 1.0` and `false_negative_weight: 1.0` set the weights for false positives and false negatives.
-
-At search time:
-
-```prolog
-?[k, v] := ~table:index_name {k, v |
-    query: $q,
-    k: 2,
-    filter: 1 + 1 == 2,
-}
-```
-
-This will look for the top 2 most similar values to the query `q`. The `filter`
-parameter is evaluated on the bindings for the relation, and only those rows for
-which the filter evaluates to `true` are returned, before restricting to `k`
-results. The `query` parameter is a string, and will be subject to the same
-tokenization process.
-
-In addition to strings, you can index and search for list of arbitrary values.
-In this case, the `tokenizer`, `filters` and `n_gram` parameters are ignored.
-
-Again you can use the associated index relation as a normal relations in your
-query. There are two now: `table:index_name` and `table:index_name:inv`. You can
-use `::columns` to look at their structure. In our case, the first is:
-
-```prolog
-{
-    hash: Bytes,
-    src_k: String,
-}
-```
-
-and the second is:
-
-```prolog
-{
-    k: String => minhash: List[Bytes]
-}
-```
-
-The first it more useful: it loosely groups together duplicates according to the
-indexing parameters.
-
-To drop:
-
-```prolog
-::lsh drop table:index_name
+::hnsw drop memory:semantic
 ```
 
 ## Full-text search (FTS)
 
-Full-text search should be familiar. For the following relation:
+The FTS index tokenizes a string column and maintains an inverted index over
+the tokens, with a small query language and BM25 relevance scoring.
+
+### Creating an FTS index
 
 ```prolog
-:create table {k: String => v: String?}
-```
-
-we can create an FTS index by:
-
-```prolog
-::fts create table:index_name {
-    extractor: v,
-    extract_filter: !is_null(v),
+::fts create memory:by_text {
+    extractor: text,
     tokenizer: Simple,
-    filters: [],
+    filters: [Lowercase],
 }
 ```
 
-This creates an FTS index on the `v` field of the table. The index configuration
-includes the following parameters:
+| Option | Meaning |
+| --- | --- |
+| `extractor` | An expression over the relation's columns that must evaluate to a string, or `null` (the row is skipped). Here it is the `text` column directly. |
+| `extract_filter` | An expression; rows where it evaluates to `false` are not indexed. Convenient for skipping rows on arbitrary logic. |
+| `tokenizer` | How the extracted string is split into tokens — see [tokenization](#text-tokenization-and-filtering) below. |
+| `filters` | A non-empty list of token filters applied after tokenization. **Omit the option entirely for no filters**: `filters: []` is rejected with `Filters must be a list of filters`. |
 
-- `extractor: v` specifies that the `v` field will be used as the feature extractor. This parameter takes an expression, which must evaluate to a string or `null`. If it evaluates to `null`, then the row is not indexed.
-- `extract_filter: !is_null(v)`: this is superfluous in this case, but in more general situations you can use this to skip indexing rows based on arbitary logic.
-- `tokenizer: Simple` and `filters: []` specifies the tokenizer to be used, see a later section for tokenizer.
+<Callout type="fork">
+  **FTS builds parallelized (mnestic 0.8.5).** `::fts create` fans
+  tokenization and posting-row encoding across worker threads (the same
+  `MNESTIC_INDEX_BUILD_THREADS` control as HNSW), and corpus statistics for
+  BM25 are counted exactly during the build instead of by a post-build scan.
+</Callout>
 
-That's it. At query time:
+### Searching
 
 ```prolog
-?[s, k, v] := ~table:index_name {k, v |
-    query: $q,
-    k: 10,
-    filter: 1 + 1 == 2,
-    score_kind: 'bm25',
-    bind_score: s
-}
+?[id, text, s] := ~memory:by_text{ id, text |
+        query: 'compaction stalls',
+        k: 5,
+        bind_score: score,
+    }, s = round(score * 1000) / 1000
 
 :order -s
 ```
 
-This query retrieves the top 10 results from the index `index_name` based on a
-search query `$q`. The `filter` parameter can be used to filter the results
-further based on additional conditions. The `score_kind` parameter specifies the
-scoring method. The resulting scores are bound to the variable `s`. Finally, the
-results are ordered in descending order of score (`-s`).
+```
+['m4', 'Compaction stalls correlate with oversized SST files',  2.616]
+['m3', 'Nightly compaction stalls search-service around 03:00', 2.476]
+```
+
+The same binding rules as HNSW apply: columns before the bar, parameters after.
+The search atom itself does not order the enclosing query's output — bind the
+score and add `:order -s` to present results ranked.
+
+| Parameter | Required / default | Meaning |
+| --- | --- | --- |
+| `query` | required | The search string, parsed by the [query mini-language](#the-query-mini-language) and tokenized with the index's own tokenizer and filters. |
+| `k` | required | Positive integer: how many results to return. |
+| `score_kind` | `'bm25'` | Scoring method: `'bm25'`, `'tf_idf'`, or `'tf'`. |
+| `k1` | `1.2` | BM25 term-frequency saturation parameter (ignored for other score kinds). |
+| `b` | `0.75` | BM25 document-length normalization, must be in `[0, 1]` (ignored for other score kinds). |
+| `bind_score` | none | Binds the relevance score. |
+| `filter` | none | An expression evaluated on each scored candidate; rows failing it are skipped before `k` is filled. |
 
 <Callout type="fork">
   **mnestic 0.8.3 changed the default `score_kind`** from `'tf_idf'` to Okapi
   **`'bm25'`** — a behavior change. The three options:
 
-  - **`'bm25'`** *(default)* — term-frequency saturation (`k1`, default `1.2`) and
-    document-length normalization (`b`, default `0.75`), both tunable as query
-    params; `OR`-disjunction **sums** per-term contributions. `avgdl` is an O(1)
-    durable counter, not a per-query scan.
+  - **`'bm25'`** *(default)* — term-frequency saturation (`k1`) and
+    document-length normalization (`b`); `OR`-disjunction **sums** per-term
+    contributions. The average document length (`avgdl`) is an O(1)
+    process-cached counter, not a per-query scan (made safe for concurrent
+    writers in 0.8.4).
   - **`'tf_idf'`** — raw `tf · idf` with no length normalization; `OR` takes the
     **max** per-term score. Byte-identical to upstream CozoDB.
   - **`'tf'`** — term frequency only.
@@ -304,85 +375,380 @@ results are ordered in descending order of score (`-s`).
   Pass `score_kind: 'tf_idf'` (or `'tf'`) to keep the exact upstream scoring.
 </Callout>
 
+A `filter` can reference any column of the base relation that you name in the
+binding list:
+
 ```prolog
-# BM25 with explicit tuning (k1 saturation, b length-normalization)
-?[s, k, v] := ~table:index_name {k, v |
-    query: $q, k: 10, score_kind: 'bm25', k1: 1.2, b: 0.75, bind_score: s
-}
+?[id, text, s] := ~memory:by_text{ id, text, importance |
+        query: 'compaction stalls',
+        k: 5,
+        filter: importance > 0.7,
+        bind_score: score,
+    }, s = round(score * 1000) / 1000
+```
+
+```
+['m4', 'Compaction stalls correlate with oversized SST files', 2.616]
+```
+
+(This holds for the HNSW and LSH atoms too: a filter expression can only see
+columns that appear before the bar; referencing an unnamed column fails with
+`Cannot find binding`.)
+
+### The query mini-language
+
+The query string is parsed into an expression tree before tokenization:
+
+- `hello world`, `hello AND world`: rows where **both** words occur. Adjacent
+  terms are an implicit `AND`; the operators are case sensitive (a lowercase
+  `and` is treated as a search term).
+- `hello OR world`: rows where **either** word occurs. A comma or semicolon
+  between terms is a synonym for `OR`.
+- `hello NOT world`: rows where `hello` occurs but `world` does not. `NOT` is
+  binary — it subtracts the right side's matches from the left side's.
+- `hell* wor*`: prefix search — rows having a word starting with `hell` and a
+  word starting with `wor`.
+- `NEAR/3(hello world bye)`: rows where all the words occur within 3 tokens of
+  each other. `NEAR(...)` is shorthand for `NEAR/10(...)`. `NEAR` only takes
+  literals and prefixes, not sub-expressions.
+- `hello^2.0 OR world`: boost `hello` to twice its usual weight when scoring.
+- Terms combine and nest with parentheses: `hello AND (world OR bye)`.
+
+<Callout type="warning">
+  Write boosters with a decimal point (`^2.0`). An integer booster (`^2`)
+  trips an inherited defect in the query parser and panics instead of
+  returning an error. And note that a quoted multi-word string is **not** a
+  phrase search: `"compaction stalls"` tokenizes into `compaction AND stalls`
+  with no adjacency requirement — use `NEAR` for proximity.
+</Callout>
+
+Each operator, verified against the eight-row corpus:
+
+```prolog
+?[id, s] := ~memory:by_text{ id | query: 'connector OR compaction', k: 10, bind_score: score },
+    s = round(score * 1000) / 1000
+
 :order -s
 ```
 
-The search query must be a string and is processed by the same tokenizer as the
-index. The tokenizer is specified by the `tokenizer` parameter, and the
-`filters` parameter can be used to specify additional filters to be applied to
-the tokens. There is a mini-language for parsing the query:
+```
+['m4', 1.308]
+['m3', 1.238]
+['m6', 1.088]
+['m7', 0.965]
+['m8', 0.824]
+```
 
-- `hello world`, `hello AND world`, `"hello" AND 'world'`: these all look for rows where both words occur. `AND` is case sensitive.
-- `hello OR world`: look for rows where either word occurs.
-- `hello NOT world`: look for rows where `hello` occurs but `world` does not.
-- `hell* wor*`: look for rows having a word starting with `hell` and also a word starting with `wor`.
-- `NEAR/3(hello world bye)`: look for rows where `hello`, `world`, `bye` are within 3 words of each other. You can write `NEAR(hello world bye)` as a shorthand for `NEAR/10(hello world bye)`.
-- `hello^2 OR world`: look for rows where `hello` or `world` occurs, but `hello` has twice of its usual weighting when scoring.
-- These can be combined and nested with parentheses (except that `NEAR` only takes literals and prefixes): `hello AND (world OR bye)`.
+```prolog
+?[id, text] := ~memory:by_text{ id, text | query: 'connector NOT timeout', k: 10 }
 
-The index relation has the following schema:
+:order id
+```
+
+```
+['m6', 'Sam owns the Postgres connector']
+['m8', 'Slow connector queries trace to a missing tenant_id index']
+```
+
+```prolog
+?[id, text] := ~memory:by_text{ id, text | query: 'compact*', k: 10 }
+
+:order id
+```
+
+```
+['m3', 'Nightly compaction stalls search-service around 03:00']
+['m4', 'Compaction stalls correlate with oversized SST files']
+```
+
+```prolog
+?[id, text] := ~memory:by_text{ id, text | query: 'NEAR/3(connector timeout)', k: 10 }
+```
+
+```
+['m7', 'The Postgres connector timeout is 30 seconds']
+```
+
+Boosting `compaction` doubles its contribution while the connector rows keep
+their scores from the `OR` query above:
+
+```prolog
+?[id, s] := ~memory:by_text{ id | query: 'compaction^2.0 OR connector', k: 10, bind_score: score },
+    s = round(score * 1000) / 1000
+
+:order -s
+```
+
+```
+['m4', 2.616]
+['m3', 2.476]
+['m6', 1.088]
+['m7', 0.965]
+['m8', 0.824]
+```
+
+### Scoring
+
+Under the default `bm25`, each term contributes
+`idf · tf·(k1+1) / (tf + k1·(1 − b + b·|D|/avgdl))`, where `|D|` is the
+document's token count and `avgdl` the corpus average. `AND` sums the term
+contributions over the intersection of matches; `OR` sums them over the union;
+`NEAR` scores like a single term whose frequency is the number of positions
+where the group co-occurs.
+
+Document-length normalization is what ranked `m4` above `m3` for
+`'compaction stalls'` (2.616 vs 2.476): both contain both terms once, but `m4`
+is one token shorter. Setting `b: 0` switches normalization off and the two
+rows tie:
+
+```prolog
+?[id, s] := ~memory:by_text{ id |
+        query: 'compaction stalls',
+        k: 5,
+        score_kind: 'bm25',
+        k1: 1.2,
+        b: 0.0,
+        bind_score: score,
+    }, s = round(score * 1000) / 1000
+
+:order -s
+```
+
+```
+['m3', 2.562]
+['m4', 2.562]
+```
+
+`tf_idf` (the upstream default) also ties them, since every term appears once
+in each document and it applies no length normalization:
+
+```prolog
+?[id, s] := ~memory:by_text{ id |
+        query: 'compaction stalls',
+        k: 5,
+        score_kind: 'tf_idf',
+        bind_score: score,
+    }, s = round(score * 1000) / 1000
+
+:order -s
+```
+
+```
+['m3', 2.562]
+['m4', 2.562]
+```
+
+### The FTS index relation
+
+Like the HNSW index, the FTS index is readable as a relation, with the token
+and the source row's key as key columns and the posting data as values:
 
 ```prolog
 {
     word: String,
-    src_k: String,
+    src_id: String,
     =>
-    offset_from: List[Int],
-    offset_to: List[Int],
-    position: List[Int],
+    offset_from: [Int],
+    offset_to: [Int],
+    position: [Int],
     total_length: Int,
 }
 ```
 
-Explanation of the fields:
+- `word`: a token occurring in a document.
+- `src_id`: the source row's key (the name and count of these columns mirror
+  the base relation's keys, prefixed `src_`).
+- `offset_from` / `offset_to`: byte offsets of each occurrence in the source
+  string.
+- `position`: token positions of each occurrence (what `NEAR` measures).
+- `total_length`: total token count of the document (what BM25's `b`
+  normalizes by).
 
-- `word`: the word that occurs in the document.
-- `src_k`: the key of the document, the name and number varies according to the original relation schema.
-- `offset_from`: the starting offsets of the word in the document.
-- `offset_to`: the ending offsets of the word in the document.
-- `position`: the position of the word in the document, counted as the position of entire tokens.
-- `total_length`: the total number of tokens in the document.
-
-To drop:
+### Dropping an FTS index
 
 ```prolog
-::fts drop table:index_name
+::fts drop memory:by_text
+```
+
+## MinHash-LSH for near-duplicate indexing of strings and lists
+
+The MinHash-LSH index answers a narrower question than FTS: "is something
+almost identical to this already stored?" It shingles each string into n-grams
+of tokens, sketches the shingle set with MinHash, and banks the sketch into
+locality-sensitive hash bands, so near-duplicates collide with high
+probability. For an agent's memory store this is the dedup primitive: check a
+candidate memory against the index before writing it.
+
+```prolog
+::lsh create memory:dup {
+    extractor: text,
+    tokenizer: Simple,
+    filters: [Lowercase],
+    n_gram: 3,
+    n_perm: 200,
+    target_threshold: 0.5,
+}
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `extractor` | required | Expression evaluating to a string, a list of values, or `null` (row skipped). |
+| `extract_filter` | none | Skip rows where this expression is `false`. |
+| `tokenizer`, `filters` | — | Same tokenizer machinery as FTS ([below](#text-tokenization-and-filtering)); `filters` must be omitted rather than given as `[]`. Ignored when indexing lists. |
+| `n_gram` | `1` | Shingle size, in **tokens**: `3` means every window of 3 consecutive tokens becomes one set element ([w-shingling](https://en.wikipedia.org/wiki/W-shingling)). Ignored for lists. |
+| `n_perm` | `200` | Number of MinHash permutations. More permutations approximate Jaccard similarity more accurately, at CPU and storage cost. |
+| `target_threshold` | `0.9` | The Jaccard similarity the index is tuned to detect, strictly between 0 and 1. The banding scheme is derived from it **at creation time** to minimize the weighted error; it is not an exact cutoff applied to results. |
+| `false_positive_weight` | `1.0` | Relative cost of a false positive when deriving the banding. |
+| `false_negative_weight` | `1.0` | Relative cost of a false negative (the two weights are normalized to sum to 1). |
+
+At search time the query goes through the same tokenization and shingling,
+and anything whose sketch collides in at least one band comes back:
+
+```prolog
+?[id, text] := ~memory:dup{ id, text |
+        query: 'The Postgres connector timeout is 30 seconds by default',
+        k: 3,
+    }
+```
+
+```
+['m7', 'The Postgres connector timeout is 30 seconds']
+```
+
+A merely *similar* sentence shares few 3-token shingles and does not collide —
+which is the point; LSH detects near-duplicates, not topical relatedness:
+
+```prolog
+?[id, text] := ~memory:dup{ id, text |
+        query: 'Compaction sometimes stalls the search service',
+    }
+```
+
+```
+(no rows)
+```
+
+| Parameter | Required / default | Meaning |
+| --- | --- | --- |
+| `query` | required | A string (tokenized and shingled like the indexed values) or a list; `null` returns no rows. |
+| `k` | none | Positive integer cap on the number of results. Without it, every colliding row is returned. |
+| `filter` | none | Evaluated on candidate rows; failures are skipped before `k` is filled. |
+
+<Callout type="warning">
+  LSH results carry **no similarity score** and no meaningful order: the atom
+  returns band-collision candidates, and `k` truncates that unranked set. Both
+  false positives and misses are possible by construction. Treat the result as
+  a candidate set — if you need certainty, verify the survivors yourself (for
+  example by comparing the strings, or computing Jaccard over shingles in
+  application code). The FTS and LSH subsystems are hand-rolled and see the
+  least production traffic of the engine's index types; prefer HNSW or FTS
+  where they fit.
+</Callout>
+
+Besides strings, you can index and search **lists of arbitrary values**; the
+list elements themselves become the set elements, and `tokenizer`, `filters`,
+and `n_gram` are ignored.
+
+### The LSH index relations
+
+An LSH index materializes two readable relations; inspect either with
+`::columns`. The collision table `memory:dup` is all keys, no values —
+`hash` is a band key, and rows sharing a `hash` are the loose duplicate
+groups:
+
+```prolog
+{ hash: Bytes, src_id: String }
+```
+
+The inverse mapping `memory:dup:inv` keys on the source row and stores the
+list of band keys in its `minhash` value:
+
+```prolog
+{ id: String => minhash: Bytes }
+```
+
+The collision table is the useful one: grouping it by `hash` clusters
+near-duplicates without any query vector at all.
+
+### Dropping an LSH index
+
+```prolog
+::lsh drop memory:dup
 ```
 
 ## Text tokenization and filtering
 
-Text tokenization and filtering are used in both the MinHash-LSH and FTS
-indexes. The tokenizer is specified by the `tokenizer` parameter, and the
-`filters` parameter can be used to specify additional filters to be applied to
-the tokens.
+FTS and LSH share one text-analysis pipeline: a tokenizer splits the string,
+then a chain of filters transforms the token stream. The implementations are
+vendored from [Tantivy](https://github.com/quickwit-oss/tantivy) (incorporated
+directly into the source tree). A tokenizer or filter is written as a function
+call, such as `NGram(3)`; with no arguments the bare name is enough, as in
+`Simple`.
 
-CozoDB uses [Tantivy's](https://github.com/quickwit-oss/tantivy) tokenizers and
-filters (we incorporated their files directly in our source tree, as they are
-not available as a library). Tokenizer is specified in the configuration as a
-function call such as `Ngram(9)`, or if you omit all arguments, `Ngram` is also
-acceptable. The following tokenizers are available:
+The available tokenizers:
 
-- `Raw`: no tokenization, the entire string is treated as a single token.
-- `Simple`: splits on whitespace and punctuation.
-- `Whitespace`: splits on whitespace.
-- `Ngram(min_gram?, max_gram?, prefix_only?)`: splits into n-grams. `min_gram` is the minimum size of the n-gram (default 1), `max_gram` is the maximum size of the n-gram (default to `min_gram`), and `prefix_only` is a boolean indicating whether to only generate prefixes of the n-grams (default false).
-- `Cangjie(kind?)`: this is a text segmenter for the Chinese language. `kind` can be `'default'`, `'all'`, `'search'` or `'unicode'`.
+| Tokenizer | Meaning |
+| --- | --- |
+| `Raw` | No tokenization; the whole string is one token. |
+| `Simple` | Split on whitespace and punctuation. |
+| `Whitespace` | Split on whitespace only. |
+| `NGram(min_gram?, max_gram?, prefix_only?)` | Slides over the whole string emitting character n-grams of `min_gram` (default 1) up to `max_gram` (default `min_gram`) characters — grams can span spaces; `prefix_only` (default `false`) emits only the grams anchored at the start of the string. Note the capital G: `Ngram` is rejected with `Unknown tokenizer: Ngram`. |
+| `Cangjie(kind?, use_hmm?)` | Chinese segmentation (jieba). `kind` is `'default'`, `'all'`, `'search'`, or `'unicode'`; `use_hmm` (default `false`) enables the HMM model for unknown words. |
 
-After tokenization, multiple filters can be applied to the tokens. The following
-filters are available:
+For example, a character-trigram index:
 
-- `Lowercase`: converts all tokens to lowercase.
-- `AlphaNumOnly`: removes all tokens that are not alphanumeric.
-- `AsciiFolding`: converts all tokens to ASCII (lossy), i.e. `passé` goes to `passe`.
-- `Stemmer(lang)`: use a language-specific stemmer. The following languages are available: `'arabic'`, `'danish'`, `'dutch'`, `'english'`, `'finnish'`, `'french'`, `'german'`, `'greek'`, `'hungarian'`, `'italian'`, `'norwegian'`, `'portuguese'`, `'romanian'`, `'russian'`, `'spanish'`, `'swedish'`, `'tamil'`, `'turkish'`. As an exmple, the English stemmer converts `'running'` to `'run'`.
-- `Stopwords(lang)`: filter out stopwords specific to the language. The stopwords come from the [stopwords-iso](https://github.com/stopwords-iso/stopwords-iso) project. Use the ISO 639-1 Code as specified on the project page. For example, `Stopwords('en')` for English will remove words such as `'the'`, `'a'`, `'an'`, etc.
+```prolog
+::fts create memory:trigram {
+    extractor: text,
+    tokenizer: NGram(3),
+    filters: [Lowercase],
+}
+```
 
-For English text, the recommended setup is `Simple` for the tokenizer and
-`[Lowercase, Stemmer('english'), Stopwords('en')]` for the filters.
+The available token filters:
+
+| Filter | Meaning |
+| --- | --- |
+| `Lowercase` (also `LowerCase`) | Lowercase every token. |
+| `AlphaNumOnly` | Drop tokens that are not purely alphanumeric. |
+| `AsciiFolding` | Fold to ASCII (lossy): `passé` becomes `passe`. |
+| `RemoveLong(limit)` | Drop tokens whose UTF-8 length is `limit` bytes or more. |
+| `SplitCompoundWords([...])` | Split concatenated compounds using the given dictionary of strings. |
+| `Stemmer(lang)` | Language-specific stemming: `'arabic'`, `'danish'`, `'dutch'`, `'english'`, `'finnish'`, `'french'`, `'german'`, `'greek'`, `'hungarian'`, `'italian'`, `'norwegian'`, `'portuguese'`, `'romanian'`, `'russian'`, `'spanish'`, `'swedish'`, `'tamil'`, `'turkish'`. |
+| `Stopwords(lang)` or `Stopwords([...])` | Remove stopwords, either for a language given as an [ISO 639-1 code](https://github.com/stopwords-iso/stopwords-iso) (`Stopwords('en')` removes `the`, `a`, `an`, …) or from an explicit list of strings. |
+
+For English text the recommended setup is the `Simple` tokenizer with
+`[Lowercase, Stemmer('english'), Stopwords('en')]`. Because the query string
+passes through the same pipeline as the indexed text, stemming applies on both
+sides — a query in different inflections still lands:
+
+```prolog
+::fts create memory:by_text_en {
+    extractor: text,
+    tokenizer: Simple,
+    filters: [Lowercase, Stemmer('english'), Stopwords('en')],
+}
+```
+
+```prolog
+?[id, text] := ~memory:by_text_en{ id, text | query: 'stalling compactions', k: 5 }
+
+:order id
+```
+
+```
+['m3', 'Nightly compaction stalls search-service around 03:00']
+['m4', 'Compaction stalls correlate with oversized SST files']
+```
+
+## Combining the three signals
+
+Because each proximity search is an ordinary atom, combining them needs no
+special machinery: run a vector leg and a keyword leg as separate rules, then
+join, union, or re-rank in Datalog. mnestic also ships the fused pipeline as
+primitives: `ReciprocalRankFusion` and `MaximalMarginalRelevance` fixed rules
+(0.8.0), and a one-call `hybrid_search` API that runs HNSW + FTS + bounded-hop
+graph legs and fuses them with per-leg score detail (0.8.1–0.8.4). See
+[Hybrid retrieval (RRF + MMR)](/docs/fork/hybrid-retrieval).
 
 <Attribution page="vector.html" />

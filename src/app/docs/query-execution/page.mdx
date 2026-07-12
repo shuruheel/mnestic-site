@@ -1,25 +1,137 @@
 export const metadata = {
   title: "Query execution",
   description:
-    "How CozoScript queries are executed deterministically: DNF canonicalization, stratification, magic-set rewrites, semi-naive evaluation, atom ordering, and early stopping.",
+    "How CozoScript queries execute: deterministic plans you can read with ::explain — DNF, stratification, magic sets, semi-naive evaluation — plus mnestic's greedy join reorder, equality pushdown, and the factorized-counting advisory.",
 };
 
 # Query execution
 
-Databases often consider how queries are executed an implementation detail
-hidden behind an abstraction barrier that users need not care about, so that
-databases can utilize query optimizers to choose the best query execution plan
-regardless of how the query was originally written. This abstraction barrier is
-leaky, however, since bad query execution plans invariably occur, and users
-need to "reach behind the curtain" to fix performance problems, which is a
-difficult and tiring task. The problem becomes more severe the more joins a
-query contains, and graph queries tend to contain a large number of joins.
+Most databases treat query execution as an implementation detail behind a
+cost-based optimizer. That abstraction leaks: when the optimizer picks a bad
+plan, you end up reverse-engineering it anyway, and graph queries, which are
+join-heavy by nature, hit that wall soonest. This engine takes the opposite
+approach: **there is no cost-based optimizer, and plans are deterministic**.
+The plan follows from how the query is written and how the data is stored, so
+once you know the rules in this chapter you can predict exactly what will run,
+and read it with `::explain`.
 
-So in Cozo we take the pragmatic approach and make query execution
-deterministic and easy to tell from how the query was written. The flip side is
-that we demand the user to know what is the best way to store their data, which
-is in general less demanding than coercing the query optimizer. Then, armed
-with knowledge of this chapter, writing efficient queries is easy.
+<Callout type="fork">
+  Deterministic does not have to mean naive. mnestic adds three deterministic
+  rewrites on top of the inherited pipeline: an
+  [equality pushdown](/docs/fork/equality-pushdown) that compiles `==`
+  post-filters on stored relations into keyed lookups (0.8.0), a stat-free
+  [greedy join reorder](/docs/fork/join-reorder) that fixes
+  naively-ordered conjunctions, default on (0.10.5), and an opt-in
+  [factorized `count()` rewrite](/docs/fork/factorized-counting) whose
+  detector annotates `::explain` even when the rewrite is off (0.10.5). All
+  three leave result sets unchanged, and all three are visible in the plan.
+</Callout>
+
+## The pipeline
+
+A query goes through these stages, each described in a section below:
+
+1. Inline rules are canonicalized into **disjunctive normal form**; each
+   disjunct becomes its own rule.
+2. Each rule body's atoms are **ordered**: mnestic's equality pushdown, then
+   its greedy join reorder, then the inherited binding-before-use pass.
+3. The rules are **stratified** into groups that can be evaluated together,
+   or the query is rejected as unstratifiable.
+4. Within each stratum, **magic set rewrites** specialize recursive rules to
+   the constants they are called with.
+5. The strata are evaluated bottom-up with the **semi-naïve** algorithm,
+   stopping early when `:limit` is satisfied.
+
+`::explain { <query> }` runs everything except the final evaluation stage and
+returns the compiled plan instead of results.
+
+## Reading a plan with `::explain`
+
+The examples on this page use the small agent-memory graph shared across these
+docs: episodic `memory` rows `m1`–`m8`, an `entity` catalog, `mentions` links
+between them, and weighted `recalls` edges between memories. Keys sit to the
+left of `=>` — key order is what decides access paths below.
+
+```
+memory   { id => kind, text, importance, at, v }   # notes, decisions, insights
+entity   { id => name, kind }                      # people, tools, projects
+mentions { memory, entity }                        # which memories involve whom
+recalls  { from, to => strength }                  # association edges
+```
+
+Here is a three-way join — important memories that mention Postgres — and its
+real plan:
+
+```prolog
+::explain {
+    ?[text, importance] := *entity{ name: 'Postgres', id: eid },
+                           *mentions{ memory: mid, entity: eid },
+                           *memory{ id: mid, text, importance },
+                           importance > 0.5
+}
+```
+
+```
+stratum  rule_idx  rule  atom_idx  op                  ref        joins_on        filters/expr             out_relation
+0        0         ?     7         unify               *2                         "Postgres"               ["*2"]
+0        0         ?     6         load_stored         :entity                    []                       ["eid", "**0", "~1"]
+0        0         ?     5         stored_mat_join                {"*2": "**0"}                            ["eid"]
+0        0         ?     4         load_stored         :mentions                  []                       ["mid", "**1"]
+0        0         ?     3         stored_mat_join                {"eid": "**1"}                           ["mid"]
+0        0         ?     2         load_stored         :memory                    ["gt(importance, 0.5)"]  ["**2", "~3", "text", "importance", "~4", "~5"]
+0        0         ?     1         stored_prefix_join             {"mid": "**2"}                           ["text", "importance"]
+0        0         ?     0         out                                                                     ["text", "importance"]
+```
+
+One row per plan node, printed in execution order; `atom_idx 0` is always the
+rule's output node. The columns:
+
+| Column | Meaning |
+| --- | --- |
+| `stratum` | Which stratum the rule was assigned to (see [Stratification](#stratification)). |
+| `rule`, `rule_idx` | The rule this node belongs to, and a running clause counter within the stratum. |
+| `atom_idx` | Position within the rule's pipeline, counted from the output. |
+| `op` | The operator: scans (`load_stored`, `load_mem`), joins (`stored_prefix_join`, `stored_mat_join`, `mem_prefix_join`, …), `unify`, `filter`, `reorder`, and the output nodes `out` / `aggr_out` (meet aggregations show `meet_aggr_out`, bounded meets `bounded_meet_aggr_out`; fixed-rule strata show `fixed`). |
+| `ref` | What a scan or unification refers to: `:relation` for stored relations, a rule name for in-memory ones, a binding for `unify`. |
+| `joins_on` | The binding-to-column equalities a join uses. Empty (`{}`) means a Cartesian product. |
+| `filters/expr` | Predicates pushed into this node, or a unification's expression. |
+| `out_relation` | The bindings flowing out of the node. |
+
+Generated names in the bindings follow a convention: `*N` is a binding the
+normalizer invented for an inline constant or parameter, `~N` is a column you
+did not bind (ignored), and `**N` is a compile-time alias for a join key.
+
+Reading this plan top to bottom:
+
+- **`unify` binds `*2` to `"Postgres"`** — the constant in
+  `*entity{ name: 'Postgres' }` was extracted into a generated binding during
+  normalization and is bound first.
+- **`load_stored :entity` + `stored_mat_join` on `{"*2": "**0"}`** — `name` is
+  a non-key column of `entity`, so there is no keyed access path: the engine
+  scans the relation and keeps rows whose `name` matches. When you see
+  `stored_mat_join`, the joined columns did not form a key prefix.
+- **`load_stored :mentions` + `stored_mat_join` on `{"eid": "**1"}`** — `eid`
+  is bound, but it matches the *second* key column of `mentions` (its key is
+  `memory, entity`), and key matching is prefix-only. Another scan-and-match.
+  An index whose key starts with `entity` would restore a keyed path — shown
+  under [Evaluating atoms](#evaluating-atoms).
+- **`load_stored :memory` with `["gt(importance, 0.5)"]`** — the
+  `importance > 0.5` predicate was pushed into the access of `memory`, the
+  first node where all of its variables are bound. Failing rows are dropped as
+  the relation is read and never enter a join.
+- **`stored_prefix_join` on `{"mid": "**2"}`** — `mid` is bound and is
+  `memory`'s full primary key, so each probe is a keyed point lookup,
+  logarithmic in the relation size. This is the operator you want to see on
+  large relations.
+
+Running the query:
+
+```
+text                                                        importance
+Slow connector queries trace to a missing tenant_id index   0.75
+```
+
+The rest of this page explains where each part of that plan comes from.
 
 ## Disjunctive normal form
 
@@ -28,153 +140,472 @@ Evaluation starts by canonicalizing inline rules into
 i.e., a disjunction of conjunctions, with any negation pushed to the innermost
 level. Each clause of the outermost disjunction is then treated as a separate
 rule. The consequence is that the safety rule may be violated even though
-textually every variable in the head occurs in the body. As an example:
+textually every variable in the head occurs in the body:
 
 ```prolog
-rule[a, b] := rule1[a] or rule2[b]
+?[a, b] := *memory{ id: a } or *entity{ id: b }
 ```
 
-is a violation of the safety rule since it is rewritten into two rules, each of
-which is missing a different binding.
+This is rewritten into two rules, each missing one of the two head bindings,
+and the engine rejects it:
+
+```
+eval::unbound_symb_in_head
+
+  × Symbol 'b' in rule head is unbound
+  help: Note that symbols occurring only in negated positions are not
+        considered bound
+```
 
 ## Stratification
 
-The next step in the processing is _stratification_. It begins by making a
-graph of the named rules, with the rules themselves as nodes, and a link is
-added between two nodes when one of the rules applies the other. This
-application is through atoms for inline rules, and input relations for fixed
-rules.
+The next step is _stratification_. The engine builds a graph with the named
+rules as nodes, adding a link whenever one rule applies another — through
+body atoms for inline rules, and through input relations for fixed rules.
 
-Next, some of the links are labelled _stratifying_:
+Some links are labelled _stratifying_:
 
 - when an inline rule applies another rule through negation,
-- when an inline rule applies another inline rule (not itself) that contains
-  aggregations,
-- when an inline rule applies itself and it has non-semi-lattice aggregations,
-- when an inline rule applies another rule which is a fixed rule,
+- when an inline rule that contains aggregations applies any rule other than
+  itself,
+- when an inline rule applies itself and it has aggregations that are not
+  semi-lattice aggregations,
+- when an inline rule applies another rule whose aggregations are all
+  semi-lattice aggregations,
+- when an inline rule applies a fixed rule,
 - when a fixed rule has another rule as an input relation.
 
-The strongly connected components of the graph of rules are then determined and
-tested, and if it is found that some strongly connected component contains a
-stratifying link, the graph is deemed _unstratifiable_, and the execution
-aborts. Otherwise, Cozo will topologically sort the strongly connected
-components to determine the strata of the rules: rules within the same stratum
-are logically executed together, and no two rules within the same stratum can
-have a stratifying link between them. In this process, Cozo will merge the
-strongly connected components into as few supernodes as possible while still
-maintaining the restriction on stratifying links. The resulting strata are then
-passed on to be processed in the next step.
+The strongly connected components of this graph are then computed. If any
+strongly connected component contains a stratifying link, the query is
+_unstratifiable_ and execution aborts. Otherwise the components are
+topologically sorted into _strata_: rules in the same stratum are logically
+executed together, and no stratifying link exists within a stratum. The engine
+merges components into as few strata as possible while preserving that
+restriction.
 
-You can see the stratum number assigned to rules by using the `::explain`
-system op.
+The semi-lattice exception in the third bullet is what lets recursion carry an
+aggregate. `min` is a semi-lattice aggregation, so a shortest-distance rule
+may apply itself:
+
+```prolog
+dist[n, min(d)] := *recalls{ from: 'm2', to: n }, d = 1
+dist[n, min(d)] := dist[c, d0], *recalls{ from: c, to: n }, d = d0 + 1
+?[n, d] := dist[n, d]
+:order n
+```
+
+```
+n     d
+m3    1
+m4    2
+m5    1
+```
+
+Replace `min` with `sum`, which is not a semi-lattice aggregation, and the
+self-application becomes a stratifying link inside a strongly connected
+component:
+
+```prolog
+dist[n, sum(d)] := *recalls{ from: 'm2', to: n }, d = 1
+dist[n, sum(d)] := dist[c, d0], *recalls{ from: c, to: n }, d = d0 + 1
+?[n, d] := dist[n, d]
+```
+
+```
+eval::unstratifiable
+
+  × Query is unstratifiable
+  help: The rule 'dist' is in the strongly connected component ["dist"],
+        and is involved in at least one forbidden dependency
+```
+
+<Callout type="fork">
+  Since mnestic 0.10.0, **bounded-meet aggregates ride the same self-recursion
+  permit** as semi-lattice aggregations: `min_cost_k` (k best derivations with
+  evidence, 0.10.0), host-registered dominance meets (0.10.1), and the built-in
+  `pareto_min`/`pareto_max` skyline aggregates (0.11.1) may all sit in
+  recursive rules. See [Aggregations](/docs/aggregations).
+</Callout>
+
+`::explain` shows the stratum assigned to every rule. Negation is the
+easiest way to see two strata:
+
+```prolog
+::explain {
+    linked[m] := *mentions{ memory: m }
+    ?[id]     := *memory{ id }, not linked[id]
+}
+```
+
+```
+stratum  rule    atom_idx  op                   ref        joins_on
+0        linked  1         load_stored          :mentions
+0        linked  0         out
+1        ?       3         load_stored          :memory
+1        ?       2         load_mem             linked
+1        ?       1         mem_neg_prefix_join             {"id": "**0"}
+1        ?       0         out
+```
+
+(Columns are trimmed here and below; the full output has the same nine columns
+as the walkthrough above.) `linked` is fully computed in stratum 0; only then
+does stratum 1 run the negated join against it.
 
 ## Magic set rewrites
 
-Within each stratum, the input rules are rewritten using the technique of
-_magic sets_. This rewriting ensures that the query execution does not waste
-time calculating results that are later simply discarded. As an example,
-consider:
+Within each stratum, inline rules are rewritten using _magic sets_, so that
+recursive rules do not compute results that are immediately discarded.
+Consider reachability along `recalls` edges, asked from a single seed:
 
 ```prolog
-reachable[a, b] := link[a, n]
-reachable[a, b] := reachable[a, c], link[c, b]
-?[r] := reachable['A', r]
+reachable[a, b] := *recalls{ from: a, to: b }
+reachable[a, b] := reachable[a, c], *recalls{ from: c, to: b }
+?[r] := reachable['m2', r]
 ```
 
-Without magic set rewrites, the whole `reachable` relation is generated first,
-then most of them are thrown away, keeping only those starting from `'A'`.
-Magic set rewriting avoids this problem. You can see the result of the
-rewriting using `::explain`. The rewritten query is guaranteed to yield the
-same relation for `?`, and will in general yield fewer intermediate rows.
+```
+r
+m3
+m4
+m5
+```
 
-The rewrite currently only applies to inline rules without aggregations.
+Without the rewrite, the whole `reachable` relation — the transitive closure
+from *every* memory — would be generated first, and everything not starting at
+`'m2'` thrown away. The rewrite specializes `reachable` to the constant it is
+called with. You can see it in the plan; the first rows are:
+
+```
+rule           atom_idx  op                  ref                joins_on       filters/expr
+?              3         load_mem            ?|S.0.0
+?              2         load_mem            reachable|Mbf
+?              1         mem_prefix_join                        {"*1": "**0"}
+?              0         out
+reachable|Mbf  3         load_mem            reachable|S.0.0bf
+reachable|Mbf  2         load_stored         :recalls
+reachable|Mbf  1         stored_prefix_join                     {"a": "**0"}
+reachable|Mbf  0         out
+...
+?|S.0.0        1         unify               *1                                "m2"
+?|S.0.0        0         out
+```
+
+(16 further rows compile the recursive clause and the rest of the plumbing.)
+The naming convention: `reachable|Mbf` is the **m**agic-rewritten version of
+`reachable` with adornment `bf` — first argument **b**ound, second **f**ree;
+`|I` rules seed those bound arguments (here, from the `?|S.0.0` supplementary
+relation that holds the constant `'m2'`); `|S.i.j` relations thread the bound
+set through clause `i`. The derivation is driven from `'m2'` outward instead
+of computing the full closure.
+
+The rewritten query is guaranteed to yield the same relation for `?`, and in
+general yields fewer intermediate rows. The rewrite currently applies only to
+inline rules without aggregations; the entry rule `?` is never itself
+rewritten.
 
 ## Semi-naïve evaluation
 
-Now each stratum contains either a single fixed rule or a set of inline rules.
-The single fixed rules are executed by running their specific implementations.
-For the inline rules, each of them is assigned an output relation. Assuming we
-know how to evaluate each rule given all the relations it depends on, the
-semi-naïve algorithm can now be applied to the rules to yield all output rows.
-
-The semi-naïve algorithm is a bottom-up evaluation strategy, meaning that it
-tries to deduce all facts from a set of given facts.
+After the rewrites, each stratum contains either a single fixed rule or a set
+of inline rules. Fixed rules run their specific implementations. For inline
+rules, each rule is assigned an output relation, and the _semi-naïve_
+algorithm evaluates them: a bottom-up strategy that deduces all facts
+derivable from the given facts, but in each iteration only joins against the
+_delta_ — the facts newly derived in the previous iteration — until a
+fixpoint is reached.
 
 <Callout type="note">
   By contrast, top-down strategies start with stated goals and try to find
-  proof for the goals. Bottom-up strategies have many advantages over top-down
-  ones when the whole output of each rule is needed, but may waste time
-  generating unused facts if only some of the output is kept. Magic set rewrites
-  are introduced to eliminate precisely this weakness.
+  proof for the goals. Bottom-up strategies have many advantages when the
+  whole output of each rule is needed, but may waste time generating unused
+  facts if only some of the output is kept. Magic set rewrites exist to
+  eliminate precisely this weakness.
 </Callout>
 
 ## Ordering of atoms
 
-The compiler reorders the atoms in the body of the inline rules, and then the
-atoms are evaluated.
-
-After conversion to disjunctive normal form, each atom can only be one of the
-following:
+After conversion to disjunctive normal form, each atom in a rule body is one
+of the following:
 
 - an explicit unification,
-- applying a rule or a stored relation,
-- an expression, which should evaluate to a boolean,
+- an application of a rule or a stored relation,
+- an expression, which must evaluate to a boolean,
 - a negation of an application.
 
-The first two cases may introduce fresh bindings, whereas the last two cannot.
-The reordering makes all atoms that introduce new bindings stay where they are,
-whereas all atoms that do not introduce new bindings are moved to the earliest
-possible place where all their bindings are bound. All atoms that introduce
-bindings correspond to joining with a pre-existing relation followed by
-projections in relational algebra, and all atoms that do not correspond to
-filters. By applying filters as early as possible, we minimize the number of
-rows before joining them with the next relation.
+The first two can introduce fresh bindings; the last two cannot. Atoms that
+introduce bindings compile to joins; atoms that do not are applied as filters.
+The inherited ordering pass keeps the *generator* atoms in their given order and
+floats every filter to the earliest position where all of its variables are
+bound — that is why `gt(importance, 0.5)` ended up attached to the `:memory`
+access in the walkthrough above: filtering before joining minimizes the rows
+that reach the next join.
 
-When writing the body of rules, we should aim to minimize the total number of
-rows generated. A strategy that works almost in all cases is to put the most
-restrictive atoms which generate new bindings first.
+That leaves one question the inherited engine never answered: who orders the
+generators? Upstream, the answer was "you do" — the join order is exactly the
+written order. When hand-tuning (or opting out of the reorder below), the
+strategy that works almost always is to put the most restrictive atoms that
+introduce new bindings first.
+
+### Equality pushdown
+
+There are two ways to pin a key to a value, and upstream they compiled very
+differently: `k = 'm3', *memory{ id: k, .. }` was a keyed lookup, while
+`*memory{ id: k, .. }, k == 'm3'` was a full scan followed by a filter.
+mnestic rewrites the second form into the first. Both now produce this
+identical plan:
+
+```prolog
+::explain { ?[kind, text] := *memory{ id, kind, text }, id == 'm3' }
+```
+
+```
+atom_idx  op                  ref       joins_on        filters/expr
+3         unify               id                        "m3"
+2         load_stored         :memory
+1         stored_prefix_join            {"id": "**0"}
+0         out
+```
+
+<Callout type="fork">
+  Specific to mnestic 0.8.0 — measured ~28–29× on single-row primary-key
+  lookups at 5,000 rows. The conversion is gated to **non-numeric** ground
+  values: `op_eq` treats `1 == 1.0` as true across `Int`/`Float`, but a keyed
+  lookup compares strictly, so numeric `==` keeps its post-filter semantics.
+  Details and benchmarks: [Equality pushdown](/docs/fork/equality-pushdown).
+</Callout>
+
+### Greedy join reorder
+
+Since 0.10.5, mnestic also orders the generator atoms themselves. A
+deterministic, stat-free pre-pass reorders the positive stored-relation atoms
+of an eligible conjunction — fewest new variables first, preferring a
+fully-bound primary key on ties, falling back to written position — which is
+exactly the fix for a conjunction written in schema order rather than join
+order (the shape LLM agents produce). Here the two `mentions` atoms are
+written adjacent, sharing no variable:
+
+```prolog
+::explain {
+    ?[e1, e2] := *mentions{ memory: a, entity: e1 },
+                 *mentions{ memory: b, entity: e2 },
+                 *recalls{ from: a, to: b }
+}
+```
+
+```
+atom_idx  op                  ref        joins_on
+5         load_stored         :mentions
+4         load_stored         :recalls
+3         stored_prefix_join             {"a": "**0"}
+2         load_stored         :mentions
+1         stored_prefix_join             {"b": "**1"}
+0         out
+```
+
+The pass moved `recalls` between them: each `mentions` scan is immediately
+constrained by an edge, and the intermediate never exceeds the join frontier.
+Opting out with `:reorder written` compiles the authored order verbatim:
+
+```prolog
+::explain {
+    ?[e1, e2] := *mentions{ memory: a, entity: e1 },
+                 *mentions{ memory: b, entity: e2 },
+                 *recalls{ from: a, to: b }
+    :reorder written
+}
+```
+
+```
+atom_idx  op                              ref        joins_on
+5         load_stored                     :mentions
+4         load_stored                     :mentions
+3         stored_prefix_join (cartesian)             {}
+2         load_stored                     :recalls
+1         stored_prefix_join                         {"a": "**0", "b": "**1"}
+0         out
+```
+
+The `(cartesian)` annotation marks a join with no shared bound variables —
+`joins_on` is `{}` — so this plan pairs every `mentions` row with every
+`mentions` row (81 intermediate rows from this 9-row relation, N² in general)
+before `recalls` prunes. Both plans return the same seven rows:
+
+```
+e1          e2
+e_maya      e_rocksdb
+e_pg        e_pg
+e_pg        e_rocksdb
+e_rocksdb   e_rocksdb
+e_rocksdb   e_search
+e_sam       e_pg
+e_search    e_rocksdb
+```
+
+<Callout type="fork">
+  Specific to mnestic 0.10.5 (default **on**; tie-break fix in 0.10.7) —
+  measured 54.5× on the motivating triangle-join repro. The pass is the
+  identity on any already-greedy order, so hand-tuned queries compile
+  byte-identically; it declines rules with fewer than three stored-relation
+  atoms, derived-rule or index-search atoms, or multi-valued `in`
+  unifications; and a residual Cartesian step is both annotated in
+  `::explain` and reported via `log::warn`. A bare `:limit` without `:order`
+  also forces the written order, keeping the returned subset stable. It
+  consults no statistics — when a bad order is bad for a reason structure
+  cannot reveal, you are still the optimizer. Full design:
+  [Greedy join reorder](/docs/fork/join-reorder).
+</Callout>
 
 ## Evaluating atoms
 
-We now explain how a single atom which generates new bindings is processed.
+How a single binding-introducing atom executes:
 
-For unifications, the right-hand side, an expression with all variables bound,
-is simply evaluated, and the result is joined to the current relation (as in a
+For unifications, the right-hand side — an expression with all variables
+bound — is evaluated, and the result joined to the current relation (as in a
 `map-cat` operation in functional languages).
 
-Rules or stored relations are conceptually trees, with composite keys sorted
-lexicographically. The complexity of their applications in atoms is therefore
-determined by whether the bound variables and constants in the application
-bindings form a _key prefix_. For example, the following application:
+Rules and stored relations are conceptually trees with composite keys sorted
+lexicographically, so the cost of applying one is determined by whether the
+bound variables and constants form a _key prefix_. `recalls` has key
+`(from, to)`; binding the first key column gives a prefix scan:
 
 ```prolog
-a_rule['A', 'B', c]
+::explain { ?[to, s] := *recalls['m2', to, s] }
 ```
 
-with `c` unbound, is very efficient, since this corresponds to a prefix scan in
-the tree with the key prefix `['A', 'B']`, whereas the following application:
+```
+atom_idx  op                  ref       joins_on        filters/expr
+3         unify               *1                        "m2"
+2         load_stored         :recalls
+1         stored_prefix_join            {"*1": "**0"}
+0         out
+```
+
+Binding only the *second* key column is not a prefix, so the whole relation
+must be scanned and matched:
 
 ```prolog
-a_rule[a, 'B', 'C']
+::explain { ?[f, s] := *recalls[f, 'm5', s] }
 ```
 
-where `a` is unbound, is very expensive, since we must do a full scan. On the
-other hand, if `a` is bound, then this is only a logarithmic-time existence
-check.
+```
+atom_idx  op                  ref       joins_on        filters/expr
+3         unify               *1                        "m5"
+2         load_stored         :recalls
+1         stored_mat_join               {"*1": "**0"}
+0         out
+```
 
-For stored relations, you need to check its schema for the order of keys to
-deduce the complexity. The system op `::explain` may also give you some
-information.
+If *every* key column is bound, the application matches at most one stored
+tuple — a logarithmic-time existence check. For stored relations, check the
+schema for the order of the keys to deduce the complexity; `::explain` tells
+you which access path you actually got.
 
-Rows are generated in a streaming fashion, meaning that relation joins proceed
-as soon as one row is available, and do not wait until the whole relation is
-generated.
+A `stored_mat_join` on a large relation is the cue to add an index. The engine
+selects one automatically when its key order fits. Querying `mentions` by its
+second key column is a scan-and-match:
+
+```prolog
+::explain { ?[mid] := *mentions{ memory: mid, entity: 'e_pg' } }
+```
+
+```
+atom_idx  op                  ref        joins_on        filters/expr
+3         unify               *1                         "e_pg"
+2         load_stored         :mentions
+1         stored_mat_join                {"*1": "**0"}
+0         out
+```
+
+After `::index create mentions:by_entity { entity, memory }`, the same query
+compiles to a prefix join against the index — no query change required:
+
+```
+atom_idx  op                  ref                  joins_on        filters/expr
+3         unify               *1                                   "e_pg"
+2         load_stored         :mentions:by_entity
+1         stored_prefix_join                       {"*1": "**0"}
+0         out
+```
+
+Rows are generated in a streaming fashion: joins proceed as soon as one row is
+available and do not wait for whole intermediate relations to materialize.
+
+## The factorized-counting advisory
+
+One shape deterministic plans handle badly is `count()` over a join: the
+naive plan enumerates every match only to increment a counter. mnestic ships
+an opt-in rewrite that counts eligible acyclic joins without materializing
+them, and — independent of whether the rewrite is enabled — an always-on
+detector flags eligible queries directly in `::explain`:
+
+```prolog
+::explain {
+    ?[count(m)] := *mentions{ memory: m, entity: e },
+                   *recalls{ from: m, to: m2 },
+                   *mentions{ memory: m2, entity: e2 }
+}
+```
+
+```
+atom_idx  op                  ref        joins_on
+5         load_stored         :mentions
+4         load_stored         :recalls
+3         stored_prefix_join             {"m": "**0"}
+2         load_stored         :mentions
+1         stored_prefix_join             {"m2": "**1"}
+0         aggr_out
+```
+
+plus one extra row, carrying its message in the `filters/expr` column:
+
+```
+op                   filters/expr
+factorize_advisory   rule `?`: count over a materialized join; factorizes over separator {m, m2} into 2 components — see docs/specs/cardinality-algebra.md
+```
+
+The advisory row means the detector recognized this count as factorizable —
+worth measuring with factorization enabled (`set_query_factorization(true)`
+from Rust, or `db.set_query_factorization(True)` from Python since 0.10.7).
+No advisory on a count query is itself a signal: the body has a shape the
+rewrite declines — a cycle, a `!=`, a `count_unique` — and will be counted
+naively.
+
+<Callout type="fork">
+  Specific to mnestic 0.10.5. The rewrite is off by default and produces
+  bit-identical, exact-integer answers when enabled (measured 4–342× on the
+  motivating benchmark). Eligibility rules and the exact-counting design:
+  [Factorized counting](/docs/fork/factorized-counting).
+</Callout>
 
 ## Early stopping
 
 For the entry rule `?`, if `:limit` is specified as a query option, a counter
-is used to monitor how many valid rows are already generated. If enough rows
-are generated, the query stops. This only works when the entry rule is inline
-and you do not specify `:order`.
+monitors how many valid rows have been generated, and the query stops as soon
+as enough rows exist:
+
+```prolog
+?[id] := *memory{ id }
+:limit 3
+```
+
+```
+id
+m1
+m2
+m3
+```
+
+This only works when the entry rule is an inline rule and you do not specify
+`:order` — with a sort, all rows must be generated before the limit can be
+applied. As noted above, a bare `:limit` without `:order` also pins the
+written atom order, so the subset you get back is deterministic.
+
+<Callout type="fork">
+  Early stopping bounds *rows*; a wall-clock budget bounds *time*. Since
+  mnestic 0.10.5, `:timeout` and `::kill` actually interrupt a running query
+  mid-join (upstream, a `::kill` could queue behind the very query it targeted,
+  and a `:timeout` was only honoured between rule applications),
+  and a Db-wide default timeout can be set from Rust or Python. See
+  [Interruptibility & query budgets](/docs/fork/interruptibility).
+</Callout>
 
 <Attribution page="execution.html" />

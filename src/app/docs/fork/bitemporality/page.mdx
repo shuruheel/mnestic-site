@@ -1,0 +1,288 @@
+export const metadata = {
+  title: "Bitemporality",
+  description:
+    "mnestic 0.10.0 adds engine-assigned transaction time to CozoDB's valid time: a crash-safe monotone commit clock, current-belief reads in one seek per key, time travel across both axes with @ (vt:/tt:) selectors, :as_of reproducible reports, and an audited history lifecycle.",
+};
+
+# Bitemporality
+
+A memory that can be corrected needs two clocks. **Valid time** records when
+a fact was true in the modeled world; **transaction time** records when the
+database came to believe it. Upstream CozoDB ships only the first. mnestic
+adds the second as an engine-assigned axis: a crash-safe monotone commit
+clock stamps every write at commit, a plain read returns the current belief
+in one seek per key, and one selector answers what the database believed at
+time T about any period.
+
+<Callout type="fork">
+  This entire page is specific to mnestic: **bitemporality landed in 0.10.0**.
+  It covers why the axis exists and what shipped with it; the complete
+  temporal reference — selector grammar, resolution semantics, per-op write
+  behavior — lives in [Time travel](/docs/time-travel#transaction-time-mnestic).
+  Relations declaring `TxTime` cannot be opened by upstream CozoDB builds.
+</Callout>
+
+## The problem
+
+Cozo's valid-time axis is user-settable by design: a `Validity` key column
+you can backdate, future-date, and import, with a one-token `@` as-of read
+([Time travel](/docs/time-travel) covers it in full). That control is exactly
+why it cannot answer questions about the database's own record. A `:put` at
+the same key and valid time physically replaces the old row, so three things
+are impossible with valid time alone:
+
+- **Reproducing a past result.** Yesterday's query cannot be re-run as it
+  would have answered yesterday; corrections applied since are baked in.
+- **Auditing belief.** "When did the agent learn this, and what did it think
+  before?" has no answer — the question behind memory-poisoning forensics,
+  provenance obligations, and "what did the agent know when it acted".
+- **Telling change from correction.** "The owner changed in March" and "we
+  were wrong about March" are different facts; one axis conflates them.
+
+Transaction time closes the gap, and the engine has to own it: the stamp is
+only audit-grade if it is assigned at commit, monotonically, and cannot be
+forged by any caller.
+
+## A correction, on the record
+
+A relation whose last key column has type `TxTime` is **system-versioned**:
+every write appends a record stamped at commit, and a plain read returns the
+current belief. Here is an agent's store of extracted facts:
+
+```prolog
+:create belief { subject: String, prop: String, tt: TxTime => value: String }
+```
+
+Writes never mention `tt`; the engine assigns it, and supplying a value on
+any write path is an error. From a first pass over a stale runbook, the
+agent records who owns the Postgres connector and what its timeout is:
+
+```prolog
+?[subject, prop, value] <- [
+  ['postgres-connector', 'owner',   'Sam'],
+  ['postgres-connector', 'timeout', '60 seconds'],
+]
+:put belief { subject, prop => value }
+```
+
+Later it reads the live config: the timeout is 30 seconds and the runbook
+was out of date. The correction is the same plain `:put`:
+
+```prolog
+?[subject, prop, value] <- [['postgres-connector', 'timeout', '30 seconds']]
+:put belief { subject, prop => value }
+```
+
+A read with no selector is the current belief, resolved in one seek per key:
+
+```prolog
+?[prop, value] := *belief{ subject: 'postgres-connector', prop, value }
+```
+
+```
+["owner","Sam"]
+["timeout","30 seconds"]
+```
+
+Nothing was overwritten. `::history` returns the raw belief timeline, ordered
+key-ascending, then newest first:
+
+```prolog
+::history belief [['postgres-connector', 'owner'], ['postgres-connector', 'timeout']]
+```
+
+```
+["postgres-connector","owner","assert",1783880426761363,"Sam"]
+["postgres-connector","timeout","assert",1783880426763169,"30 seconds"]
+["postgres-connector","timeout","assert",1783880426761363,"60 seconds"]
+```
+
+The `owner` record and the `60 seconds` record share the tt `…761363`: they
+were written in one transaction, and a transaction is **one belief event**.
+The correction sits at its own, later tt.
+
+`@ (tt: T)` reads the relation exactly as it stood at commit time `T`. Using
+the first belief event's tt from the history (transaction times are minted
+at commit, so yours will differ):
+
+```prolog
+?[value] := *belief{ subject: 'postgres-connector', prop: 'timeout', value,
+                     @ (tt: 1783880426761363) }
+```
+
+```
+["60 seconds"]
+```
+
+`:as_of` pins a whole query block instead, so a multi-atom report cannot
+silently mix one atom of current belief into a historical answer. This
+re-runs the report exactly as it would have answered before the correction,
+which is the original motivating use case:
+
+```prolog
+?[prop, value] := *belief{ subject: 'postgres-connector', prop, value }
+:as_of 1783880426761363
+```
+
+```
+["owner","Sam"]
+["timeout","60 seconds"]
+```
+
+## The commit clock
+
+Transaction times come from a wall-clock-floored, strictly monotonic
+counter: `tt = max(now_µs, last_tt + 1)`. Two commits inside one microsecond
+get distinct tts, a backward step of the system clock cannot reorder them,
+and the clock's high-water mark is persisted **inside each committing
+transaction**, so a crash cannot lose it; restarts and backup restores
+re-seed it monotonically. All writes of one transaction share a single tt,
+and tt order equals commit order equals visibility order: a reader can never
+observe records appearing below a point it has already read.
+
+The other half of the guarantee is refusal. Valid time stays falsifiable on
+purpose. Transaction time is trustworthy because nobody can write it: a
+`TxTime` value in a `:put` spec, a header, or an import payload is rejected
+on every path. Details, including the single-instance caveat on the SQLite
+backend, are under [the commit clock](/docs/time-travel#the-commit-clock).
+
+## Both axes: belief about a period
+
+Declaring both axes — temporal axes are the trailing key columns, in the
+fixed order `Validity` then `TxTime` — makes a relation fully bitemporal:
+
+```prolog
+:create oncall { service: String, at: Validity, tt: TxTime => person: String }
+```
+
+The agent recorded from June's rota that Maya covers `search-service`; it
+later learns the rota had been redrawn and Sam covered June. Same valid
+time, later transaction time:
+
+```prolog
+?[service, at, person] <- [['search-service', '2026-06-01T00:00:00Z', 'Maya']]
+:put oncall { service, at => person }
+```
+
+```prolog
+?[service, at, person] <- [['search-service', '2026-06-01T00:00:00Z', 'Sam']]
+:put oncall { service, at => person }
+```
+
+Bare `@` keeps its shipped meaning — valid time, with transaction time
+defaulting to the current belief — so the ordinary as-of read answers with
+the correction:
+
+```prolog
+?[person] := *oncall{ service: 'search-service', person, @ '2026-06-15' }
+```
+
+```
+["Sam"]
+```
+
+Both beliefs remain in `::history`, which on bitemporal relations grows a
+`vt_ts` column. The two records sit at the same valid time; the correction is
+the newer tt:
+
+```prolog
+::history oncall [['search-service']]
+```
+
+```
+["search-service",1780272000000000,"assert",1783880426792790,"Sam"]
+["search-service",1780272000000000,"assert",1783880426790522,"Maya"]
+```
+
+The fully bitemporal question — *what did we believe about June, before we
+learned better?* — is one order-free labeled selector, taking the earlier tt
+from that history:
+
+```prolog
+?[person] := *oncall{ service: 'search-service', person,
+                      @ (vt: '2026-06-15', tt: 1783880426790522) }
+```
+
+```
+["Maya"]
+```
+
+Each axis defaults independently to what the bare forms already meant, which
+yields a **migration invariant**: adding a `tt: TxTime` column to an
+existing relation changes no existing query's results, up to corrections
+actually recorded since. Selection is per atom, so one query can join
+current state against historical belief. The full selector table, the
+[resolution semantics](/docs/time-travel#resolution-semantics), and the
+three correction shapes are in
+[Bitemporal relations](/docs/time-travel#bitemporal-relations).
+
+## What ships with it
+
+**A lifecycle for history.** Append-only belief needs management, and three
+ops provide it. [`::history`](/docs/time-travel#the-belief-timeline-history)
+is the raw timeline, as above. `::history_gc` drops superseded records below
+a cutoff while preserving every as-of answer at or above it, and persists a
+per-relation floor: a read below the floor is an error, never a
+reconstruction silently presented as historical belief. `::evict`
+hard-deletes every record of a key — the one deliberate break of
+append-only, for data-erasure obligations such as GDPR — writing a
+salted-hash audit row in the same transaction. See
+[Forgetting](/docs/time-travel#forgetting-history_gc-and-evict) and the op
+reference in [System ops](/docs/system-ops#time-travel).
+
+**Belief revision for derived relations.** `:reconcile` declares a query's
+output to *be* a `TxTime` relation's new complete current belief: the engine
+diffs it against the resolved current belief and records the assertions and
+retractions as one belief event. Unchanged keys record nothing, so an
+identical re-run is a true no-op. Retract a base fact, re-derive, reconcile:
+derived beliefs stay consistent with the revised base, including annotated
+ones such as [`min_cost_k`](/docs/aggregations#min_cost_kpayload-cost-k)
+proof packs, and `::history` answers what was believed, and why, as of any
+T. See [Belief revision](/docs/time-travel#belief-revision-reconcile).
+
+**Writes that check the current belief.** `:insert`, `:update`, `:delete`,
+and `:ensure`/`:ensure_not` evaluate their existence checks against the
+resolved current belief: `:delete` fails on a missing key and on a
+believed-deleted one, naming which it hit, because it reads the belief rather
+than the raw records; `:update` lands its correction in the current belief's
+own valid-time version; and `:replace` is rejected outright, because
+destroy-and-recreate would silently drop history. See
+[Writing against the current belief](/docs/time-travel#writing-against-the-current-belief).
+
+## Overhead, measured
+
+Bitemporality is opt-in per relation. Relations that do not declare `TxTime`
+keep their exact single-axis encoding and zero overhead; the read dispatch
+is untouched.
+
+On relations that do opt in, the 0.10.0 release gate measured bitemporal
+current-belief point reads within **~4–12%** of the identical workload on a
+valid-time-only relation, on both the SQLite and RocksDB backends; tt-only
+relations, which carry no `Validity` axis, measured at or below the baseline.
+Full scans of single-version relations came out about **2× faster** than the
+baseline (the sequential
+walk outruns the skip scan's per-key seeks), while deep-history scans, at
+10–100 versions per key, run past the ~10% budget — up to about 2× on the
+deepest corrected cells. That is a recorded trade-off: the two-level walk
+probes both the assert and retract runs of every version, where a
+single-axis scan needs one probe.
+
+The restrictions are loud errors, not silent degradation: no secondary, FTS,
+HNSW, or LSH indexes, no triggers, callbacks, or `:returning` on `TxTime`
+relations; export/import does not round-trip them (backup/restore does, and
+re-seeds the clock); and writes are invisible to later reads in the same
+transaction, because a transaction is one belief event and does not query
+its own half-formed belief. The full list:
+[Restrictions and overhead](/docs/time-travel#restrictions-and-overhead).
+
+## See also
+
+- [Time travel](/docs/time-travel) — the temporal reference: valid time
+  first, then transaction time, resolution semantics, and every write op.
+- [Types → TxTime](/docs/types#txtime-transaction-time-mnestic-0100) — the
+  column type itself.
+- [System ops → Time travel](/docs/system-ops#time-travel) — `::history`,
+  `::history_gc`, `::evict` in full.
+- [Provenance semirings](/docs/fork/provenance-semirings) — `:reconcile`, which
+  revises derived beliefs along this axis.
+- [What mnestic adds](/docs/fork/overview)

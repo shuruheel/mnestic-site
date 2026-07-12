@@ -1,120 +1,453 @@
 export const metadata = {
   title: "System ops",
   description:
-    "System operations for inspecting query plans, managing stored relations, monitoring and killing running queries, and running maintenance.",
+    "The complete system-op catalog: inspect relations, columns, indices and query plans, manage triggers and access levels, monitor and kill running queries, cache graph projections, repair corruption, and manage the transaction-time history of TxTime relations.",
 };
 
 # System ops
 
-System ops start with a double-colon `::` and must appear alone in a script. In
-the following, we explain what each system op does, and the arguments they
-expect.
+System ops start with a double colon `::` and must be the entirety of their
+statement — alone in a plain script, or as their own braced statement in a
+multi-statement script.
+They work on the machinery around your data rather than the data itself: the
+relation catalog, indexes, triggers, access levels, running queries, cached
+graph projections, and the transaction-time history of `TxTime` relations.
+Results come back as rows, exactly like a query; ops that only change state
+return a single `status` column with the value `'OK'`.
 
-## Explain
+The examples on this page run against the small agent-memory schema used
+throughout these docs:
 
-### `::explain { <QUERY> }`
+```
+memory   { id => kind, text, importance, at, v }   # notes, decisions, insights
+entity   { id => name, kind }                      # people, tools, projects
+mentions { memory, entity }                        # which memories involve whom
+recalls  { from, to => strength }                  # association edges
+```
 
-A single query is enclosed in curly braces. Query options are allowed but
-ignored. The query is not executed, but its query plan is returned instead.
-Currently, there is no specification for the return format, but you can decipher
-the result after reading [Query execution](/docs/query-execution).
-
-## Ops for stored relations
+## Inspecting the database
 
 ### `::relations`
 
-List all stored relations in the database.
+List all stored relations in the database. The output columns are `name`,
+`arity`, `access_level`, `n_keys`, `n_non_keys`, `n_put_triggers`,
+`n_rm_triggers`, `n_replace_triggers` and `description`:
+
+```prolog
+::relations
+```
+
+```
+['entity',   3, 'normal', 1, 2, 0, 0, 0, '']
+['memory',   6, 'normal', 1, 5, 0, 0, 0, '']
+['mentions', 2, 'normal', 2, 0, 0, 0, 0, '']
+['recalls',  3, 'normal', 2, 1, 0, 0, 0, '']
+```
+
+Index relations (created by the ops under
+[Managing indexes](#managing-indexes)) are listed as well, with `index` in the
+`access_level` column.
 
 ### `::columns <REL_NAME>`
 
-List all columns for the stored relation `<REL_NAME>`.
+List all columns of the stored relation `<REL_NAME>`, with each column's key
+status, position, type, and default:
 
-### `::indices <REL_NAME>`
+```prolog
+::columns memory
+```
 
-List all indices for the stored relation `<REL_NAME>`.
+```
+['id',         true,  0, 'String',  false, null]
+['kind',       false, 1, 'String',  false, null]
+['text',       false, 2, 'String',  false, null]
+['importance', false, 3, 'Float',   false, null]
+['at',         false, 4, 'Float',   false, null]
+['v',          false, 5, '<F32;4>', false, null]
+```
+
+The name may also be an index, written `<REL_NAME>:<INDEX_NAME>` — useful for
+seeing exactly which columns an index stores.
 
 ### `::fixed_rules`
 
 List the names of every registered fixed rule — the built-in utilities and
-graph algorithms, plus any custom rules the hosting application has registered.
-These are the names usable on the right of `<~` in a query.
+graph algorithms, plus any custom rules the hosting application has
+registered. These are the names usable on the right of `<~` in a query:
+
+```prolog
+::fixed_rules
+```
+
+```
+['BFS']
+['BetweennessCentrality']
+['BreadthFirstSearch']
+['BudgetedTraversal']
+['ClosenessCentrality']
+...
+['StronglyConnectedComponents']
+['TopSort']
+```
+
+(31 rows in a default build; the exact list depends on compile-time features
+and host registrations.)
+
+### `::explain { <QUERY> }`
+
+A single query is enclosed in curly braces. The query is not executed; its
+query plan is returned instead. There is no formal specification for the
+format, but the columns — `stratum`, `rule_idx`, `rule`, `atom_idx`, `op`,
+`ref`, `joins_on`, `filters/expr`, `out_relation` — read naturally after
+[Query execution](/docs/query-execution):
+
+```prolog
+::explain { ?[text, importance] := *memory{text, importance}, importance > 0.8 }
+```
+
+```
+[0, 0, '?', 1, 'load_stored', ':memory', null, ['gt(importance, 0.8)'], ['~1', '~2', 'text', 'importance', '~3', '~4']]
+[0, 0, '?', 0, 'out', null, null, null, ['text', 'importance']]
+```
+
+Query options are accepted. Most are ignored, since nothing runs — but options
+that shape compilation change the plan you see: `:reorder written`, for
+example, shows the plan without the greedy join reorder.
+
+<Callout type="fork">
+  Since mnestic 0.10.5, the plan `::explain` shows reflects the deterministic
+  [greedy join reorder](/docs/fork/join-reorder) (a residual Cartesian product
+  is annotated `(cartesian)`), and an eligible `count()`-over-join carries a
+  [factorization advisory](/docs/fork/factorized-counting).
+</Callout>
+
+## Managing stored relations
 
 ### `::describe <REL_NAME> <DESCRIPTION>?`
 
-Describe the stored relation `<REL_NAME>` and store it in the metadata. If
-`<DESCRIPTION>` is given, it is stored as the description, otherwise the
-existing description is removed. The description can be shown with
-`::relations`. It serves as the documentation and signpost for humans and AI.
+Attach a human-readable description to the stored relation `<REL_NAME>` and
+store it in the metadata. If `<DESCRIPTION>` is given, it is stored as the
+description, otherwise the existing description is removed. It serves as
+documentation and signpost for humans and AI agents working out an unfamiliar
+schema:
+
+```prolog
+::describe memory 'Episodic memories of a coding agent, with toy 4-dim embeddings'
+```
+
+`::relations` now reports it in the `description` column:
+
+```
+...
+['memory', 6, 'normal', 1, 5, 0, 0, 0, 'Episodic memories of a coding agent, with toy 4-dim embeddings']
+...
+```
+
+<Callout type="fork">
+  Upstream CozoDB defines `::describe` in its grammar and runtime but never
+  wires the rule into the script entry point, so the op always failed to
+  parse. It works in mnestic since 0.8.5, and — since
+  it writes relation metadata — is correctly rejected in read-only mode.
+</Callout>
 
 ### `::remove <REL_NAME> (, <REL_NAME>)*`
 
-Remove stored relations. Several can be specified, joined by commas.
+Remove stored relations. Several can be specified, joined by commas:
+
+```prolog
+:create scratch { k: String }
+```
+
+```prolog
+::remove scratch
+```
 
 ### `::rename <OLD_NAME> -> <NEW_NAME> (, <OLD_NAME> -> <NEW_NAME>)*`
 
-Rename stored relation `<OLD_NAME>` into `<NEW_NAME>`. Several may be specified,
-joined by commas.
+Rename the stored relation `<OLD_NAME>` into `<NEW_NAME>`. Several may be
+specified, joined by commas:
 
-### `::index ...`
-
-Manage indices. See [Stored relations & transactions](/docs/stored-relations)
-for more details.
-
-### `::hnsw ...`
-
-Manage HNSW indices. See [Proximity search](/docs/proximity-search) for more
-details.
-
-### `::fts ...`
-
-Manage full-text search indices, with the same
-`::fts create <REL>:<NAME> { ... }` / `::fts drop <REL>:<NAME>` shape as
-`::index`. A full-text index lets a query match stored text by tokens rather
-than by exact value.
-
-### `::lsh ...`
-
-Manage MinHash LSH (locality-sensitive hashing) indices, with the same
-create/drop shape as `::index`. An LSH index supports near-duplicate detection
-over text by Jaccard similarity of shingles.
-
-### `::show_triggers <REL_NAME>`
-
-Display triggers associated with the stored relation `<REL_NAME>`.
-
-### `::set_triggers <REL_NAME> ...`
-
-Set triggers for the stored relation `<REL_NAME>`. This is explained in more
-detail in [Stored relations & transactions](/docs/stored-relations).
+```prolog
+::rename mentions -> memory_mentions
+```
 
 ### `::access_level <ACCESS_LEVEL> <REL_NAME> (, <REL_NAME>)*`
 
-Sets the access level of `<REL_NAME>` to the given level. The levels are:
+Set the access level of one or more stored relations. The levels are:
 
 - `normal` allows everything,
 - `protected` disallows `::remove` and `:replace`,
 - `read_only` additionally disallows any mutations and setting triggers,
 - `hidden` additionally disallows any data access (metadata access via
-  `::relations`, etc., are still allowed).
+  `::relations`, etc., is still allowed).
 
-The access level functionality is to protect data from mistakes of the
-programmer, not from attacks by malicious parties.
+The access level functionality is there to protect data from mistakes of the
+programmer, not from attacks by malicious parties. Protecting a relation makes
+a destructive op a loud error instead of a quiet disaster:
+
+```prolog
+::access_level protected entity
+```
+
+```prolog
+::remove entity
+```
+
+```
+Insufficient access level protected for relation removal on stored relation 'entity'
+```
+
+```prolog
+::access_level normal entity
+```
+
+## Triggers
+
+### `::set_triggers <REL_NAME> ...`
+
+Set triggers for the stored relation `<REL_NAME>`: any number of `on put`,
+`on rm` and `on replace` clauses, each containing a full query that runs in
+the same transaction as the triggering write. Inside a clause the affected
+rows are available as `_new[...]` (and `_old[...]`, depending on the clause
+kind); the full contract is explained in
+[Stored relations & transactions](/docs/stored-relations). Here every write to
+`entity` is mirrored into a log relation:
+
+```prolog
+:create entity_log { id: String => name: String }
+```
+
+```prolog
+::set_triggers entity
+
+on put { ?[id, name] := _new[id, name, kind] :put entity_log { id => name } }
+```
+
+### `::show_triggers <REL_NAME>`
+
+Display the triggers associated with the stored relation `<REL_NAME>` — one
+row per trigger, with its kind, position, and stored script:
+
+```prolog
+::show_triggers entity
+```
+
+```
+['put', 0, '?[id, name] := _new[id, name, kind] :put entity_log { id => name }']
+```
+
+All of a relation's triggers are set together: running `::set_triggers` again
+replaces the whole set, and calling it with no clauses removes all triggers
+from the relation:
+
+```prolog
+::set_triggers entity
+```
+
+## Managing indexes
+
+All four index kinds share the same op shape: `::<kind> create
+<REL_NAME>:<INDEX_NAME> { ... }` to create, and `::<kind> drop
+<REL_NAME>:<INDEX_NAME>` to drop. Index relations appear in `::relations`
+under the name `<REL_NAME>:<INDEX_NAME>`, with `index` in the access-level
+column.
+
+### `::index create` / `::index drop`
+
+Create or drop a plain covering index: a reordering of the base relation's
+columns, kept in sync automatically, that you can also query directly like a
+read-only stored relation. The engine only chooses an index on its own when a
+prefix of the index's key is bound; selection rules and key completion are
+explained in [Stored relations & transactions](/docs/stored-relations):
+
+```prolog
+::index create memory:by_kind { kind, id }
+```
+
+`::columns` on the index name shows what it stores:
+
+```prolog
+::columns memory:by_kind
+```
+
+```
+['kind', true, 0, 'String', false, null]
+['id',   true, 1, 'String', false, null]
+```
+
+<Callout type="fork">
+  Since mnestic 0.9.0, `::index create` no longer panics when the base
+  relation contains a corrupt (truncated) tuple. The bad tuple is skipped with
+  a loud logged error naming the relation, the index, and the arity mismatch,
+  and the build completes — pair with
+  [`::repair_corrupt`](#maintenance) to delete the damaged rows themselves.
+</Callout>
+
+### `::hnsw create` / `::hnsw drop`
+
+Manage HNSW (vector proximity) indices. All options — dimensions, distance
+functions, index-time filters — are documented in
+[Proximity search](/docs/proximity-search):
+
+```prolog
+::hnsw create memory:semantic {
+    dim: 4,
+    dtype: F32,
+    fields: [v],
+    distance: Cosine,
+    m: 16,
+    ef_construction: 50
+}
+```
+
+<Callout type="fork">
+  On the RocksDB backend, `::hnsw create` builds the index without holding the
+  base relation's write lock (mnestic 0.8.2), so concurrent reads do not stall
+  during a long build — see
+  [Non-blocking HNSW builds](/docs/fork/non-blocking-hnsw).
+</Callout>
+
+### `::fts create` / `::fts drop`
+
+Manage full-text search indices. A full-text index lets a query match stored
+text by tokens rather than by exact value:
+
+```prolog
+::fts create memory:by_text {
+    extractor: text,
+    tokenizer: Simple,
+    filters: [Lowercase]
+}
+```
+
+Extractors, tokenizers, filters and the scoring options (BM25 by default since
+mnestic 0.8.3) are documented in
+[Proximity search](/docs/proximity-search#full-text-search-fts).
+
+### `::lsh create` / `::lsh drop`
+
+Manage MinHash LSH (locality-sensitive hashing) indices. An LSH index supports
+near-duplicate detection over text by Jaccard similarity of shingles; options
+are documented in [Proximity search](/docs/proximity-search):
+
+```prolog
+::lsh create memory:dedup {
+    extractor: text,
+    tokenizer: Simple,
+    filters: [Lowercase],
+    n_perm: 200,
+    target_threshold: 0.7
+}
+```
+
+### `::indices <REL_NAME>`
+
+List all indices on the stored relation `<REL_NAME>`, of all four kinds, with
+each one's full configuration. With the four indexes above in place:
+
+```prolog
+::indices memory
+```
+
+```
+['by_kind',  'normal', ['memory:by_kind'],  {'indices': [1, 0]}]
+['semantic', 'hnsw',   ['memory:semantic'], {'distance': 'Cosine', 'dtype': 'F32', 'ef_construction': 50, 'extend_candidates': false, 'keep_pruned_connections': false, 'level_multiplier': 0.36067376022224085, 'm_max': 16, 'm_max0': 32, 'm_neighbours': 16, 'vec_dim': 4, 'vec_fields': [5]}]
+['by_text',  'fts',    ['memory:by_text'],  {'extractor': 'text', 'tokenizer': {'args': [], 'name': 'Simple'}, 'tokenizer_filters': [{'args': [], 'name': 'Lowercase'}]}]
+['dedup',    'lsh',    ['memory:dedup', 'memory:dedup:inv'], {'extractor': 'text', 'n_bands': 20, 'n_gram': 1, 'n_rows_in_band': 10, 'num_perm': 200, 'threshold': 0.7, 'tokenizer': {'args': [], 'name': 'Simple'}, 'tokenizer_filters': [{'args': [], 'name': 'Lowercase'}]}]
+```
+
+### `::reindex <REL_NAME>`
+
+<Callout type="fork">
+  Specific to mnestic 0.12.1 — not present in upstream CozoDB.
+</Callout>
+
+Rebuild every HNSW, FTS and LSH index on a stored relation **in place**, from the
+index configuration the database already stores. This is the repair path when an
+index's contents have drifted from its base relation:
+
+```prolog
+::reindex memory
+```
+
+```
+['semantic', 'hnsw', 3]
+['by_text',  'fts',  3]
+['dedup',    'lsh',  3]
+```
+
+One row per rebuilt index — its name, its kind, and the number of base rows it
+was rebuilt from. Reach for it in three situations:
+
+- **After the 0.12.1 full-text fix.** Full-text postings leaked on every in-place
+  update of a relation carrying *only* an FTS index (see
+  [Release history](/docs/release-notes)). The fix stops new leakage but cannot
+  evict postings already written, so an affected relation must be rebuilt once.
+- **After a bulk load.** `import_relations` and `import_from_backup` do not
+  maintain these indexes — that is what makes them fast — so rows they load stay
+  invisible to vector, text and similarity search until a rebuild.
+- **After any drift**, whatever the cause.
+
+Each index is rebuilt against its **own stored manifest**, not a config
+reconstructed from `::indices` output. This is why `::reindex` exists rather than
+a drop-and-recreate: an LSH manifest keeps the *derived* band geometry
+(`n_bands`, `n_rows_in_band`, `perms`) but not the weights that produced it, so
+recreating it by hand silently recomputes that geometry from defaults and hands
+back an index with a different recall profile than the one you asked for. Rows
+are re-derived through the same per-row maintenance path `:put` uses, so a
+rebuilt index is identical to an incrementally-maintained one.
+
+<Callout type="warning">
+  `::reindex` is a **maintenance operation, not an online one.** It runs in one
+  write transaction and holds the relation's write lock for the whole rebuild —
+  on a large relation, that is minutes during which the relation is blocked. A
+  crash mid-rebuild rolls back to the intact old index; re-running is always the
+  cure. Nothing auto-invokes it: the import paths point at it, they do not run it.
+</Callout>
+
+A relation with no HNSW/FTS/LSH index is a loud no-op rather than an error, which
+keeps `::reindex` scriptable across a set of relations without the caller having
+to know which ones carry search indexes:
+
+```
+['no HNSW/FTS/LSH index on this relation — nothing to rebuild']
+```
 
 ## Monitor and kill
 
 ### `::running`
 
-Display running queries and their IDs.
+Display currently running queries: one row per query, with its numeric `id`
+and `started_at` timestamp.
 
 ### `::kill <ID>`
 
-Kill a running query specified by `<ID>`. The ID may be obtained by
-`::running`.
+Kill a running query by the ID obtained from `::running`. Returns `'KILLING'`
+when the query was found and poisoned, or `'NOT_FOUND'` when no query with
+that ID is running (for instance because it already finished):
+
+```prolog
+::kill 42
+```
+
+```
+['NOT_FOUND']
+```
+
+<Callout type="fork">
+  Since mnestic 0.10.5, `::kill` genuinely interrupts a running query.
+  `::running` and `::kill` dispatch before opening a storage transaction (so a
+  kill no longer queues behind the very query it is trying to stop), and the
+  per-query poison flag is checked throughout evaluation, so even a long join
+  that emits no rows aborts promptly with an `eval::killed` error. The same
+  release added the `:timeout` wall-clock budget. See
+  [Interruptibility & query budgets](/docs/fork/interruptibility).
+</Callout>
 
 ## Graph projections
 
-Available in mnestic 0.11.0+. A projection is a named, in-memory adjacency
-structure over stored relations that the [graph
+A projection is a named, in-memory adjacency structure over stored relations
+that the [graph
 algorithms](/docs/algorithms#reusing-a-graph-across-queries-mnestic-0110)
 reuse across queries via their `graph:` option, instead of rebuilding it on
 every call.
@@ -122,7 +455,14 @@ every call.
 A projection is **always fresh**: it never serves a transaction data that
 differs from what that transaction's own scan of the source relations would
 return, and writing to a source frees what was built from it. Projections are
-kept in memory only and are **not persisted** — re-create them after a restart.
+kept in memory only and are **not persisted** — re-create them after a
+restart.
+
+<Callout type="fork">
+  The `::graph` ops are specific to mnestic 0.11.0+. Design detail, measured
+  speed-ups, and the list of algorithms that accept `graph:` live on
+  [Cached graph projections](/docs/fork/graph-projections).
+</Callout>
 
 ### `::graph create <NAME> { edges: <REL>, nodes: <REL> }`
 
@@ -138,70 +478,199 @@ Naming a `nodes` relation makes isolated vertices real: a vertex that appears
 there but in no edge becomes a genuine degree-0 vertex, ranked by `PageRank`
 and emitted as its own component by `ConnectedComponents`.
 
+```prolog
+::graph create g { edges: recalls }
 ```
-::graph create g { edges: knows, nodes: person }
-```
-
-### `::graph drop <NAME>`
-
-Forgets the projection and frees every adjacency built from it.
 
 ### `::graph list`
 
 Returns one row per built adjacency — `name`, `edges`, `nodes`, `variant`,
 `est_bytes`, `built_at`, `last_used` — and a single row with null variant
-columns for a projection that has not been used yet.
+columns for a projection that has not been used yet. The `variant` label is
+one of `directed`, `directed+weighted`, `undirected`, `undirected+weighted`.
+Right after the create above, nothing is built:
 
-Total resident size is capped at 512 MiB by default, evicting least-recently-used
-adjacencies first. Hosting applications can change the cap
+```prolog
+::graph list
+```
+
+```
+['g', 'recalls', null, null, null, null, null]
+```
+
+The first algorithm call over the projection builds the variant it needs —
+here `ConnectedComponents` requests an undirected, unweighted adjacency:
+
+```prolog
+?[id, component] <~ ConnectedComponents(graph: 'g')
+:order id
+```
+
+```prolog
+::graph list
+```
+
+```
+['g', 'recalls', null, 'undirected', 1512, 1783806736.976928, 1783806736.976928]
+```
+
+Total resident size is capped at 512 MiB by default, evicting
+least-recently-used adjacencies first. Hosting applications can change the cap
 (`Db::set_graph_projection_capacity` in Rust,
-`set_graph_projection_capacity` on the Python `CozoDbPy`); `0` disables caching
-while leaving `::graph create`, `::graph list` and `::graph drop` working.
+`set_graph_projection_capacity` on the Python `CozoDbPy`); `0` disables
+caching while leaving `::graph create`, `::graph list` and `::graph drop`
+working.
+
+### `::graph drop <NAME>`
+
+Forgets the projection and frees every adjacency built from it:
+
+```prolog
+::graph drop g
+```
 
 ## Maintenance
 
 ### `::compact`
 
-Instructs Cozo to run a compaction job. Compaction makes the database smaller
-on disk and faster for read queries.
+Instructs the engine to run a compaction job. Compaction makes the database
+smaller on disk and faster for read queries.
 
 ### `::repair_corrupt <REL_NAME>`
 
-Available in mnestic. Surgically deletes tuples in `<REL_NAME>` whose stored
-value is shorter than the schema demands — the residue of an interrupted write.
-Where a database that fails an integrity check would otherwise have to be
-dropped wholesale, this repairs the one damaged relation in place. It requires
-write access and cannot run in read-only mode.
+Surgically deletes tuples in `<REL_NAME>` whose stored value is shorter than
+the schema demands — the residue of an interrupted write. Where a database
+that fails an integrity check would otherwise have to be dropped wholesale,
+this repairs the one damaged relation in place. It requires write access and
+cannot run in read-only mode. The single output column reports how many tuples
+were removed — on a healthy relation, none:
+
+```prolog
+::repair_corrupt memory
+```
+
+```
+[0]
+```
+
+<Callout type="fork">
+  `::repair_corrupt` is specific to mnestic (0.9.0), added alongside the
+  non-panicking `::index create` above — before it, a single truncated tuple
+  could make a database that fails integrity checks effectively unusable.
+</Callout>
 
 ## Time travel
 
-Available in mnestic. A relation whose schema declares a `TxTime` column keeps
-the full history of its rows: every write appends a new record stamped with the
-engine's transaction-time clock, rather than overwriting. The operations below
-inspect and prune that history. See
-[Beyond CozoScript](/docs/beyond-cozoscript) for the `TxTime` column type and
-`@` time-travel reads.
+A relation whose schema declares a `TxTime` column (a mnestic 0.10.0 type —
+see [Types](/docs/types)) keeps the full history of its rows: every write
+appends a new record stamped by the engine's transaction-time commit clock,
+rather than overwriting. Reads default to the current belief; the `@` selector
+and the `:as_of` query option time-travel (see [Queries](/docs/queries),
+[Bitemporality](/docs/fork/bitemporality) for the two-axis model, and
+[Time travel](/docs/time-travel) for the older valid-time axis). The ops below
+inspect and prune that history.
+
+To have something to inspect, record a belief, revise it, then retract it —
+three separate transactions, each stamped at commit:
+
+```prolog
+:create belief { claim: String, tt: TxTime => confidence: Float }
+```
+
+```prolog
+?[claim, confidence] <- [['pg-timeout-is-30s', 0.6]]
+:put belief { claim => confidence }
+```
+
+```prolog
+?[claim, confidence] <- [['pg-timeout-is-30s', 0.9]]
+:put belief { claim => confidence }
+```
+
+```prolog
+?[claim] <- [['pg-timeout-is-30s']]
+:rm belief { claim }
+```
 
 ### `` ::history <REL_NAME> <KEYS> <LIMIT>? <OFFSET>? ``
 
-Returns every `(valid time, transaction time)` record of the given keys of a
-`TxTime` relation — the whole belief timeline, not just current belief.
-`<KEYS>` is a list of key-lists, e.g. `[[1], [2]]`. `<LIMIT>` and `<OFFSET>`
-are optional bare integers for paging. Read-only; requires at least read access.
+Returns every record of the given keys of a `TxTime` relation — the whole
+belief timeline, not just current belief. `<KEYS>` is a list of key-lists,
+e.g. `[['a'], ['b']]`; `<LIMIT>` and `<OFFSET>` are optional bare integers for
+paging. Read-only; requires at least read access.
+
+The output columns are the plain key columns, `vt_ts` (on bitemporal relations
+that also declare a `Validity` column; absent here), `op` (`assert` or
+`retract`), `tt` (transaction time, integer microseconds), then the value
+columns. Rows are ordered key-ascending, then newest belief first:
+
+```prolog
+::history belief [['pg-timeout-is-30s']]
+```
+
+```
+['pg-timeout-is-30s', 'retract', 1783806736982465, 0.9]
+['pg-timeout-is-30s', 'assert',  1783806736981242, 0.9]
+['pg-timeout-is-30s', 'assert',  1783806736980187, 0.6]
+```
+
+The `:rm` did not delete anything: it appended a retract record, carrying the
+values the key held at that moment. Keys coerce through the relation's column
+types, so a mistyped key is an error rather than an empty match.
 
 ### `::history_gc <REL_NAME> <CUTOFF>`
 
 Drops superseded historical records below the transaction-time `<CUTOFF>` (in
 microseconds) and persists a garbage-collection floor, reclaiming space while
-leaving current belief and any history above the cutoff intact. Requires write
-access.
+leaving current belief and any history at or above the cutoff intact. Per key
+(and per valid-time group on bitemporal relations) it keeps exactly the record
+an as-of read at `tt = cutoff` would resolve to, so reads at or above the
+cutoff are unchanged; an as-of read *below* the persisted floor errors instead
+of silently returning a reconstruction as if it were the historical belief.
+Requires write access.
+
+The output reports how many records were dropped and the effective floor. A
+cutoff below every superseded record deletes nothing — and a no-op run does
+not raise the floor, since the floor is irreversible:
+
+```prolog
+::history_gc belief 1751328000000000
+```
+
+```
+[0, null]
+```
+
+A cutoff in the future is rejected, and the op refuses to run in a transaction
+that holds pending writes to the same relation.
 
 ### `` ::evict <REL_NAME> <KEYS> unredacted? ``
 
 Hard-deletes every record — all history — of the given keys, for data-erasure
-obligations such as GDPR. An audit row is written into a companion relation
-`mnestic_evict_audit` in the same transaction; the optional `unredacted`
-keyword records the evicted keys in that audit row rather than a redacted
-digest. Requires write access.
+obligations such as GDPR. This is the one deliberate break of append-only. The
+op returns one row per distinct key — `relation`, `key`, `rows_deleted`, `tt`
+— and writes an audit row recording the same facts into the reserved companion
+relation `mnestic_evict_audit` in the same transaction. The key marker is a
+salted hash by default, since storing the key itself would re-enshrine the
+data the eviction removes; the optional `unredacted` keyword records the
+actual keys instead. Requires write access.
+
+```prolog
+::evict belief [['pg-timeout-is-30s']] unredacted
+```
+
+```
+['belief', '["pg-timeout-is-30s"]', 3, 1783806736984312]
+```
+
+A `::history` on the evicted key now returns no rows. Duplicate keys in one
+call are deduplicated, and like `::history_gc`, the op refuses to run in a
+transaction with pending writes to the same relation.
+
+<Callout type="fork">
+  `TxTime`, the commit clock, and the `::history` / `::history_gc` / `::evict`
+  ops landed in mnestic 0.10.0 as part of bitemporality. A relation declaring
+  `TxTime` cannot be opened by upstream CozoDB builds.
+</Callout>
 
 <Attribution page="sysops.html" />

@@ -57,13 +57,13 @@ The same query can join stored relations, recurse over graph structure, and
 search a vector index by meaning — no separate systems to keep in sync.
 
 ```prolog
-# 2-hop neighbours of a seed, re-ranked by embedding distance
+# every memory reachable from a seed, re-ranked by embedding distance
 recall[to] := *recalls{ from: $seed, to }
 recall[to] := recall[via], *recalls{ from: via, to }
 
-?[memory, dist] :=
-    recall[memory],
-    ~memory:embedding{ memory | query: $cue, k: 12, ef: 80, bind_distance: dist }
+?[id, dist] :=
+    recall[id],
+    ~memory:semantic{ id | query: $cue, k: 12, ef: 80, bind_distance: dist }
 :order dist
 :limit 12
 ```

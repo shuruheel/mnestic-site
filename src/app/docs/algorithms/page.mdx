@@ -1,20 +1,82 @@
 export const metadata = {
   title: "Utilities & algorithms",
   description:
-    "Reference for the fixed-rule utilities and graph algorithms available in CozoScript, including their input relations, options, and outputs.",
+    "The complete fixed-rule catalog: utilities (Constant, ReorderSort, CSV/JSON readers, RRF, MMR) and every graph algorithm from PageRank to BudgetedTraversal, with input shapes, options, defaults, and runnable examples.",
 };
 
 # Utilities & algorithms
 
-Fixed rules in CozoScript apply utilities or algorithms.
+Fixed rules are the algorithms and utilities you apply with `<~` instead of
+`:=`. They cover what pure Datalog cannot express well — ranking within a
+group, shortest paths with output paths, community detection — and their
+results are ordinary relations, so you can join, filter, and aggregate them in
+the same query. This page is the complete catalog: for each rule, the input
+relation shape, the options with their defaults, and the output columns.
 
-The algorithms described here are only available if your distribution of Cozo
-is compiled with the `graph-algo` feature flag. Currently all prebuilt binaries
-except WASM are compiled with this flag on.
+The graph algorithms require the `graph-algo` feature. It is part of the
+default `compact` feature set, so the crates.io crate built with default
+features, the `cozo-bin` server/REPL, and the PyPI `mnestic` wheel all include
+it. The
+utilities are available in every build. You can also register custom fixed
+rules from the host language: `SimpleFixedRule` /
+`Db::register_fixed_rule` in Rust, and `register_fixed_rule` on the Python
+client.
 
-If you are using the Cozo libraries in Rust, Python or NodeJS, or if you are
-using the standalone executable, you can also easily define custom fixed rules
-in the hosting environment: see the respective documentations for how to do it.
+Examples on this page run against a small agent-memory graph: a `memory`
+relation (`id => kind, text, importance, at, v`) holding eight episodic
+memories `m1`–`m8`, and a weighted association relation
+`recalls { from, to => strength }`:
+
+```
+m1 ─0.2→ m2 ─0.6→ m3 ─0.9→ m4 ─0.85→ m5
+          └────────── 0.4 ──────────→ m5
+m6 ─0.5→ m7 ─0.7→ m8 ─────── 0.3 ───→ m5
+```
+
+Two chains of memories converge on `m5`, the decision to cap SST file sizes.
+Which memory anchors this web? One fixed rule, one Datalog rule to join the
+scores back onto the text:
+
+```prolog
+ranks[m, r] <~ PageRank(*recalls[])
+?[text, score] := ranks[m, r], *memory{id: m, text}, score = round(r * 1000) / 1000
+:order -score
+:limit 3
+```
+
+```
+text                                                        score
+'Cap SST file size at 128 MB'                               0.115
+'Slow connector queries trace to a missing tenant_id index' 0.048
+'Compaction stalls correlate with oversized SST files'      0.047
+```
+
+## How edge relations are read
+
+Most algorithms take an **edge relation** as their first input: column 0 is
+the source node, column 1 the target, and an optional column 2 the weight.
+Columns beyond those are ignored. A missing weight column means every edge
+weighs `1.0`; weights must be finite numbers, and the pathfinding and
+centrality algorithms additionally require them to be non-negative. A
+violation is an `algo::invalid_edge_weight` error everywhere except
+`ShortestPathAStar`, which assumes non-negativity but checks only for NaN
+(see [its section](#shortestpathastar)). Nodes can
+be values of any type, compared by the same identity joins use (so `1` and
+`1.0` are distinct nodes). The exceptions are `BFS`, `DFS`, `ShortestPathBFS`,
+`ShortestPathAStar` and `RandomWalk`, which walk the edge relation directly
+and can evaluate expressions against its full rows.
+
+<Callout type="fork">
+  Two hardening changes landed in mnestic 0.11.0. An **empty edge relation now
+  returns no rows** from `TopSort`, `ConnectedComponents`,
+  `StronglyConnectedComponents`, `ClusteringCoefficients`,
+  `BetweennessCentrality`, `ClosenessCentrality` and `LabelPropagation` — in
+  upstream CozoDB it panicked and aborted the process (`PageRank` already
+  returned no rows). And a graph too large for the internal 32-bit adjacency
+  (2³² or more vertices, or that many directed edge slots) is now a loud
+  `algo::graph_too_large` error instead of silently wrapping. Graph builds
+  also honor [`::kill` and `:timeout`](/docs/fork/interruptibility).
+</Callout>
 
 ## Reusing a graph across queries (mnestic 0.11.0+)
 
@@ -24,15 +86,18 @@ over the same graph, or the same algorithm repeatedly, name the graph once with
 [`::graph create`](/docs/system-ops#graph-projections) and pass it with the
 `graph:` option instead of the positional edge relation:
 
-```
-::graph create g { edges: knows, nodes: person }
-
-?[node, group] <~ ConnectedComponents(graph: 'g')
-?[node, rank]  <~ PageRank(graph: 'g', iterations: 20)
+```prolog
+::graph create assoc { edges: recalls }
 ```
 
-The projection is always fresh — writing to `knows` or `person` invalidates it —
-and it is kept in memory only, so re-create it after a restart.
+```prolog
+?[memory, rank] <~ PageRank(graph: 'assoc')
+```
+
+The projection is always fresh — writing to a source relation invalidates it —
+and it is kept in memory only, so re-create it after a restart (using a stale
+name is a loud error). See [Graph projections](/docs/fork/graph-projections)
+for the freshness protocol, the memory ceiling, and measured speedups.
 
 Supported by `ConnectedComponents`, `StronglyConnectedComponents` (`SCC`),
 `PageRank`, `ClusteringCoefficients`, `TopSort`, `BetweennessCentrality`,
@@ -45,7 +110,7 @@ remaining positional inputs shift down by one.
 `BFS`, `DFS`, `ShortestPathBFS`, `RandomWalk`, `ShortestPathAStar` and
 `DegreeCentrality` cannot use a projection: they evaluate per-tuple condition,
 heuristic and weight expressions against the edge relation, which a compressed
-adjacency does not carry. Passing `graph:` to them is an error.
+adjacency does not carry. Passing `graph:` to them is a parse error.
 
 ## Utilities
 
@@ -57,6 +122,8 @@ Returns a relation containing the data passed in. The constant rule
 `?[] <- ...` is syntax sugar for `?[] <~ Constant(data: ...)`.
 
 - `data`: A list of lists, representing the rows of the returned relation.
+  Every row must have the same length, and the rule head (if given) must match
+  that arity. An empty `data` with no explicit rule head is an error.
 
 ### ReorderSort(...)
 
@@ -74,7 +141,8 @@ Sort and then extract new columns of the passed in relation `rel`.
   Defaults to `false`.
 - `break_ties`: Whether ties should be broken, e.g. whether the first two rows
   with _identical sort keys_ should be given ordering numbers `1` and `2`
-  instead of `1` and `1`. Defaults to false.
+  instead of `1` and `1`. Defaults to `false` (a run of ties shares one number,
+  and the next distinct value resumes from the true position: `1`, `1`, `3`).
 - `skip`: How many rows to skip before producing rows. Defaults to zero.
 - `take`: How many rows at most to produce. Zero means no limit. Defaults to
   zero.
@@ -82,10 +150,22 @@ Sort and then extract new columns of the passed in relation `rel`.
   parameter `out`, will have the ordering prepended. The ordering starts at
   `1`.
 
+```prolog
+?[ord, text] <~ ReorderSort(*memory[id, kind, text, importance, at, v],
+                            out: [text], sort_by: [importance],
+                            descending: true, take: 2)
+```
+
+```
+ord  text
+1    'Chose RocksDB over sled for the write path'
+2    'Cap SST file size at 128 MB'
+```
+
 <Callout type="note">
-  This algorithm serves a similar purpose to the global `:order`, `:limit` and
+  This utility serves a similar purpose to the global `:order`, `:limit` and
   `:offset` options, but can be applied to intermediate results. Prefer the
-  global options if it is applied to the final output.
+  global options if you are ordering the final output.
 </Callout>
 
 ### CsvReader(...)
@@ -95,8 +175,10 @@ Sort and then extract new columns of the passed in relation `rel`.
 Read a CSV file from disk or an HTTP GET request and convert the result to a
 relation.
 
-This utility is not available on WASM targets. In addition, if the feature flag
-`requests` is off, only reading from local file is supported.
+Reading from `http://` or `https://` URLs requires the `requests` feature
+(part of the default `compact` set); without it, only local files work. This
+utility is not available on WASM targets (which mnestic does not currently
+ship).
 
 - `url` (required): URL for the CSV file. For local file, use
   `file://<PATH_TO_FILE>`.
@@ -104,60 +186,185 @@ This utility is not available on WASM targets. In addition, if the feature flag
   the output relation. If any type is specified as nullable and conversion to
   the specified type fails, `null` will be the result. This is more lenient
   than other functions since CSVs tend to contain lots of bad values.
-- `delimiter`: The delimiter to use when parsing the CSV file.
+- `delimiter`: The delimiter to use when parsing the CSV file. Must be a
+  single-byte string.
 - `prepend_index`: If `true`, row index will be prepended to the columns.
 - `has_headers`: Whether the CSV file has headers. The reader will not
-  interpret the header in any way but will instead simply ignore it.
+  interpret the header in any way but will instead ignore it.
 
 ### JsonReader(...)
 
 `JsonReader(url: ..., fields: [...], json_lines: true, null_if_absent: false, prepend_index: false)`
 
-Read a JSON file for disk or an HTTP GET request and convert the result to a
-relation.
-
-This utility is not available on WASM targets. In addition, if the feature flag
-`requests` is off, only reading from local file is supported.
+Read a JSON file from disk or an HTTP GET request and convert the result to a
+relation. The same feature and platform restrictions as `CsvReader` apply.
 
 - `url` (required): URL for the JSON file. For local file, use
   `file://<PATH_TO_FILE>`.
 - `fields` (required): A list of field names, for extracting fields from JSON
-  arrays into the relation.
+  objects into the relation.
 - `json_lines`: If `true`, parse the file as lines of JSON objects, each line
-  containing a single object; if false, parse the file as a JSON array
+  containing a single object; if `false`, parse the file as a JSON array
   containing many objects.
 - `null_if_absent`: If `true` and a requested field is absent, will output
   `null` in its place. If `false` and the requested field is absent, will throw
   an error.
 - `prepend_index`: If `true`, row index will be prepended to the columns.
 
+### ReciprocalRankFusion(...)
+
+`ReciprocalRankFusion(lists[list_id, item, score], k: 60, descending: true, detailed: false)`
+
+<Callout type="fork">
+  Specific to mnestic — `ReciprocalRankFusion` and `MaximalMarginalRelevance`
+  landed in 0.8.0; the `detailed:` long format in 0.8.4. They are the Datalog
+  primitives beneath the one-call `hybrid_search` API — see
+  [Hybrid retrieval](/docs/fork/hybrid-retrieval).
+</Callout>
+
+Fuses several ranked result lists (for example a vector leg, a full-text leg,
+and a graph leg) into one ranking: each item scores
+`Σ 1/(k + rank_in_list)` over the lists it appears in. Datalog can sum
+reciprocal contributions on its own, but it cannot assign a rank position
+_within_ a group — that intra-list ranking is what this rule supplies.
+
+- Input: exactly three columns `[list_id, item, score]`. Rows are grouped by
+  `list_id` and ranked within each list by `score`. An item appearing more
+  than once in a list keeps its best score. A non-finite score (NaN or ±inf)
+  is an error.
+- `k`: The rank-bias damping constant. Defaults to `60`; values below `0` are
+  clamped to `0`.
+- `descending`: Whether a higher score is better within a list. Defaults to
+  `true`. Mixed-direction lists (e.g. distances and relevances) should be
+  normalised by the caller, or fused in separate invocations.
+- `detailed`: Defaults to `false`. Must be a constant boolean, since it
+  changes the output arity.
+- _Returns_: Pairs `[item, fused_score]`. With `detailed: true`, instead one
+  row per (item, contributing list): `[item, fused_score, list_id, leg_rank,
+  leg_score]`, from which the fused score reconstructs exactly.
+
+```prolog
+candidates[list, item, score] <- [
+    ['semantic', 'm4', 0.95], ['semantic', 'm3', 0.85], ['semantic', 'm5', 0.70],
+    ['text',     'm4', 8.1],  ['text',     'm3', 6.3],  ['text',     'm7', 2.2],
+]
+fused[item, s] <~ ReciprocalRankFusion(candidates[], k: 60)
+?[item, score] := fused[item, s], score = round(s * 10000) / 10000
+:order -score
+```
+
+```
+item   score
+'m4'   0.0328
+'m3'   0.0323
+'m5'   0.0159
+'m7'   0.0159
+```
+
+`m4` ranks first in both lists and `m3` second in both; `m5` and `m7` each
+appear in only one list, so they tie on a single third-rank contribution.
+
+### RRF(...)
+
+`RRF(...)`
+
+See [`ReciprocalRankFusion`](#reciprocalrankfusion).
+
+### MaximalMarginalRelevance(...)
+
+`MaximalMarginalRelevance(candidates[item, relevance, vector], lambda: 0.5, k: 0)`
+
+<Callout type="fork">
+  Specific to mnestic (0.8.0). See
+  [Hybrid retrieval](/docs/fork/hybrid-retrieval) for how it composes with
+  `ReciprocalRankFusion` and the one-call API.
+</Callout>
+
+Re-ranks a candidate set to balance relevance against diversity, so a result
+list is not dominated by near-duplicates. At each step it greedily selects the
+candidate maximising `λ·relevance − (1−λ)·max cosine_sim` to the
+already-selected set. The diversity term uses the true maximum cosine
+similarity, so anti-correlated candidates earn diversity credit rather than
+being clamped at zero.
+
+- Input: exactly three columns `[item, relevance, vector]`. `relevance` must
+  be a finite number and `vector` a vector value; all vectors must share one
+  dimension (a mismatch is an error, not a crash).
+- `lambda`: `1` is pure relevance, `0` pure diversity. Defaults to `0.5`,
+  clamped to `[0, 1]`.
+- `k`: How many candidates to select. Defaults to `0`, meaning all.
+- _Returns_: Pairs `[item, rank]` in selection order, `rank` starting at `1`.
+
+Here the compaction memories `m3`, `m4`, `m5` embed close together while `m7`
+(the connector timeout) sits elsewhere. Pure relevance would return the three
+near-duplicates first; MMR lets `m7` jump the queue:
+
+```prolog
+cands[item, relevance, v] := *memory{id: item, importance: relevance, v},
+                             is_in(item, ['m3', 'm4', 'm5', 'm7'])
+?[item, rank] <~ MaximalMarginalRelevance(cands[], lambda: 0.5, k: 3)
+:order rank
+```
+
+```
+item   rank
+'m5'   1
+'m7'   2
+'m4'   3
+```
+
+### MMR(...)
+
+`MMR(...)`
+
+See [`MaximalMarginalRelevance`](#maximalmarginalrelevance).
+
 ## Connectedness algorithms
 
 ### ConnectedComponents(...)
 
-`ConnectedComponents(edges[from, to])`
+`ConnectedComponents(edges[from, to], nodes?[idx])`
 
 Computes the
 [connected components](<https://en.wikipedia.org/wiki/Connected_component_(graph_theory)>)
-of a graph with the provided edges.
+of a graph with the provided edges, treating them as undirected (weak
+connectivity).
 
-- _Returns_: Pairs containing the node index, and its component index.
+- `nodes`: An optional second relation naming vertices. A vertex appearing
+  here but in no edge gets a singleton component of its own; without it the
+  vertex set is exactly the set of edge endpoints.
+- _Returns_: Pairs containing the node, and its component index. The component
+  indices themselves are arbitrary labels.
 
-### StronglyConnectedComponent(...)
+The two `recalls` chains meet at `m5`, so the whole graph is one component:
 
-`StronglyConnectedComponent(edges[from, to])`
+```prolog
+cc[memory, comp] <~ ConnectedComponents(*recalls[])
+?[comp, count(memory)] := cc[memory, comp]
+```
+
+```
+comp  count(memory)
+0     8
+```
+
+### StronglyConnectedComponents(...)
+
+`StronglyConnectedComponents(edges[from, to], nodes?[idx])`
 
 Computes the
 [strongly connected components](https://en.wikipedia.org/wiki/Strongly_connected_component)
-of a graph with the provided edges.
+of a graph with the provided edges, interpreted as directed. Nodes on no
+directed cycle form singleton components. The optional `nodes` relation works
+as in `ConnectedComponents`.
 
-- _Returns_: Pairs containing the node index, and its component index.
+- _Returns_: Pairs containing the node, and its component index.
 
 ### SCC(...)
 
 `SCC(...)`
 
-See [`StronglyConnectedComponent`](#stronglyconnectedcomponent).
+See [`StronglyConnectedComponents`](#stronglyconnectedcomponents).
 
 ### MinimumSpanningForestKruskal(...)
 
@@ -165,38 +372,62 @@ See [`StronglyConnectedComponent`](#stronglyconnectedcomponent).
 
 Runs
 [Kruskal's algorithm](https://en.wikipedia.org/wiki/Kruskal%27s_algorithm) on
-the provided edges to compute a
-[minimum spanning forest](https://en.wikipedia.org/wiki/Minimum_spanning_tree).
-Negative weights are fine.
+the provided edges (treated as undirected) to compute a
+[minimum spanning forest](https://en.wikipedia.org/wiki/Minimum_spanning_tree):
+one spanning tree per connected component. Negative weights are fine.
 
-- _Returns_: Triples containing the from-node, the to-node, and the cost from
-  the tree root to the to-node. Which nodes are chosen to be the roots are
-  non-deterministic. Multiple roots imply the graph is disconnected.
+- _Returns_: Triples containing the from-node, the to-node, and **the weight
+  of that tree edge**. Since the graph is treated as undirected, the
+  orientation of each reported edge is arbitrary.
 
 ### MinimumSpanningTreePrim(...)
 
 `MinimumSpanningTreePrim(edges[from, to, weight?], starting?[idx])`
 
 Runs [Prim's algorithm](https://en.wikipedia.org/wiki/Prim%27s_algorithm) on
-the provided edges to compute a
+the provided edges (treated as undirected) to compute a
 [minimum spanning tree](https://en.wikipedia.org/wiki/Minimum_spanning_tree).
-`starting` should be a relation producing exactly one node index as the
-starting node. Only the connected component of the starting node is returned.
-If `starting` is omitted, which component is returned is arbitrary.
+The first row of `starting` names the starting node; only the connected
+component containing it is spanned. Supplying an empty `starting` relation, or
+a starting node that appears in no edge, is an error. If `starting` is
+omitted, which component gets spanned is arbitrary.
 
-- _Returns_: Triples containing the from-node, the to-node, and the cost from
-  the tree root to the to-node.
+- _Returns_: Triples containing the from-node, the to-node, and **the weight
+  of that tree edge** (the from-node is the side already in the tree).
 
 ### TopSort(...)
 
 `TopSort(edges[from, to])`
 
 Performs
-[topological sorting](https://en.wikipedia.org/wiki/Topological_sorting) on the
-graph with the provided edges. The graph is required to be connected in the
-first place.
+[topological sorting](https://en.wikipedia.org/wiki/Topological_sorting) on
+the graph with the provided edges, using Kahn's algorithm. Disconnected graphs
+are fine: all components are sorted into the one output sequence.
 
-- _Returns_: Pairs containing the sort order and the node index.
+- _Returns_: Pairs containing the sort position (starting at `0`) and the
+  node.
+
+<Callout type="warning">
+  Nodes that sit on a directed cycle, and any node reachable only through
+  one, are **silently omitted** from the output — a cyclic input returns
+  fewer rows rather than raising an error. If you need to detect cycles,
+  compare the output row count with the node count, or run
+  `StronglyConnectedComponents` first.
+</Callout>
+
+```prolog
+edges[from, to] <- [['a', 'b'], ['b', 'c'], ['c', 'a'], ['c', 'd'], ['x', 'y']]
+?[position, node] <~ TopSort(edges[])
+```
+
+```
+position  node
+0         'x'
+1         'y'
+```
+
+`a`, `b` and `c` sit on the cycle; `d` is on no cycle itself but is reachable
+only through it, so of the six nodes only the disjoint pair survives.
 
 ## Pathfinding algorithms
 
@@ -210,22 +441,66 @@ unit weight. Ties will be broken in an unspecified way. If you need anything
 more complicated, use one of the other algorithms below.
 
 - _Returns_: Triples containing the starting node, the goal, and a shortest
+  path. An unreachable goal still produces a row, with `null` in place of the
   path.
 
 ### ShortestPathDijkstra(...)
 
-`ShortestPathDijkstra(edges[from, to, weight?], starting[idx], goals[idx], undirected: false, keep_ties: false)`
+`ShortestPathDijkstra(edges[from, to, weight?], starting[idx], goals?[idx], undirected: false, keep_ties: false)`
 
 Runs [Dijkstra's algorithm](https://en.wikipedia.org/wiki/Dijkstra%27s_algorithm)
 to determine the shortest paths between the `starting` nodes and the `goals`.
-Weights, if given, must be non-negative.
+Weights, if given, must be non-negative. If `goals` is omitted, a row is
+returned for **every node of the graph**: reachable nodes carry their lowest
+cost (the starting node itself at cost zero), and unreachable nodes come back
+with an infinite cost and an empty list in place of the path — filter with
+`is_finite(cost)` if you only want the reachable ones. Starting or goal nodes
+that appear in no edge are silently skipped.
 
 - `undirected`: Whether the graph should be interpreted as undirected. Defaults
   to `false`.
 - `keep_ties`: Whether to return all paths with the same lowest cost. Defaults
-  to `false`, in which any one path of the lowest cost could be returned.
+  to `false`, in which case any one path of the lowest cost could be returned.
 - _Returns_: 4-tuples containing the starting node, the goal, the lowest cost,
   and a path with the lowest cost.
+
+```prolog
+hops[from, to] := *recalls{from, to}
+starting[] <- [['m1']]
+goals[] <- [['m5']]
+?[start, goal, cost, path] <~ ShortestPathDijkstra(hops[], starting[], goals[])
+```
+
+```
+start  goal  cost  path
+'m1'   'm5'  2.0   ['m1', 'm2', 'm5']
+```
+
+Omitting `goals` asks for the whole distance map from each start. From `m6`
+the connector chain is reachable, but nothing upstream of it is:
+
+```prolog
+hops[from, to] := *recalls{from, to}
+starting[] <- [['m6']]
+?[start, goal, cost, path] <~ ShortestPathDijkstra(hops[], starting[])
+:order cost, goal
+```
+
+```
+start  goal  cost      path
+'m6'   'm6'  0.0       ['m6']
+'m6'   'm7'  1.0       ['m6', 'm7']
+'m6'   'm8'  2.0       ['m6', 'm7', 'm8']
+'m6'   'm5'  3.0       ['m6', 'm7', 'm8', 'm5']
+'m6'   'm1'  INFINITY  []
+'m6'   'm2'  INFINITY  []
+'m6'   'm3'  INFINITY  []
+'m6'   'm4'  INFINITY  []
+```
+
+The infinite cost is a real float value (it arrives as the string
+`"INFINITY"` over the JSON API), so `is_finite(cost)` drops the unreachable
+rows.
 
 ### KShortestPathYen(...)
 
@@ -235,33 +510,45 @@ Runs [Yen's algorithm](https://en.wikipedia.org/wiki/Yen%27s_algorithm) (backed
 by Dijkstra's algorithm) to find the k-shortest paths between nodes in
 `starting` and nodes in `goals`.
 
-- `k` (required): How many routes to return for each start-goal pair.
+- `k` (required): How many routes to return for each start-goal pair. Fewer
+  are returned when fewer distinct paths exist.
 - `undirected`: Whether the graph should be interpreted as undirected. Defaults
   to `false`.
 - _Returns_: 4-tuples containing the starting node, the goal, the cost, and a
   path with the cost.
+
+```prolog
+hops[from, to] := *recalls{from, to}
+starting[] <- [['m1']]
+goals[] <- [['m5']]
+?[start, goal, cost, path] <~ KShortestPathYen(hops[], starting[], goals[], k: 3)
+```
+
+```
+start  goal  cost  path
+'m1'   'm5'  2.0   ['m1', 'm2', 'm5']
+'m1'   'm5'  4.0   ['m1', 'm2', 'm3', 'm4', 'm5']
+```
+
+Only two rows despite `k: 3`: the graph has exactly two distinct paths from
+`m1` to `m5`.
 
 ### BudgetedTraversal(...)
 
 `BudgetedTraversal(edges[from, to, weight?], seeds[node, initial_cost?], gate?[node, ...], max_nodes: expr, max_cost: expr, max_depth: expr, undirected: false, admit: expr)`
 
 <Callout type="fork">
-  Specific to mnestic 0.12.0 — not present in upstream CozoDB.
+  Specific to mnestic 0.12.0 — not present in upstream CozoDB. It is the
+  context-fill primitive: "give me the N cheapest nodes around what search
+  found, with the paths that reached them", in one call. Works with
+  [cached graph projections](/docs/fork/graph-projections).
 </Callout>
 
 Runs a cheapest-first expansion (multi-source Dijkstra) from the `seeds` over
 non-negative edge weights, stopping once `max_nodes` distinct nodes have been
-admitted — the budgeted context-fill primitive: the N cheapest nodes around
-what search found, with the paths that reached them. Accepts
-`graph: 'name'` in place of the positional `edges` relation (the remaining
-positional inputs shift down by one) and produces byte-identical output in
-either form.
-
-```
-context[node, cost, parent, depth] <~ BudgetedTraversal(
-    graph: 'knows', seeds[n], *live[uid, ok],
-    admit: ok, max_nodes: 200, max_cost: 12.0)
-```
+admitted. Accepts `graph: 'name'` in place of the positional `edges` relation
+(the remaining positional inputs shift down by one) and produces byte-identical
+output in either form.
 
 - `edges`: the positional edge relation `[from, to, weight?]`. A missing
   weight column means every edge weighs `1.0`. Weights must be finite and
@@ -272,7 +559,7 @@ context[node, cost, parent, depth] <~ BudgetedTraversal(
   `initial_cost`, a finite number ≥ 0 (defaults to `0.0` when absent; a
   non-numeric value there is an error). Duplicate seed rows keep the minimum
   initial cost; columns beyond the first two are ignored. A seed absent from
-  the graph is still admitted and emitted — it simply has no out-edges.
+  the graph is still admitted and emitted — it has no out-edges.
 - `gate` (optional): a relation whose **first column is the node id** and
   whose remaining columns feed `admit:`. When given, a node (seed or reached)
   is admissible only if some gate row for it satisfies `admit:` (bare
@@ -292,8 +579,9 @@ context[node, cost, parent, depth] <~ BudgetedTraversal(
 - `undirected`: whether to traverse each edge in both directions. Defaults to
   `false`.
 - `admit`: an expression evaluated against each probed gate row, with
-  bindings from the `gate` input's columns. Requires the `gate` relation —
-  setting `admit:` without one is an error.
+  bindings resolved against the `gate` input's column names (keep them
+  aligned). Requires the `gate` relation — setting `admit:` without one is an
+  error.
 - _Returns_: 4-tuples `(node, cost, parent, depth)` — the settled
   shortest-path-tree fragment, one row per admitted node. Roots emit
   `parent = null` and `depth = 0`; `cost` is a float. Output is
@@ -302,6 +590,48 @@ context[node, cost, parent, depth] <~ BudgetedTraversal(
   relaxation — independent of input form or iteration order.
 
 The traversal honors `:timeout` and `::kill`.
+
+To fill context around the RocksDB decision `m2`, project the association
+strengths into distances (stronger recall ⇒ cheaper hop) and ask for the four
+cheapest memories:
+
+```prolog
+dist[from, to, d] := *recalls{from, to, strength}, d = 10 - strength * 10
+seeds[] <- [['m2']]
+?[node, cost, parent, depth] <~ BudgetedTraversal(dist[], seeds[], max_nodes: 4)
+```
+
+```
+node  cost  parent  depth
+'m2'  0.0   null    0
+'m3'  4.0   'm2'    1
+'m4'  5.0   'm3'    2
+'m5'  6.0   'm2'    1
+```
+
+`m5` is reached at cost 6.0 through the direct `m2 → m5` edge rather than the
+chain through `m4` (which would cost 6.5), and the `parent` column records
+that witness. Now gate the same expansion on important memories only,
+passing `memory` itself as the gate (its first column is the id):
+
+```prolog
+dist[from, to, d] := *recalls{from, to, strength}, d = 10 - strength * 10
+seeds[] <- [['m2']]
+?[node, cost, parent, depth] <~ BudgetedTraversal(
+    dist[], seeds[], *memory[id, kind, text, importance, at, v],
+    admit: importance >= 0.75, max_nodes: 4)
+```
+
+```
+node  cost  parent  depth
+'m2'  0.0   null    0
+'m5'  6.0   'm2'    1
+```
+
+`m3` (importance 0.7) is gated out, and because a gated-out node never
+bridges, `m4` behind it is not reached either — even though `m4` itself would
+pass the gate. Two rows come back despite the budget of four: the admissible
+region is exhausted.
 
 ### BreadthFirstSearch(...)
 
@@ -314,7 +644,8 @@ to all of `nodes`, which may be quite a lot to calculate.
 - `condition` (required): The stopping condition, will be evaluated with the
   bindings given to `nodes`. Should evaluate to a boolean, with `true`
   indicating an acceptable answer was found.
-- `limit`: How many answers to produce for each starting nodes. Defaults to 1.
+- `limit`: How many answers to produce **in total** (not per starting node)
+  before the search stops. Defaults to 1.
 - _Returns_: Triples containing the starting node, the answer node, and the
   found path connecting them.
 
@@ -335,7 +666,8 @@ to all of `nodes`, which may be quite a lot to calculate.
 - `condition` (required): The stopping condition, will be evaluated with the
   bindings given to `nodes`. Should evaluate to a boolean, with `true`
   indicating an acceptable answer was found.
-- `limit`: How many answers to produce for each starting nodes. Defaults to 1.
+- `limit`: How many answers to produce **in total** (not per starting node)
+  before the search stops. Defaults to 1.
 - _Returns_: Triples containing the starting node, the answer node, and the
   found path connecting them.
 
@@ -354,25 +686,28 @@ Computes the shortest path from every node in `starting` to every node in
 [A\* algorithm](https://en.wikipedia.org/wiki/A*_search_algorithm).
 
 `edges` are interpreted as directed, weighted edges with non-negative weights.
+Unlike the other weighted algorithms, non-negativity is assumed rather than
+checked: only NaN weights are rejected, and a negative weight is silently
+accepted and can produce incorrect paths.
 
 - `heuristic` (required): The search heuristic expression. It will be evaluated
   with the bindings from `goals` and `nodes`. It should return a number which is
   a lower bound of the true shortest distance from a node to the goal node. If
   the estimate is not a valid lower-bound, i.e. it over-estimates, the results
   returned may not be correct.
-- _Returns_: 4-tuples containing the starting node index, the goal node index,
-  the lowest cost, and a path with the lowest cost.
+- _Returns_: 4-tuples containing the starting node, the goal node, the lowest
+  cost, and a path with the lowest cost.
 
 <Callout type="note">
-  The performance of A\* star algorithm heavily depends on how good your
+  The performance of the A\* algorithm heavily depends on how good your
   heuristic function is. Passing in `0` as the estimate is always valid, but
   then you really should be using Dijkstra's algorithm.
 
   Good heuristics usually come about from a metric in the ambient space in which
   your data live, e.g. spherical distance on the surface of a sphere, or
-  Manhattan distance on a grid. `Func.Math.haversine_deg_input` could be helpful
-  for the spherical case. Note that you must use the correct units for the
-  distance.
+  Manhattan distance on a grid. The `haversine_deg_input` function could be
+  helpful for the spherical case. Note that you must use the correct units for
+  the distance.
 
   Providing a heuristic that is not guaranteed to be a lower-bound _might_ be
   acceptable if you are fine with inaccuracies. The errors in the answers are
@@ -383,13 +718,14 @@ Computes the shortest path from every node in `starting` to every node in
 
 ### ClusteringCoefficients(...)
 
-`ClusteringCoefficients(edges[from, to, weight?])`
+`ClusteringCoefficients(edges[from, to])`
 
 Computes the
 [clustering coefficients](https://en.wikipedia.org/wiki/Clustering_coefficient)
-of the graph with the provided edges.
+of the graph with the provided edges, treated as undirected. Any columns after
+the first two are ignored.
 
-- _Returns_: 4-tuples containing the node index, the clustering coefficient, the
+- _Returns_: 4-tuples containing the node, the clustering coefficient, the
   number of triangles attached to the node, and the total degree of the node.
 
 ### CommunityDetectionLouvain(...)
@@ -406,12 +742,13 @@ the graph with the provided edges, optionally non-negatively weighted.
 - `delta`: How much the
   [modularity](<https://en.wikipedia.org/wiki/Modularity_(networks)>) has to
   change before a step in the algorithm is considered to be an improvement.
+  Defaults to 0.0001.
 - `keep_depth`: How many levels in the hierarchy of communities to keep in the
   final result. If omitted, all levels are kept.
-- _Returns_: Pairs containing the label for a community, and a node index
+- _Returns_: Pairs containing the label for a community, and a node
   belonging to the community. Each label is a list of integers with maximum
   length constrained by the parameter `keep_depth`. This list represents the
-  hierarchy of sub-communities containing the list.
+  hierarchy of sub-communities containing the node.
 
 ### LabelPropagation(...)
 
@@ -425,34 +762,56 @@ on the graph with the provided edges, optionally weighted.
   to `false`.
 - `max_iter`: The maximum number of iterations to run. Defaults to 10.
 - _Returns_: Pairs containing the integer label for a community, and a node
-  index belonging to the community.
+  belonging to the community.
 
 ## Centrality measures
 
 ### DegreeCentrality(...)
 
-`DegreeCentrality(edges[from, to])`
+`DegreeCentrality(edges[from, to], nodes?[idx])`
 
 Computes the degree centrality of the nodes in the graph with the given edges.
 The computation is trivial, so this should be your first thing to try when
 exploring new data.
 
-- _Returns_: 4-tuples containing the node index, the total degree (how many
+- `nodes`: An optional second relation naming vertices; a vertex appearing
+  here but in no edge is reported with all-zero degrees rather than dropped.
+- _Returns_: 4-tuples containing the node, the total degree (how many
   edges involve this node), the out-degree (how many edges point away from this
   node), and the in-degree (how many edges point to this node).
 
+```prolog
+?[memory, total, outdeg, indeg] <~ DegreeCentrality(*recalls[])
+:order -total
+:limit 2
+```
+
+```
+memory  total  outdeg  indeg
+'m2'    3      2       1
+'m5'    3      0       3
+```
+
 ### PageRank(...)
 
-`PageRank(edges[from, to], nodes[idx]?, undirected: false, theta: 0.85, epsilon: 0.0001, iterations: 20)`
+`PageRank(edges[from, to], nodes?[idx], undirected: false, theta: 0.85, epsilon: 0.0001, iterations: 20)`
 
 Computes the [PageRank](https://en.wikipedia.org/wiki/PageRank) from the given
 graph with the provided edges.
 
-- `nodes`: An optional second relation naming the vertices (mnestic 0.11.0+).
-  A vertex appearing here but in no edge becomes a real degree-0 vertex: it is
-  ranked, and because it enters `N`, **every other rank changes too**. Without
-  it the vertex set is exactly the set of edge endpoints. Cannot be combined
-  with `graph:` — declare the vertices on the projection with `nodes:` instead.
+<Callout type="fork">
+  **Results changed in mnestic 0.11.0:** the default `iterations` is now 20,
+  up from upstream's 10 — a default that is measurably non-convergent at the
+  default `epsilon`. **Pass `iterations: 10` to restore the old numbers.** The
+  optional `nodes` relation and the non-convergence warning also landed in
+  0.11.0.
+</Callout>
+
+- `nodes`: An optional second relation naming the vertices. A vertex appearing
+  here but in no edge becomes a real degree-0 vertex: it is ranked, and because
+  it enters `N`, **every other rank changes too**. Without it the vertex set is
+  exactly the set of edge endpoints. Cannot be combined with `graph:` —
+  declare the vertices on the projection with `nodes:` instead.
 - `undirected`: Whether the graph should be interpreted as undirected. Defaults
   to `false`.
 - `theta`: A number between 0 and 1 indicating how much weight in the PageRank
@@ -462,9 +821,8 @@ graph with the provided edges.
   considered an improvement. Defaults to 0.0001. Setting it to `0.0` disables
   the convergence test, meaning "run exactly `iterations`".
 - `iterations`: The maximum number of iterations to run; fewer are run if
-  convergence is reached. **Defaults to 20 since mnestic 0.11.0** (previously
-  10, which is measurably non-convergent at the default `epsilon`). A warning is
-  logged when this cap stops the run short of `epsilon`.
+  convergence is reached. Defaults to 20. A warning is logged when this cap
+  stops the run short of `epsilon`.
 - _Returns_: Pairs containing the node label and its PageRank.
 
 ### ClosenessCentrality(...)
@@ -473,12 +831,12 @@ graph with the provided edges.
 
 Computes the
 [closeness centrality](https://en.wikipedia.org/wiki/Closeness_centrality) of
-the graph. The input relation represent edges connecting node indices which are
-optionally weighted.
+the graph. The input relation represents edges connecting nodes, optionally
+weighted (weights must be non-negative).
 
 - `undirected`: Whether the edges should be interpreted as undirected. Defaults
   to `false`.
-- _Returns_: Node index together with its centrality.
+- _Returns_: Node together with its centrality.
 
 ### BetweennessCentrality(...)
 
@@ -486,12 +844,12 @@ optionally weighted.
 
 Computes the
 [betweenness centrality](https://en.wikipedia.org/wiki/Betweenness_centrality)
-of the graph. The input relation represent edges connecting node indices which
-are optionally weighted.
+of the graph. The input relation represents edges connecting nodes, optionally
+weighted (weights must be non-negative).
 
 - `undirected`: Whether the edges should be interpreted as undirected. Defaults
   to `false`.
-- _Returns_: Node index together with its centrality.
+- _Returns_: Node together with its centrality.
 
 <Callout type="warning">
   `BetweennessCentrality` is very expensive for medium to large graphs. If
@@ -503,7 +861,7 @@ are optionally weighted.
 
 ### RandomWalk(...)
 
-`RandomWalk(edges[from, to, ...], nodes[idx, ...], starting[idx], steps: 10, weight?: expr, iterations: 1)`
+`RandomWalk(edges[from, to, ...], nodes[idx, ...], starting[idx], steps: expr, weight?: expr, iterations: 1)`
 
 Performs random walk on the graph with the provided edges and nodes, starting at
 the nodes in `starting`.
@@ -516,7 +874,9 @@ the nodes in `starting`.
   weight of the given choice of edge to follow. If omitted, which edge to follow
   is chosen uniformly.
 - `iterations`: How many times walking is repeated for each starting node.
-- _Returns_: Triples containing a numerical index for the walk, the starting
-  node, and the path followed.
+  Defaults to 1.
+- _Returns_: Triples containing a numerical index for the walk (counting up
+  across all starting nodes and iterations), the starting node, and the path
+  followed.
 
 <Attribution page="algorithms.html" />

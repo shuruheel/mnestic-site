@@ -1,0 +1,293 @@
+export const metadata = {
+  title: "Provenance semirings",
+  description:
+    "mnestic opens Datalog recursion to provenance-style algebras: min_cost_k returns the k cheapest derivations per answer with their evidence chains, register_custom_aggr admits your own combines into recursion, and :reconcile revises derived beliefs without falsifying history.",
+};
+
+# Provenance semirings
+
+A recursive Datalog rule does two separable things. The arithmetic in the body
+says how a single derivation *accumulates* — add costs, multiply confidences,
+append evidence. The aggregation in the head says how competing derivations
+*merge* — keep the cheapest, the likeliest, the k best. Provenance-semiring
+theory names that pair ⊗ and ⊕, and its central promise is that the same rules
+can compute existence, cost, confidence, or evidence: you swap the algebra, not
+the logic. Upstream CozoDB fixes the merge half to a closed list of eleven
+[semi-lattice aggregations](/docs/aggregations#semi-lattice-aggregations).
+mnestic opens it.
+
+<Callout type="fork">
+  This entire page is specific to mnestic. `register_custom_aggr`, the
+  bounded-meet category with `min_cost_k`, annotation persistence, and
+  `:reconcile` landed in 0.10.0; dominance (antichain) registration in 0.10.1;
+  the built-in skylines `pareto_min` / `pareto_max` in 0.11.1.
+</Callout>
+
+## The algebra is already in your rules
+
+The examples below run on an agent's memory graph, whose weighted association
+edges `recalls` (`from, to => strength`) link episodic memories `m1`–`m8`.
+Treat each strength as an independent link probability and ask how confidently
+each memory follows from `m2`, the decision to use RocksDB: the merge is `max`
+— keep the most confident derivation — and the accumulate is multiplication in
+the body:
+
+```prolog
+conf[t, max(c)] := *recalls{from: 'm2', to: t, strength}, c = strength
+conf[t, max(c)] := conf[m, p], *recalls{from: m, to: t, strength}, c = p * strength
+
+?[t, confidence] := conf[t, c], confidence = round(c * 1000) / 1000
+
+:order -confidence
+```
+
+```
+t     confidence
+m3    0.6
+m4    0.54
+m5    0.459
+```
+
+This much is inherited machinery: `max` recurses safely precisely because it
+is an absorptive merge — folding in a value it has already seen changes
+nothing, so the fixpoint converges. (Treat the score as a ranking signal, not
+a calibrated probability; floating-point products carry noise, so round for
+display.) The limitation is what the winning number hides. For `m5`, 0.459 is
+the chain through the compaction incident, which beat the direct association
+at 0.4 — and the losing derivation, and the evidence for both, are gone.
+Classical aggregation collapses each group to one row; the interesting
+provenance questions begin where that stops being acceptable.
+
+## The k best derivations, with the evidence
+
+mnestic 0.10.0 adds a third aggregation category,
+[bounded-meet](/docs/aggregations#bounded-meet-aggregations-mnestic), that
+keeps a bounded **set** of rows per group, with the engine enforcing the bound
+at every step of the fixpoint. The shipped instance,
+[`min_cost_k`](/docs/aggregations#min_cost_kpayload-cost-k), written
+`min_cost_k([payload, cost], k)`, keeps the k cheapest packs per group and
+emits each survivor as its own row, so "the k best derivations" and "the
+evidence for each" become the same answer.
+
+The agent keeps re-surfacing `m5` — the decision to cap SST files at 128 MB.
+Which association trails justify recalling it? Walk `recalls` backwards from
+`m5`, costing an edge at `1 - strength`: the first rule seeds the direct edges
+into `m5`, the second prepends a predecessor and adds its edge cost, and the
+head keeps the two cheapest trails per source, each carrying its full path as
+the payload:
+
+```prolog
+trails[s, min_cost_k(pack, 2)] := *recalls{from: s, to: 'm5', strength},
+                                  pack = [[s, 'm5'], 1 - strength]
+trails[s, min_cost_k(pack, 2)] := trails[m, p], *recalls{from: s, to: m, strength},
+                                  pack = [concat([s], first(p)), (1 - strength) + last(p)]
+
+?[from, trail, cost] := trails[from, pack], trail = first(pack),
+                        cost = round(last(pack) * 100) / 100, cost <= 0.7
+
+:order cost, from
+```
+
+```
+from    trail                       cost
+m4      ['m4', 'm5']                0.15
+m3      ['m3', 'm4', 'm5']          0.25
+m2      ['m2', 'm5']                0.6
+m2      ['m2', 'm3', 'm4', 'm5']    0.65
+m8      ['m8', 'm5']                0.7
+```
+
+`m2` arrives twice: the direct shortcut and the chain through the compaction
+incident are competing derivations, and `min_cost_k` keeps both, cheapest
+first, instead of electing a winner. Where the `max` query compressed that
+relationship into one anonymous number, this one hands you the trails (the
+`cost <= 0.7` guard drops the weaker ones from `m7`, `m1`, and `m6`). Without
+the aggregate this answer shape means a path search per answer in application
+code; here it is one rule pair, composable with the rest of the query.
+
+<Callout type="note">
+  A better derivation arriving later *displaces* a worse one, so bounded-meet
+  recursion is a guarded approximation rather than a classical fixpoint: the
+  final k-set holds the k best candidates that ever surfaced, and an evaluation
+  that keeps improving some k-set (a cost-decreasing cycle) dies with a loud
+  error after 4096 changed epochs instead of running forever. Cycles whose
+  total cost is **strictly positive** settle, because a lap always makes a pack
+  more expensive. A zero-cost cycle is not safe: packs of equal cost are still
+  ordered by their payload, so a lap can keep displacing the incumbent and trip
+  the cap. Watch for that where a cost function bottoms out — `1 - strength` is
+  exactly 0.0 at strength 1.0. The
+  [head-position rules](/docs/aggregations#bounded-meet-aggregations-mnestic)
+  and the [error text](/docs/aggregations#min_cost_kpayload-cost-k) are on the
+  aggregations page.
+</Callout>
+
+## The family
+
+| Primitive | Since | Reachable from |
+| --- | --- | --- |
+| [`min_cost_k`](/docs/aggregations#min_cost_kpayload-cost-k) — k cheapest derivations per group, with payloads | 0.10.0 | every binding |
+| [`pareto_min` / `pareto_max`](/docs/fork/skyline-aggregates) — built-in Pareto frontiers | 0.11.1 | every binding |
+| [`register_custom_aggr`](#registering-your-own-combine) — host-defined combines, recursion-safe when meet | 0.10.0 | Rust hosts only |
+| [`register_bounded_meet_aggr`](/docs/fork/skyline-aggregates) — dominance under your own partial order | 0.10.1 | Rust hosts only |
+| [`:reconcile`](#revising-derived-beliefs-reconcile) — recompute-based belief revision | 0.10.0 | every binding |
+
+Reach follows from mechanism. The CozoScript aggregates and `:reconcile`
+travel through plain `run_script`, so the Python wheel, `cozo-bin`, and
+everything built on them get them with no extra wiring. The two `register_*`
+calls take Rust closures that live in your process; they deliberately do not
+cross the Python or served surfaces.
+
+The skyline half of the family answers a different question than `min_cost_k`:
+when "better" is multi-dimensional — fewer hops *and* higher confidence, say —
+no single cost ranks the candidates, and `pareto_min` / `pareto_max` keep the
+whole non-dominated frontier per group instead of forcing a winner.
+`register_bounded_meet_aggr` generalizes that to a strict partial order you
+define in Rust. Both ride the same bounded-meet machinery as `min_cost_k` and
+are covered in depth on [Skyline aggregates](/docs/fork/skyline-aggregates).
+
+## Registering your own combine
+
+The eleven built-in merges cover orderings the engine could anticipate.
+`register_custom_aggr` opens the slot to the ones it could not — a fuzzy
+t-norm, an interval envelope, a lattice of security labels, any merge your
+domain defines:
+
+```rust
+pub fn register_custom_aggr<F>(&self, name: String, is_meet: bool, factory: F) -> Result<()>
+where
+    F: Fn() -> Box<dyn MeetAggrObj> + Send + Sync + 'static,
+```
+
+Your `MeetAggrObj` supplies the seed value (`init_val`) and an
+`update(&self, left: &mut DataValue, right: &DataValue) -> Result<bool>` that
+folds `right` into `left` and returns whether `left` changed — the same
+changed-bit the engine's own semi-naive evaluation uses to detect convergence.
+With `is_meet: true` the aggregate is admitted into recursive rules, riding the
+identical stratifier guard and saturation check as the built-ins. The law you
+sign up for is that the merge must be absorptive: idempotent, commutative and
+associative, `max`-like rather than `sum`-like. Debug builds re-apply operands
+to probe idempotence on the values actually encountered and fail loudly on a
+violation. Outside recursion the same registration works in ordinary rule
+heads. The accumulate half stays ordinary body arithmetic, exactly as
+`min_cost` works today, so there is no new syntax to learn: you register the
+merge and write the multiply in the rule body.
+
+The contracts are deliberately strict.
+
+| Contract | Rule |
+| --- | --- |
+| Name | A lowercase identifier. Built-in aggregate *and* function names are reserved. |
+| Arguments | None. A custom aggregate is called as `name(operand)`; parameterize the merge by capturing the parameter in the registered closure. |
+| Duplicates | Registering an existing name errors rather than shadowing it. |
+| Factory | Must be cheap and must not panic — it runs per rule per epoch, and the engine has no `catch_unwind` around it. |
+| Triggers | Trigger scripts reject custom aggregates permanently: a trigger is re-parsed on every write, and a fresh process would lack your closure. |
+| Persistence | An aggregate's result is an ordinary value, so materialized rows stay readable after a reopen with no re-registration. Recomputing without the registration errors loudly instead of guessing. |
+
+The signature and a worked noisy-or example live in
+[Beyond CozoScript](/docs/beyond-cozoscript#custom-aggregates).
+
+## Revising derived beliefs: `:reconcile`
+
+Annotated derivations persist with no ceremony: a `min_cost_k` pack is an
+ordinary value, so `:put` materializes it like any other row. The hard problem
+is revision. When a base fact is retracted, materialized derivations are stale,
+and quietly overwriting them destroys the record of what you believed before.
+For [`TxTime` relations](/docs/time-travel#transaction-time-mnestic),
+`:reconcile` declares a query's output to be the relation's new complete
+current belief, diffs it against the resolved current belief, and records only
+the difference as one belief event: assertions for new or changed keys,
+retractions (valid-time cessations, on bitemporal relations) for keys that
+disappeared, nothing for unchanged keys.
+
+Materialize the evidence trails from `m2` into a system-versioned relation:
+
+```prolog
+:create m5_evidence { trail: [String], tt: TxTime => cost: Float }
+```
+
+```prolog
+trails[s, min_cost_k(pack, 2)] := *recalls{from: s, to: 'm5', strength},
+                                  pack = [[s, 'm5'], 1 - strength]
+trails[s, min_cost_k(pack, 2)] := trails[m, p], *recalls{from: s, to: m, strength},
+                                  pack = [concat([s], first(p)), (1 - strength) + last(p)]
+
+?[trail, cost] := trails['m2', pack], trail = first(pack),
+                  cost = round(last(pack) * 100) / 100
+
+:reconcile m5_evidence { trail => cost }
+```
+
+```prolog
+?[trail, cost] := *m5_evidence{trail, cost}
+
+:order cost
+```
+
+```
+trail                       cost
+['m2', 'm5']                0.6
+['m2', 'm3', 'm4', 'm5']    0.65
+```
+
+Then the agent decides the direct association was spurious and retracts the
+base edge:
+
+```prolog
+?[from, to] <- [['m2', 'm5']]
+:rm recalls { from, to }
+```
+
+Running the identical derive-and-reconcile script again re-derives the trails
+— only the chain survives, at its old cost — so the reconcile retracts the
+direct trail and records nothing for the unchanged chain. The history tells
+the whole story (transaction times are minted at commit, so yours will differ;
+what matters is that both original assertions share one `tt` — they were one
+belief event — and the retraction carries a later one):
+
+```prolog
+::history m5_evidence [[['m2', 'm5']], [['m2', 'm3', 'm4', 'm5']]]
+```
+
+```
+trail                       op         tt                  cost
+['m2', 'm3', 'm4', 'm5']    assert     1783879084355615    0.65
+['m2', 'm5']                retract    1783879084362476    0.6
+['m2', 'm5']                assert     1783879084355615    0.6
+```
+
+The belief timeline keeps both states: an as-of read at the first timestamp
+returns both trails with their costs, so the store answers *what did we
+believe, and why, as of T* across the revision. Truth maintenance is
+user-driven by design — nothing propagates from `recalls` to `m5_evidence`
+automatically; the loop is retract, re-derive, reconcile. The full contracts
+(one belief event per transaction, transaction-wide write protection,
+idempotence conditions) are on
+[Time travel](/docs/time-travel#belief-revision-reconcile).
+
+## Where the theory comes from
+
+The theory is borrowed, and gladly: provenance semirings are Green,
+Karvounarakis, and Tannen (PODS 2007); the recursion-safety condition —
+absorptive merges — is Dannert and Grädel's fixed-point analysis, exactly the
+line CozoDB's semi-lattice rule already drew; and engine-owned truncation for
+top-k derivations follows Scallop (PLDI 2023). What mnestic adds is the
+integration: these algebras run inside an embedded, persistent engine —
+registered at runtime, admitted by the same stratifier that guards the
+built-ins, their outputs ordinary rows that persist, time-travel, and
+reconcile.
+
+## See also
+
+- [Aggregations → Bounded-meet aggregations](/docs/aggregations#bounded-meet-aggregations-mnestic)
+  — the reference: catalogs, head-position rules, the divergence-cap error.
+- [Beyond CozoScript → Custom aggregates](/docs/beyond-cozoscript#custom-aggregates)
+  — the `register_custom_aggr` signature with a worked noisy-or example.
+- [Beyond CozoScript → Dominance aggregates](/docs/beyond-cozoscript#dominance-antichain-aggregates)
+  — `register_bounded_meet_aggr`, worked with epsilon-dominance.
+- [Skyline aggregates](/docs/fork/skyline-aggregates) — `pareto_min` /
+  `pareto_max` and dominance registration in depth.
+- [Time travel → Belief revision](/docs/time-travel#belief-revision-reconcile)
+  — `:reconcile` contracts and the `::history` lifecycle.
+- [Bitemporality](/docs/fork/bitemporality) — the transaction-time axis
+  `:reconcile` revises beliefs along.
+- [What mnestic adds](/docs/fork/overview)

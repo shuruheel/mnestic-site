@@ -1,100 +1,913 @@
 export const metadata = {
   title: "Time travel",
   description:
-    "Track changes to data over time with Validity-typed keys and query a stored relation as it was at any point in time.",
+    "The temporal reference for mnestic: valid-time facts with Validity keys and one-token @ as-of reads, plus bitemporal transaction time — TxTime relations, @ (vt:/tt:) selectors, :as_of reproducible queries, :reconcile belief revision, and the ::history lifecycle.",
 };
 
 # Time travel
 
-Simply put, time travel in a database means tracking changes to data over time
-and allowing queries to be logically executed at a point in time to get a
-historical view of the data. In a sense, this makes your database immutable,
-since nothing is really deleted from the database ever.
+Time travel in a database means tracking changes to data over time, so that a
+query can be logically executed at a point in time and see the data as it was.
+mnestic tracks time on two independent axes. **Valid time**, inherited from
+CozoDB, records when a fact is true *in the modeled world*: you set it, you may
+backdate or future-date it, and a one-token `@` selector reads a relation as of
+any moment. **Transaction time**, added by mnestic, records when the database
+*learned* each fact: the engine stamps it at commit and it cannot be set from
+outside, which is what makes "what did we believe last Tuesday, before the
+correction?" answerable. The first half of this page covers valid time; the
+[second half](#transaction-time-mnestic) covers transaction time and fully
+bitemporal relations.
 
-In Cozo, a stored relation is eligible for time travel if the last part of its
-key has the explicit type `Validity`. A validity has two parts: a time part,
-represented by a signed integer, and an assertion part, represented by a
-boolean, so `[42, true]` represents a validity. Sorting of validity is by the
-timestamp first, then by the assertive flag, but each field is compared in
-descending order, so:
+## Valid time
+
+A stored relation supports valid-time travel when the **last column of its
+key** has the explicit type `Validity`. Here is an agent's record of who owns
+`search-service`, over time:
+
+```prolog
+:create service_owner { service: String, at: Validity => person: String? }
+```
+
+```prolog
+?[service, at, person] <- [
+  ['search-service', [1748736000000000, true], 'Maya'],
+  ['search-service', '2025-07-08T00:00:00Z',   'Sam'],
+]
+:put service_owner { service, at => person }
+```
+
+Two facts: Maya owned the service from June 1, 2025 (written as an explicit
+`[timestamp, is_assert]` pair, in microseconds), and Sam took over on July 8
+(written as an RFC 3339 string — all the accepted write forms are listed
+[below](#writing-temporal-facts)). A query attaches an `@` selector inside the
+atom, after the columns, to read the relation as of any moment:
+
+```prolog
+?[person] := *service_owner{ service: 'search-service', person, @ 'NOW' }
+```
+
+```
+["Sam"]
+```
+
+```prolog
+?[person] := *service_owner{ service: 'search-service', person, @ '2025-06-15' }
+```
+
+```
+["Maya"]
+```
+
+Logically, the query runs against a snapshot of the relation containing only
+the facts valid at the specified time. Nothing was updated in place to make
+this work: the history is ordinary rows, and in a sense the relation is
+immutable — new facts supersede old ones, but the old ones remain.
+
+### The `Validity` type
+
+A validity has two parts: a **timestamp**, a signed integer, and an
+**assertion flag**, a boolean — `[42, true]` is a validity. Sorting compares
+the timestamp first and then the flag, each in *descending* order:
 
 ```prolog
 [1, true] < [1, false] < [-1, true]
 ```
 
-All rows with identical key parts except the last validity part form the
-_history_ for that key, interpreted in the following way: the fact represented
-by a row is _valid_ if its flag is `true`, and the range of its validity is
-from its timestamp (inclusive) up until the timestamp of the next row under the
-same key (excluding the last validity part, and here time is interpreted to
-flow forward). For example, let's say we have the rows `'a', [10, true] => 'x'`,
-`'a', [20, true] => 'y'`, `'a', [30, true] => 'z'`, then at timestamps 10, 11,
-..., 19, `'a'` is asserted to be `'x'`, and at timestamps 20, 21, ..., 29,
-`'a'` is asserted to be `'y'`, and from timestamp 30 onwards, `'a'` is asserted
-to be `'z'`. Before timestamp 10, `'a'` doesn't exist.
-
-A row with a `false` assertive flag does nothing other than making the previous
-fact invalid. For example, if we add to the above rows a row
-`'a', [15, false] => null`, then `'a'` no longer exists at timestamps 15, 16,
-..., 19, and at timestamp 20 onwards, `'a'` is asserted to be `'y'`.
-
-When querying against such a stored relation, a validity specification can be
-attached, for example:
+A relation keyed by a validity returns rows newest-first, with the assertion
+before the retraction at an equal timestamp:
 
 ```prolog
-?[name] := *rel{id: $id, name, @ 789}
+?[v] <- [[[1, true]], [[1, false]], [[-1, true]]]
+:create vld_sort { v: Validity }
 ```
 
-The part after the symbol `@` is the validity specification and must be a
-compile-time constant, i.e., it cannot contain variables. Logically, it is as
-if the query is against a snapshot of the relation containing only valid facts
-at the specified timestamp.
+```prolog
+?[v] := *vld_sort{ v }
+```
 
-It is possible for two rows to have identical non-validity key parts and
-identical timestamps, but differ in their assertive flags. In this case when
-queried against the exact timestamp, the row is valid, as if the row with the
-`false` flag does not exist. For example, if we add to the above rows a row
-`'a', [30, false] => null`, since we already have a row `'a', [30, true] => 'z'`,
-when queried against timestamp 30, `'a'` is asserted to be `'z'`. The effect of
-the retraction is invisible from any time-travel query.
+```
+[[1,true]]
+[[1,false]]
+[[-1,true]]
+```
 
-The use case for this behaviour is to assert a fact only until a future time
-when that fact is sure to remain valid. When that time comes, a new fact can be
-asserted, and if the old fact remains valid there is no need to `:rm` the
-previous retraction.
+The engine does not interpret the timestamp — that is up to you. If you use it
+to represent calendar time, treat it as **microseconds since the Unix epoch**:
+every convenience below (`'ASSERT'`, RFC 3339 strings, `'NOW'`) assumes that
+interpretation.
 
-You can use the function `to_bool` to extract the flag of a validity, and
-`to_int` to extract the timestamp as an integer.
+### Writing temporal facts
 
-In Cozo it is up to you to interpret the timestamp part of validity. If you use
-it to represent calendar time, then it is recommended that you treat it as
-microseconds since the UNIX epoch. For this interpretation, the following
-conveniences are provided:
+A `Validity` column accepts several forms on write:
 
-- When putting facts into the database, instead of specifying the exact literal
-  validity as a list of two items, the strings `ASSERT` and `RETRACT` can be
-  used instead, and are interpreted as assertion and retraction at the current
-  timestamp, respectively. This has the additional guarantee that all insertion
-  operations in the same transaction using this method get the same timestamp,
-  and furthermore you can also use these strings as the default values for a
-  field, and they will do the right thing.
+- A two-element list `[timestamp, bool]` — the explicit form.
+- The string `'ASSERT'` or `'RETRACT'` — an assertion or retraction at the
+  current timestamp. Every write using these strings in one transaction is
+  guaranteed to receive the **same** timestamp, and they work as column
+  `default`s too.
+- An RFC 3339 string such as `'2025-07-08T00:00:00Z'` for an assertion; prefix
+  it with `~` for a retraction at that time.
 
-- In place of a list of two items for specifying the literal validity, you can
-  use RFC 3339 strings for assertion timestamps or validity specification in
-  query. For retraction, prefix the string by `~`.
+A bare date such as `'2025-07-08'` is **not** accepted on the write path — it
+raises `eval::invalid_validity`. Bare dates are a read-side convenience only,
+accepted by the `@` selector (see the
+[selector notes](#what-the--selector-accepts) below).
 
-- When specifying validity against a stored relation, the string `NOW` uses the
-  current timestamp, and `END` uses a timestamp logically at the end of the
-  world. Furthermore, the `NOW` timestamp is guaranteed to be the same as what
-  would be inserted using `ASSERT` and `RETRACT`.
+With a default, temporal bookkeeping disappears from the write entirely:
 
-- You can use the function `format_timestamp` to directly format the timestamp
-  part of a validity to RFC 3339 strings.
+```prolog
+:create obs { id: String, at: Validity default 'ASSERT' => note: String }
+```
 
-An interesting use case of the time travel facility is to pre-generate the
-whole history for all time, and in the user-facing interface query with the
-current time `NOW`. The effect is that users see an illusion of real-time
-interactions: a manifestation of
-[Laplace's daemon](https://en.wikipedia.org/wiki/Laplace%27s_demon).
+```prolog
+?[id, note] <- [['o1', 'compaction ran clean tonight']]
+:put obs { id => note }
+```
+
+```prolog
+?[id, note] := *obs{ id, note, @ 'NOW' }
+```
+
+```
+["o1","compaction ran clean tonight"]
+```
+
+### How a history is read
+
+All rows that share every key column except the trailing validity form the
+**history** of that logical key. A row with a `true` flag asserts its value
+from its timestamp (inclusive) until the timestamp of the next row of the same
+key, with time flowing forward. A bare access without `@` is a raw scan that
+returns every version:
+
+```prolog
+?[at, person] := *service_owner{ service: 'search-service', at, person }
+```
+
+```
+[[1751932800000000,true],"Sam"]
+[[1748736000000000,true],"Maya"]
+```
+
+Read as a history: from June 1 up to (but not including) July 8 the owner is
+Maya, from July 8 onwards it is Sam, and before June 1 the key does not exist —
+a query at `@ '2025-01-01'` returns no rows. Numeric selectors work the same
+as strings; this is July 1, 2025 in microseconds:
+
+```prolog
+?[person] := *service_owner{ service: 'search-service', person, @ 1751328000000000 }
+```
+
+```
+["Maya"]
+```
+
+### Retractions
+
+A row with a `false` flag does nothing except make the previous fact invalid
+from its timestamp on. Suppose Sam's July 8 assignment is only confirmed
+through September 1 — the agent records the expiry in advance, as a
+`~`-prefixed retraction:
+
+```prolog
+?[service, at, person] <- [['search-service', '~2025-09-01T00:00:00Z', null]]
+:put service_owner { service, at => person }
+```
+
+From September 1 the key has no valid value, while earlier reads are
+untouched:
+
+```prolog
+?[person] := *service_owner{ service: 'search-service', person, @ '2025-09-15' }
+```
+
+```
+(no rows)
+```
+
+```prolog
+?[person] := *service_owner{ service: 'search-service', person, @ '2025-08-15' }
+```
+
+```
+["Sam"]
+```
+
+<Callout type="note">
+  A retraction is an ordinary row, so its value columns still pass type
+  checking. Declare value columns nullable (`person: String?` above) or supply
+  the previous values when retracting.
+</Callout>
+
+### Asserting at the same timestamp
+
+Two rows may share a key and a validity timestamp and differ only in the flag.
+Queried at exactly that timestamp, the **assertion wins** — the retraction is
+invisible to every time-travel query. Continuing the story: September 1
+arrives and Maya takes the service over, asserted at exactly the timestamp of
+the standing retraction:
+
+```prolog
+?[service, at, person] <- [['search-service', [1756684800000000, true], 'Maya']]
+:put service_owner { service, at => person }
+```
+
+```prolog
+?[person] := *service_owner{ service: 'search-service', person, @ '2025-09-01' }
+```
+
+```
+["Maya"]
+```
+
+This behaviour exists for exactly this pattern: assert a fact only until a
+future time up to which it is sure to remain valid, and when that time comes,
+assert whatever is then true — if the old fact still holds, re-assert it, with
+no need to `:rm` the earlier retraction.
+
+### `NOW`, `END`, and future-dated facts
+
+Validity timestamps may lie in the future, and `@ 'NOW'` and `@ 'END'` differ
+exactly there: `'NOW'` is the current timestamp (guaranteed equal to what
+`'ASSERT'` and `'RETRACT'` write in the same transaction), while `'END'` is a
+timestamp at the end of time — the final state of the relation, future-dated
+assertions included. Suppose it is already agreed that Sam takes the service
+back in 2027:
+
+```prolog
+?[service, at, person] <- [['search-service', '2027-01-01T00:00:00Z', 'Sam']]
+:put service_owner { service, at => person }
+```
+
+```prolog
+?[person] := *service_owner{ service: 'search-service', person, @ 'NOW' }
+```
+
+```
+["Maya"]
+```
+
+```prolog
+?[person] := *service_owner{ service: 'search-service', person, @ 'END' }
+```
+
+```
+["Sam"]
+```
+
+<Callout type="note">
+  Since a whole future history can be written ahead of time, an interface that
+  always queries `@ 'NOW'` shows scheduled changes taking effect exactly on
+  time, with no writes happening at all — a small manifestation of
+  [Laplace's demon](https://en.wikipedia.org/wiki/Laplace%27s_demon).
+</Callout>
+
+### What the `@` selector accepts
+
+The expression after `@` must be a **compile-time constant**. Query parameters
+are substituted before compilation and work fine (`@ $t`); a variable is
+rejected:
+
+```prolog
+?[person] := t = 1751328000000000,
+             *service_owner{ service: 'search-service', person, @ t }
+```
+
+```
+eval::not_constant: Expression contains unevaluated constant
+```
+
+The constant can be:
+
+| Form | Example | Meaning |
+| --- | --- | --- |
+| integer | `@ 1751328000000000` | microseconds since the Unix epoch |
+| RFC 3339 string | `@ '2025-06-15T12:30:00Z'` | that instant |
+| bare date string | `@ '2025-06-15'` | midnight UTC of that date |
+| `'NOW'` | `@ 'NOW'` | the current timestamp |
+| `'END'` | `@ 'END'` | the end of time (final state) |
+
+<Callout type="fork">
+  Bare dates landed in mnestic 0.10.0, on both temporal axes; upstream
+  required a full RFC 3339 timestamp. The same release fixed two inherited
+  defects on the valid-time axis: a negated atom with a selector
+  (`not *rel{ ... @ 'NOW' }`) panicked, and a join binding the validity column
+  of an `@`-selected relation could return wrong answers. See
+  [What mnestic adds](/docs/fork/overview).
+</Callout>
+
+<Callout type="warning">
+  Quote your dates. `@ 2025-06-15` (unquoted) is integer subtraction — it
+  evaluates to `2004` microseconds after the epoch and is accepted silently,
+  returning rows (usually none) from the dawn of 1970.
+</Callout>
+
+Two scope rules. The selector attaches to stored-relation atoms only, in both
+named and positional form (`*rel{ ..., @ t }`, `*rel[... @ t]`), not to rules
+and not to `~index` search atoms (FTS, HNSW, LSH). And it requires the
+`Validity` column to be the **last key column**: declaring one elsewhere is
+legal, but the column is then ordinary data and an `@` query on the relation
+is rejected (`eval::invalid_time_travel`).
+
+### Extracting timestamps and flags
+
+`to_int` extracts a validity's timestamp as an integer, `to_bool` extracts its
+flag, and `format_timestamp` formats the timestamp part directly as an
+RFC 3339 string. The full history of the example, made readable:
+
+```prolog
+?[fmt, flag, person] := *service_owner{ service: 'search-service', at, person },
+                        fmt = format_timestamp(at), flag = to_bool(at)
+:order fmt
+```
+
+```
+["2025-06-01T00:00:00+00:00",true,"Maya"]
+["2025-07-08T00:00:00+00:00",true,"Sam"]
+["2025-09-01T00:00:00+00:00",false,null]
+["2025-09-01T00:00:00+00:00",true,"Maya"]
+["2027-01-01T00:00:00+00:00",true,"Sam"]
+```
+
+## Transaction time (mnestic)
+
+<Callout type="fork">
+  Everything from here on is specific to mnestic: **bitemporality landed in
+  0.10.0** — engine-assigned transaction time alongside valid time, including
+  the `TxTime` column type, the labeled `@ (vt: …, tt: …)` selectors,
+  `:as_of`, `:reconcile`, and the `::history` / `::history_gc` / `::evict`
+  ops. Relations declaring `TxTime` cannot be opened by upstream CozoDB
+  builds. See [Bitemporality](/docs/fork/bitemporality) for the design and the
+  measured overhead, [What mnestic adds](/docs/fork/overview) for the release
+  map, and [Types](/docs/types#txtime-transaction-time-mnestic-0100) for the
+  column type itself.
+</Callout>
+
+Valid time is under your control. That is a feature — you can backdate,
+future-date, and import histories — but it also means it cannot answer
+questions about the database's own record. A `:put` at the same key and valid
+time physically replaces the old row, so yesterday's query result may be
+unreproducible today, and "when did we learn this?" has no answer. Transaction
+time (**tt**) closes that gap: a second temporal axis stamped by the engine at
+commit, never settable from outside. Where valid time says *when a fact held
+in the world*, transaction time says *when the database believed it*.
+
+### System-versioned relations
+
+A relation whose last key column has type `TxTime` is **system-versioned**:
+every write appends a record stamped with the commit clock, nothing is ever
+overwritten, and a plain read returns the **current belief** — the latest
+record per key, with retracted keys absent. Here the agent records its user's
+preferences:
+
+```prolog
+:create pref { topic: String, tt: TxTime => setting: String }
+```
+
+Writes omit the `tt` column entirely; supplying a value for it is an error on
+every write path (`eval::txtime_user_supplied_col`):
+
+```prolog
+?[topic, setting] <- [
+  ['pr_size_limit', '400 lines'],
+  ['review_style',  'inline comments'],
+]
+:put pref { topic => setting }
+```
+
+Later the agent learns the limit was renegotiated. The correction is another
+plain `:put`:
+
+```prolog
+?[topic, setting] <- [['pr_size_limit', '600 lines']]
+:put pref { topic => setting }
+```
+
+Reads need no selector — the default is the current belief, resolved in one
+seek per key:
+
+```prolog
+?[topic, setting] := *pref{ topic, setting }
+```
+
+```
+["pr_size_limit","600 lines"]
+["review_style","inline comments"]
+```
+
+The `tt` column can be bound and projected like any other; it renders as a
+`[timestamp, flag]` pair, microseconds since the epoch:
+
+```prolog
+?[topic, tt, setting] := *pref{ topic, tt, setting }
+```
+
+```
+["pr_size_limit",[1783806938343960,true],"600 lines"]
+["review_style",[1783806938342038,true],"inline comments"]
+```
+
+Removal is also an append. `:rm` records a retraction at commit time (values
+snapshot the key's latest record; removing a missing key is a no-op), after
+which the key is absent from current-belief reads — but not from history:
+
+```prolog
+?[topic] <- [['review_style']]
+:rm pref { topic }
+```
+
+```prolog
+?[topic, setting] := *pref{ topic, setting }
+```
+
+```
+["pr_size_limit","600 lines"]
+```
+
+### The commit clock
+
+Transaction times come from a wall-clock-floored, strictly monotonic commit
+counter: `tt = max(now_µs, last_tt + 1)`. It never collides, even for commits
+within one microsecond or across a backward step of the system clock, and its
+high-water mark is persisted **inside each committing transaction**, so a
+crash cannot lose it; restarts and backup restores re-seed it monotonically.
+All writes of one transaction share a single tt — a transaction is **one
+belief event** — and tt order equals commit order equals visibility order.
+
+<Callout type="warning">
+  The clock's authority is in-process: exactly one live database instance may
+  write a store containing `TxTime` relations. The RocksDB backend enforces
+  this with its `LOCK` file; the SQLite backend does not, so keep such a
+  database open through a single handle.
+</Callout>
+
+### The belief timeline: `::history`
+
+`::history` returns every record of the given keys — the raw belief timeline
+rather than the current belief. Output columns are the key columns, `vt_ts` (only on
+bitemporal relations), `op` (`assert` or `retract`), `tt` (integer
+microseconds), and the value columns, ordered key-ascending, then newest
+first; optional trailing integers page with `limit` and `offset`. The full op
+reference lives in [System ops](/docs/system-ops#time-travel).
+
+```prolog
+::history pref [['pr_size_limit'], ['review_style']]
+```
+
+```
+["pr_size_limit","assert",1783806938343960,"600 lines"]
+["pr_size_limit","assert",1783806938342038,"400 lines"]
+["review_style","retract",1783806938349818,"inline comments"]
+["review_style","assert",1783806938342038,"inline comments"]
+```
+
+Note the two original assertions share the tt `…342038`: they were written in
+one transaction — one belief event.
+
+### Reading past beliefs
+
+`@ (tt: T)` reads a relation exactly as it stood at commit time `T`. Taking
+the tt of the first belief event from the history above (yours will differ —
+transaction times are minted at commit):
+
+```prolog
+?[setting] := *pref{ topic: 'pr_size_limit', setting, @ (tt: 1783806938342038) }
+```
+
+```
+["400 lines"]
+```
+
+`T` accepts integer microseconds, RFC 3339 strings, and bare dates, exactly
+like the valid-time selector. `'NOW'` and `'END'` both mean **current
+belief** — deliberately the end of transaction time rather than the wall
+clock, since the monotone clock can run ahead of a stepped-back system clock
+and "current belief" must always include every committed record. There is no
+"earliest belief" token: a read before the first record answers, correctly,
+that nothing was known —
+
+```prolog
+?[topic, setting] := *pref{ topic, setting, @ (tt: '2026-07-01T00:00:00Z') }
+```
+
+```
+(no rows)
+```
+
+— and "what did we believe first?" is a `::history` question.
+
+Bare `@ E` means valid time on every relation, always. On a system-versioned
+relation, which has no valid-time axis, the axis must be named:
+
+```prolog
+?[topic, setting] := *pref{ topic, setting, @ 'NOW' }
+```
+
+```
+eval::txtime_no_vt_axis: relation pref is system-versioned: it has no
+valid-time axis
+help: select transaction time with `@ (tt: …)`; bare `@ E` always means
+valid time
+```
+
+Conversely, `@ (tt: …)` on a relation with no `TxTime` column is an error
+(`eval::txtime_no_tt_axis`), naming the trailing `tt: TxTime` declaration that
+would enable it.
+
+### Reproducible queries: `:as_of`
+
+Per-atom selectors are precise but easy to forget on one atom of a multi-atom
+rule, which would silently mix current belief into a supposedly historical
+answer. The `:as_of` query option pins the default transaction time for
+**every** `TxTime`-stamped relation atom in the query block that lacks an
+explicit `tt:` selector — re-running a report exactly as it would have
+answered at `T`:
+
+```prolog
+?[topic, setting] := *pref{ topic, setting }
+:as_of 1783806938342038
+```
+
+```
+["pr_size_limit","400 lines"]
+["review_style","inline comments"]
+```
+
+Both the pre-correction limit and the since-retracted `review_style` row
+answer as they were believed then. Explicit per-atom `tt:` selectors win over
+`:as_of`; using it in a block that references no `TxTime` relation is an
+error (a typo guard). It takes the same forms as `tt:` — microseconds, ISO
+strings, `'NOW'`.
+
+<Callout type="warning">
+  `:as_of` pins only `TxTime`-stamped relations. Plain and valid-time-only
+  relations in the same query still read their present contents, so a mixed
+  query is only partially reproducible.
+</Callout>
+
+### Bitemporal relations
+
+Declaring both axes gives a fully bitemporal relation — valid time for when
+facts held in the world, transaction time for when the database believed
+them:
+
+```prolog
+:create owner { service: String, at: Validity, tt: TxTime => person: String? }
+```
+
+The **temporal-axis rule**: temporal axes are the trailing key columns, in
+the fixed order `Validity` then `TxTime`, at most one of each, any subset.
+Malformed declarations fail at `:create` with the corrected form in the error:
+
+```prolog
+:create bad { tt: TxTime, service: String => person: String }
+```
+
+```
+eval::invalid_temporal_axes: invalid temporal-axis declaration: TxTime must be
+the last key column
+help: temporal axes must be the trailing key columns, in the order
+vt (Validity) then tt (TxTime), at most one of each; corrected declaration:
+`:create bad {service: String, tt: TxTime => person: String}`
+```
+
+One `@` clause selects on either or both axes, with order-free labels
+(duplicates are a parse error). Each axis defaults independently:
+
+| Selector | Valid time | Transaction time |
+| --- | --- | --- |
+| _(none)_ | every record (raw scan) | current belief |
+| `@ V` or `@ (vt: V)` | as of `V` | current belief |
+| `@ (tt: T)` | every record | as of `T` |
+| `@ (vt: V, tt: T)` | as of `V` | as of `T` |
+
+Because the defaults are "what the bare forms already meant", adding a
+`tt: TxTime` column to an existing relation changes no existing query's
+results (up to corrections actually recorded since) — a bare scan on a
+bitemporal relation still returns its valid-time records, each valid-time
+version resolved to the current belief about it.
+
+Now the worked example. The agent believed Maya owned `postgres-connector`
+from June 2025; it later learns the June record was wrong — it was Sam all
+along. The correction is a `:put` at the *same valid time*, which lands at a
+*later transaction time*:
+
+```prolog
+?[service, at, person] <- [['postgres-connector', '2025-06-01T00:00:00Z', 'Maya']]
+:put owner { service, at => person }
+```
+
+```prolog
+?[service, at, person] <- [['postgres-connector', '2025-06-01T00:00:00Z', 'Sam']]
+:put owner { service, at => person }
+```
+
+What do we believe now about June? The correction:
+
+```prolog
+?[person] := *owner{ service: 'postgres-connector', person, @ '2025-06-15' }
+```
+
+```
+["Sam"]
+```
+
+Both beliefs are in the timeline:
+
+```prolog
+::history owner [['postgres-connector']]
+```
+
+```
+["postgres-connector",1748736000000000,"assert",1783806955357668,"Sam"]
+["postgres-connector",1748736000000000,"assert",1783806955355696,"Maya"]
+```
+
+And the fully bitemporal question — *what did we believe, before the
+correction, about June?* — is one selector, using the earlier tt from the
+history:
+
+```prolog
+?[person] := *owner{ service: 'postgres-connector', person,
+                     @ (vt: '2025-06-15', tt: 1783806955355696) }
+```
+
+```
+["Maya"]
+```
+
+The wrong belief is preserved as what it was: the belief held then. Selection
+is per atom, so a single query can join current state against historical
+belief.
+
+#### Resolution semantics
+
+For each key, resolution walks valid-time versions downward from the selected
+`vt`; within one valid-time version it takes the record with the greatest
+`tt ≤ T` — the belief held about that version as of `T`:
+
+- an **assertion** answers for the key;
+- a **retraction** means the key was believed ceased at that valid time:
+  nothing is emitted, and older valid-time versions do **not** shine through
+  (matching the single-axis semantics of [retractions](#retractions));
+- a version with **no record at `tt ≤ T`** (all beliefs about it recorded
+  later) falls through to the next older version;
+- at an exact `(vt, tt)` tie the assertion wins, mirroring the valid-time
+  [equal-timestamp rule](#asserting-at-the-same-timestamp) — though the
+  engine also prevents creating one: a transaction may not both assert and
+  retract one `(key, vt)`.
+
+#### Corrections and cessations
+
+The three shapes of belief change, all of them plain writes:
+
+| Intent | Write |
+| --- | --- |
+| **Value correction** — "it was Sam at that time, not Maya" | `:put` the same valid time with the corrected value (as above) |
+| **Cessation** — "the fact stopped holding at valid time V" | `:put` with a retraction validity at `V`, or `:rm` with the key and `V` |
+| **Repudiation** — "the assertion at V should never have existed" | `:put` at `V` re-asserting the *predecessor's* value (a copy, not a reference: if the predecessor is later corrected, re-copy) |
+
+A cessation through `:rm` names the valid time and copies the believed values
+into the retraction record. The connector is retired on March 1, 2026:
+
+```prolog
+?[service, at] <- [['postgres-connector', '2026-03-01T00:00:00Z']]
+:rm owner { service, at }
+```
+
+```prolog
+?[person] := *owner{ service: 'postgres-connector', person, @ '2026-04-01' }
+```
+
+```
+(no rows)
+```
+
+```prolog
+?[person] := *owner{ service: 'postgres-connector', person, @ '2025-12-01' }
+```
+
+```
+["Sam"]
+```
+
+Like every belief, a cessation can itself be superseded. The retirement turns
+out to be wrong — Maya took the connector over that day:
+
+```prolog
+?[service, at, person] <- [['postgres-connector', '2026-03-01T00:00:00Z', 'Maya']]
+:put owner { service, at => person }
+```
+
+```prolog
+?[person] := *owner{ service: 'postgres-connector', person, @ '2026-04-01' }
+```
+
+```
+["Maya"]
+```
+
+The recorded cessation is not erased — an `@ (tt: …)` read between the two
+events still answers that the connector was believed retired. Meanwhile the
+bare scan shows the valid-time history at current belief, one row per
+valid-time version:
+
+```prolog
+?[at, person] := *owner{ service: 'postgres-connector', at, person }
+```
+
+```
+[[1772323200000000,true],"Maya"]
+[[1748736000000000,true],"Sam"]
+```
+
+### Writing against the current belief
+
+On `TxTime` relations, the existence-checking write ops evaluate against the
+**resolved current belief** (at valid time `'NOW'` on bitemporal relations):
+
+| Op | Behavior on a `TxTime` relation |
+| --- | --- |
+| `:put` | appends a new belief at commit tt |
+| `:rm` | system-versioned: appends a retraction. Bitemporal: requires the valid time and records a cessation there; removal *without* a valid time is a valid-time statement — use `:put` with `'RETRACT'` |
+| `:insert` | asserts absence. System-versioned: re-inserting a believed-deleted key is legal. Bitemporal: requires no records at *any* valid time |
+| `:delete` | `:rm` plus an existence assertion — fails on missing **or believed-deleted** keys |
+| `:update` | merges the provided value columns over the current belief; on bitemporal relations the correction lands in the current belief's own valid-time version, and binding the validity column is rejected (use `:put` to correct a specific version) |
+| `:ensure` / `:ensure_not` | assertions about the current belief at commit; binding `vt` or `tt` is rejected |
+| `:replace` | rejected outright — destroy-and-recreate would silently drop history |
+
+A failed check names the belief it tested, e.g. `:insert` of an existing key
+fails with `key exists in database (current belief)` and `:delete` of a
+retracted key with `key is believed-deleted`.
+
+Because a transaction is one belief event, three consequences follow, all
+enforced. Writes to a `TxTime` relation are **not visible to later reads in
+the same script** — they materialize at commit (a braced multi-statement
+script runs as one transaction):
+
+```prolog
+{
+  ?[topic, setting] <- [['tabs_vs_spaces', 'spaces']]
+  :put pref { topic => setting }
+}
+{
+  ?[setting] := *pref{ topic: 'tabs_vs_spaces', setting }
+}
+```
+
+```
+(no rows)
+```
+
+```prolog
+?[setting] := *pref{ topic: 'tabs_vs_spaces', setting }
+```
+
+```
+["spaces"]
+```
+
+Double-writes of one key in one transaction collapse last-write-wins. And one
+key cannot mix operations in one transaction: writing and removing it would
+produce two records at the same tt, an unresolvable tie, and existence-checking
+a key the same transaction rewrites is an ambiguous target — the engine
+rejects both scripts outright.
+
+### Belief revision: `:reconcile`
+
+`:reconcile` declares a query's output to *be* a `TxTime` relation's new
+complete current belief. The engine diffs the output against the resolved
+current belief and records, as one belief event: assertions for new and
+changed keys, retractions (or valid-time cessations, on bitemporal relations)
+for currently-believed keys absent from the output. Unchanged keys record
+nothing, so an identical re-run is a true no-op — no history bloat, no tt
+burned.
+
+This is built for derived relations. The agent maintains a materialized set of
+its high-importance memories:
+
+```prolog
+:create salient { id: String, tt: TxTime => importance: Float }
+```
+
+```prolog
+?[id, importance] := *memory{ id, importance }, importance >= 0.75
+:reconcile salient { id => importance }
+```
+
+```prolog
+?[id, importance] := *salient{ id, importance }
+```
+
+```
+["m2",0.9]
+["m4",0.8]
+["m5",0.85]
+["m8",0.75]
+```
+
+The base changes — `m8`'s importance decays to 0.6 — and the same
+derive-and-reconcile script runs again:
+
+```prolog
+?[id, importance] := *memory{ id, importance }, importance >= 0.75
+:reconcile salient { id => importance }
+```
+
+```prolog
+?[id, importance] := *salient{ id, importance }
+```
+
+```
+["m2",0.9]
+["m4",0.8]
+["m5",0.85]
+```
+
+The history shows exactly what reconciliation recorded: nothing for the
+unchanged `m2`, an assert-then-retract lifecycle for `m8`:
+
+```prolog
+::history salient [['m2'], ['m8']]
+```
+
+```
+["m2","assert",1783806972457230,0.9]
+["m8","retract",1783806972461713,0.75]
+["m8","assert",1783806972457230,0.75]
+```
+
+Retract a base fact, re-derive, reconcile: derived beliefs stay consistent
+with the revised base, and `::history` plus `@ (tt: …)` reads answer *what
+did we believe, and why, as of T* — including for annotated derivations such
+as [`min_cost_k`](/docs/aggregations#min_cost_kpayload-cost-k) proof packs
+materialized into a `TxTime` relation. Truth maintenance is user-driven:
+nothing propagates from base to derived relations automatically; you re-run
+the derivation and reconcile.
+
+Contracts: `:reconcile` requires a `TxTime` relation (plain relations keep
+`:replace`); a reconciled relation admits no other write in the same
+transaction; duplicate keys with conflicting values in one output are an
+error; on bitemporal relations the output must carry assert-flagged, explicit
+valid-time timestamps (`'NOW'` would mint a fresh version per run and defeat
+idempotence — as do value columns with non-constant defaults, if omitted);
+cost is O(relation size) per call.
+
+### Forgetting: `::history_gc` and `::evict`
+
+Append-only history needs a lifecycle. Two ops manage it, both documented in
+full in [System ops](/docs/system-ops#time-travel):
+
+- **`::history_gc rel cutoff_tt`** drops superseded records below the cutoff
+  while preserving, per key and valid-time version, the record that resolution
+  would pick at the cutoff — as-of reads at or above it are unchanged. It
+  persists a per-relation **gc floor**; an `@ (tt: …)` read below the floor is
+  an error rather than a reconstruction silently presented as historical
+  belief. Cutoffs in the future of the commit clock are refused.
+- **`::evict rel [[k], …]`** hard-deletes every record of the given keys —
+  the one deliberate break of append-only, for data-erasure obligations such
+  as GDPR. An audit row (relation, salted key hash, rows deleted, eviction
+  tt) is written to the reserved relation `mnestic_evict_audit` in the same
+  transaction; add `unredacted` to record the keys themselves instead of
+  hashes.
+
+The user asks the agent to forget the tabs-versus-spaces argument entirely:
+
+```prolog
+::evict pref [['tabs_vs_spaces']]
+```
+
+```
+["pref","7177af05-3c47-58e2-a460-f1fbf412d3e4",1,1783806972468471]
+```
+
+```prolog
+::history pref [['tabs_vs_spaces']]
+```
+
+```
+(no rows)
+```
+
+### Restrictions and overhead
+
+- **No secondary, FTS, HNSW, or LSH indexes, no triggers, no callbacks, and
+  no `:returning`** on `TxTime` relations — all loud errors. Statement-time
+  index maintenance is structurally incompatible with buffered commit-time
+  stamping.
+- **Export/import does not round-trip `TxTime` relations.** Bulk
+  `import_relations` stamps one fresh tt per batch (a bulk import is one
+  belief event) and rejects tt columns in payloads; `import_from_backup` is
+  rejected for them outright. Use backup/restore, which preserves tt bytes
+  verbatim and re-seeds the commit clock.
+- **Temporary (`_`-prefixed) relations cannot declare `TxTime`** — they live
+  inside one transaction and have no commit clock.
+- **Pre-fork and upstream CozoDB builds cannot open** a database containing
+  `TxTime` relations.
+
+The whole feature is opt-in per relation: non-temporal relations keep their
+exact encoding and zero overhead. On relations that do opt in, current-belief
+point reads measured within **~4–12%** of the single-axis baseline at the
+0.10.0 release gate.
 
 <Attribution page="timetravel.html" />

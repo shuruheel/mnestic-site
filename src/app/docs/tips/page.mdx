@@ -1,115 +1,494 @@
 export const metadata = {
   title: "Tips for writing queries",
   description:
-    "Practical guidance for CozoScript: handling nulls under strict typing, and joining relations efficiently with smaller rules and recursion.",
+    "Practical habits for fast CozoScript in mnestic: reading ::explain, key filters that compile to lookups, what the greedy join reorder does and does not fix, breaking multi-hop joins into smaller rules, parameters, ephemeral staging, query budgets, and null handling.",
 };
 
 # Tips for writing queries
 
-## Dealing with nulls
+The engine has no cost-based optimizer: plans are deterministic, and the same
+query shape always compiles to the same plan. That cuts both ways. You never
+have to out-guess a planner, but a slow query stays slow until you change it,
+and the fixes are habits rather than hints. This page collects those habits:
+what mnestic now fixes automatically, what still needs care, and the patterns
+that keep queries fast as relations grow. The machinery behind every claim
+here is described in [Query execution](/docs/query-execution).
 
-Cozo is strict about types. A simple query such as:
+The examples run against the agent-memory graph used throughout these docs.
+Keys sit to the left of `=>`:
 
-```prolog
-?[a] := *rel[a, b], b > 0
+```
+memory   { id => kind, text, importance, at, v }   # notes, decisions, insights
+entity   { id => name, kind }                      # people, tools, projects
+mentions { memory, entity }                        # which memories involve whom
+recalls  { from, to => strength }                  # association edges
 ```
 
-will throw if some of the `b` is null: comparisons can only be made between
-values of the same type. The solution is that you may decide to consider any
-`null` values to be equivalent to some default values:
+## Check the plan, not the clock
+
+When a query feels slow, wrap it in `::explain { ... }` before reaching for a
+stopwatch: because plans are deterministic, the plan names the problem. Two
+join operators carry most of the signal.
+
+- `stored_prefix_join` — the bound columns form a prefix of the relation's (or
+  an index's) key, so each probe is a keyed lookup: logarithmic in the
+  relation size, and what you want to see on large relations.
+- `stored_mat_join` — the bound columns do not form a key prefix, so the
+  relation is scanned and matched row by row.
+
+A third pattern, the `(cartesian)` annotation, marks a join that shares no
+bound variable with its left input; it usually means a typo (shown
+[below](#atom-order-and-the-greedy-reorder)). For the column-by-column guide
+to plan output, see
+[Reading a plan with ::explain](/docs/query-execution#reading-a-plan-with-explain);
+plans on this page are trimmed to the interesting columns.
+
+## Filters on key columns become lookups
+
+There are two ways to pin a key column to a value: bind first
+(`id = 'm4', *memory{ id, .. }`) or filter after
+(`*memory{ id, .. }, id == 'm4'`). In mnestic they compile to the same keyed
+plan:
 
 ```prolog
-?[a] := *rel[a, b], (b ~ -1) > 0
+::explain { ?[kind, text] := *memory{ id, kind, text }, id == 'm4' }
 ```
 
-here `~` is the `coalesce` operator. The parentheses are not necessary, but it
-reads better this way.
-
-You can also check for null explicitly:
-
-```prolog
-?[a] := *rel[a, b], if(is_null(b), false, b > 0)
+```
+atom_idx  op                  ref       joins_on        filters/expr
+3         unify               id                        "m4"
+2         load_stored         :memory
+1         stored_prefix_join            {"id": "**0"}
+0         out
 ```
 
-`cond` is also helpful in this case.
+The equality was hoisted into a `unify`, and the access is a
+`stored_prefix_join` — a point lookup on `memory`'s key. Writing
+`id = 'm4', *memory{ id, kind, text }` produces the byte-identical plan, and
+the positional form `*memory[id, kind, text, _, _, _], id == 'm4'` is
+converted the same way.
 
-## How to join relations
+<Callout type="fork">
+  This is the mnestic 0.8.0 **equality pushdown** — upstream compiled the
+  post-filter form to a full scan followed by an `eq(..)` filter, and the
+  classic advice was to never write it. That advice is obsolete here: the two
+  shapes were measured ~28–29× apart on a 5,000-row relation before the fix.
+  See [Equality pushdown](/docs/fork/equality-pushdown).
+</Callout>
 
-Suppose we have the following relation:
+Two shapes still scan, by design. A **non-equality predicate** on a key column
+is a filter, not a lookup — the whole relation streams through it:
 
 ```prolog
-:create friend {fr, to}
+::explain { ?[id] := *memory{ id }, id > 'm5' }
 ```
 
-Let's say we want to find Alice's friends' friends' friends' friends' friends.
-One way to write this is:
-
-```prolog
-?[who] := *friends{fr: 'Alice', to: f1},
-          *friends{fr: f1, to: f2},
-          *friends{fr: f2, to: f3},
-          *friends{fr: f3, to: f4},
-          *friends{fr: f4, to: who}
+```
+atom_idx  op            ref        joins_on   filters/expr
+1         load_stored   :memory               ["gt(id, \"m5\")"]
+0         out
 ```
 
-Another way is:
+And a **numeric equality** keeps its post-filter semantics even on a key
+column, because `==` compares across `Int`/`Float` (`1 == 1.0` is true) while
+key order distinguishes them — converting could silently drop cross-type
+matches, so the pushdown declines. On a relation `event { seq: Int => label }`:
 
 ```prolog
-f1[who] := *friends{fr: 'Alice', to: who}
-f2[who] := f1[fr], *friends{fr, to: who}
-f3[who] := f2[fr], *friends{fr, to: who}
-f4[who] := f3[fr], *friends{fr, to: who}
-?[who] := f4[fr], *friends{fr, to: who}
+::explain { ?[label] := *event{ seq, label }, seq == 7 }
 ```
 
-These two queries yield identical values. But on real networks, where loops
-abound, the second way of writing executes exponentially faster than the first.
-Why? Because of set semantics in relations, the second way of writing
-deduplicates at every turn, whereas the first way of writing builds up all
-paths to the final layer of friends. In fact, even if there are no duplicates,
-the second version may still be faster, because in Cozo rules run in parallel
-whenever allowed by semantics and available resources.
-
-The moral of the story is, always prefer to break your query into smaller
-rules. It usually reads better, and unlike in some other databases, it almost
-always executes faster in Cozo as well. But for this particular case, in which
-the query is largely recursive, prefer to make it a recursive relation:
-
-```prolog
-f_n[who, min(layer)] := *friends{fr: 'Alice', to: who}, layer = 1
-f_n[who, min(layer)] := f_n[fr, last_layer], *friends{fr, to: who}, layer = last_layer + 1, layer <= 5
-?[who] := f_n[who, 5]
+```
+atom_idx  op            ref       joins_on   filters/expr
+1         load_stored   :event               ["eq(seq, 7)"]
+0         out
 ```
 
-The condition `layer <= 5` is necessary to ensure termination.
-
-Are there any situations where the first way of writing is acceptable? Yes:
+For numeric keys, write the binding first — when you know the value has the
+column's type; the binding-first form matches structurally, so an `Int` key
+never matches a `Float` value. That form is a keyed lookup:
 
 ```prolog
-?[who] := *friends{fr: 'Alice', to: f1},
-          *friends{fr: f1, to: f2},
-          *friends{fr: f2, to: f3},
-          *friends{fr: f3, to: f4},
-          *friends{fr: f4, to: who}
+::explain { ?[label] := seq = 7, *event{ seq, label } }
+```
+
+```
+atom_idx  op                  ref      joins_on         filters/expr
+3         unify               seq                       7
+2         load_stored         :event
+1         stored_prefix_join           {"seq": "**0"}
+0         out
+```
+
+### Non-key columns need an index
+
+A filter on a value column has no key to push into — matching is
+**prefix-only**, on the relation's key or an index's key. Create an index
+whose key starts with the filtered column and the same query compiles to a
+keyed lookup, no rewrite required:
+
+```prolog
+::index create memory:by_kind { kind, id }
+```
+
+```prolog
+::explain { ?[id] := *memory{ id, kind: 'decision' } }
+```
+
+```
+atom_idx  op                  ref               joins_on        filters/expr
+3         unify               *5                                "decision"
+2         load_stored         :memory:by_kind
+1         stored_prefix_join                    {"*5": "**0"}
+0         out
+```
+
+When the rule also needs columns the index does not carry, the engine selects
+on the index and joins back to the base relation by primary key — both joins
+keyed:
+
+```prolog
+::explain { ?[id, text] := *memory{ id, text, kind: 'decision' } }
+```
+
+```
+atom_idx  op                  ref               joins_on        filters/expr
+5         unify               *4                                "decision"
+4         load_stored         :memory:by_kind
+3         stored_prefix_join                    {"*4": "**1"}
+2         load_stored         :memory
+1         stored_prefix_join                    {"**2": "id"}
+0         out
+```
+
+An index is chosen only when a prefix of its key is bound — the engine never
+gambles on a bad index, and you can always query the index directly. See
+[Indices](/docs/stored-relations#indices).
+
+## Atom order and the greedy reorder
+
+Upstream, join order was exactly the order you wrote the atoms in, and a
+conjunction listed in schema order rather than join order could spin on an
+enormous intermediate. Since 0.10.5, mnestic reorders the positive
+stored-relation atoms of a conjunction with a deterministic, stat-free
+heuristic: fewest new variables first, preferring an atom whose entire key is
+bound (a point lookup) on ties, falling back to written position. On any
+written order the greedy heuristic would itself choose, the pass is the
+identity — such hand-tuned queries compile byte-identically; an order that
+deliberately disagrees with it can be pinned with `:reorder written`.
+
+Know what it does **not** do:
+
+- It consults **no statistics** — no cardinalities, no cost model. It removes
+  one structural pathology (a disconnected or badly interleaved join order).
+  When two orders are structurally equivalent but one touches far more rows,
+  the heuristic cannot see that; you are still the optimizer, and the working
+  rule is unchanged from upstream: put the most restrictive atoms that
+  introduce new bindings first.
+- It declines rules with fewer than three stored-relation atoms, rules
+  containing derived-rule or index-search (HNSW/FTS/LSH) atoms, and rules with
+  a multi-valued `in` unification.
+- A bare `:limit` without `:order` compiles the written order, so the returned
+  subset stays the one your written order would produce.
+- `:reorder written` opts a query out entirely.
+
+<Callout type="fork">
+  The greedy join reorder is specific to mnestic 0.10.5 (default on;
+  tie-break fix in 0.10.7) and was measured 54.5× on the motivating repro.
+  A worked plan comparison, including the opt-out, is in
+  [Query execution](/docs/query-execution#greedy-join-reorder); the full
+  design is in [Greedy join reorder](/docs/fork/join-reorder).
+</Callout>
+
+One ordering problem no reorder can fix is a conjunction that is genuinely
+disconnected — and the usual cause is a misspelled variable. Here the second
+atom was meant to say `from: m`:
+
+```prolog
+::explain {
+    ?[entity, next] := *mentions{ memory: m, entity },
+                       *recalls{ from: mm, to: next }
+}
+```
+
+```
+atom_idx  op                               ref        joins_on
+3         load_stored                      :mentions
+2         load_stored                      :recalls
+1         stored_prefix_join (cartesian)              {}
+0         out
+```
+
+`joins_on` is empty and the operator is annotated `(cartesian)`: every
+`mentions` row pairs with every `recalls` row. A Cartesian product you did not
+intend is worth grepping your variable names for.
+
+## Break long join chains into smaller rules
+
+Say you want the memories exactly four association hops downstream of `m1`.
+One way:
+
+```prolog
+?[who] := *recalls{ from: 'm1', to: f1 },
+          *recalls{ from: f1, to: f2 },
+          *recalls{ from: f2, to: f3 },
+          *recalls{ from: f3, to: who }
+```
+
+Another:
+
+```prolog
+h1[who] := *recalls{ from: 'm1', to: who }
+h2[who] := h1[m], *recalls{ from: m, to: who }
+h3[who] := h2[m], *recalls{ from: m, to: who }
+?[who]  := h3[m], *recalls{ from: m, to: who }
+```
+
+Both return the same rows (here, `m5`). But on a dense graph, where many paths
+lead to the same node, the second form is exponentially faster: relations obey
+set semantics, so each `hN` deduplicates its frontier before the next hop,
+while the single rule enumerates every path to the final layer. Note that this
+is not an atom-ordering problem — the chain's written order is already the
+greedy one, so the [reorder](#atom-order-and-the-greedy-reorder) leaves it
+untouched; only rule boundaries deduplicate. Rules in the same stratum are
+also evaluated in parallel where the platform allows.
+
+The moral: prefer breaking a query into smaller rules. It reads better, and in
+this engine it almost always runs faster too. And when the query is genuinely
+recursive, make it a recursive rule:
+
+```prolog
+f_n[who, min(layer)] := *recalls{ from: 'm1', to: who }, layer = 1
+f_n[who, min(layer)] := f_n[m, last], *recalls{ from: m, to: who },
+                        layer = last + 1, layer <= 4
+
+?[who, layer] := f_n[who, layer]
+:order layer, who
+```
+
+```
+who    layer
+m2     1
+m3     2
+m5     2
+m4     3
+```
+
+Two things to keep straight about this pattern:
+
+- **It computes minimum hop distance, not "exactly N hops".** Filtering with
+  `?[who] := f_n[who, 4]` returns nothing on this graph: everything four hops
+  out is also reachable sooner (`m5` sits at minimum layer 2, via the shortcut
+  edge `m2 → m5`). Only the chain forms above answer the exactly-N-hops
+  question.
+- **The `layer <= 4` guard caps the work, not the termination.** Because `min`
+  is a semi-lattice aggregation, this recursion reaches a fixpoint even on
+  cyclic graphs without the guard — a longer route to an already-reached node
+  changes nothing. Drop the aggregation, though, and the same shape carries
+  ever-growing `layer` values around any cycle forever; then the guard (or a
+  [`:timeout`](#give-every-unbounded-query-a-budget)) is what saves you.
+
+### When one big rule is right
+
+The single-rule chain has two legitimate uses. First, with `:limit 1` it stops
+at the first path found (early stopping), and skips the bookkeeping of extra
+rules:
+
+```prolog
+?[who] := *recalls{ from: 'm1', to: f1 },
+          *recalls{ from: f1, to: f2 },
+          *recalls{ from: f2, to: f3 },
+          *recalls{ from: f3, to: who }
 :limit 1
 ```
 
-in this case, we stop at the first path, and this way of writing avoids the
-overhead of multiple rules and is perhaps very slightly faster.
+Early stopping works when the entry rule is an inline rule and there is no
+`:order`; with a sort, all rows must exist before the limit applies. See
+[Early stopping](/docs/query-execution#early-stopping).
 
-Also, if you want to count the different paths, you must write:
+Second, counting **paths** requires the single rule, because set semantics in
+a smaller rule collapses the duplicates you are trying to count. Two-hop paths
+through the association graph:
 
 ```prolog
-?[count(who)] := *friends{fr: 'Alice', to: f1},
-                 *friends{fr: f1, to: f2},
-                 *friends{fr: f2, to: f3},
-                 *friends{fr: f3, to: f4},
-                 *friends{fr: f4, to: who}
+?[count(c)] := *recalls{ from: a, to: b }, *recalls{ from: b, to: c }
 ```
 
-The multiple-rules way of writing gives wrong results due to set semantics. Due
-to the presence of the aggregation `count`, this query only keeps a single path
-in memory at any instant, so it won't blow up your memory even on web-scale
-data.
+```
+count(c)
+6
+```
+
+Route the endpoint through an intermediate rule and the count silently becomes
+"distinct endpoints" instead:
+
+```prolog
+hop2[c] := *recalls{ from: a, to: b }, *recalls{ from: b, to: c }
+?[count(c)] := hop2[c]
+```
+
+```
+count(c)
+4
+```
+
+The single-rule count is safe on memory even at scale: rows stream through the
+counter as the join produces them, and no intermediate path relation is
+materialized.
+
+<Callout type="fork">
+  A `count()` over a large join can still take a while to enumerate. mnestic
+  0.10.5 ships an opt-in factorized-counting rewrite that computes eligible
+  counts without materializing the join, and an always-on `::explain` advisory
+  that flags eligible queries. See
+  [Factorized counting](/docs/fork/factorized-counting).
+</Callout>
+
+## Parameterize queries
+
+Pass runtime values as parameters instead of splicing them into the query
+text. Parameters are named with a `$` prefix and supplied alongside the script
+by every binding (`run_script` in Rust and Python, the `params` field over
+HTTP):
+
+```prolog
+?[text] := *memory{ id: $id, text }
+```
+
+With `{"id": "m3"}`:
+
+```
+text
+Nightly compaction stalls search-service around 03:00
+```
+
+A parameter reaches the plan as a bound constant, so the keyed lookup is
+identical to writing the literal:
+
+```prolog
+::explain { ?[text] := *memory{ id: $id, text } }
+```
+
+```
+atom_idx  op                  ref       joins_on        filters/expr
+3         unify               *5                        "m3"
+2         load_stored         :memory
+1         stored_prefix_join            {"*5": "**0"}
+0         out
+```
+
+String interpolation, by contrast, is an injection surface (a value containing
+a quote is now part of your query) and an escaping bug waiting to happen. This
+matters double when the values come from an LLM.
+
+## Stage shared work in ephemeral relations
+
+When several queries need the same intermediate result, compute it once into
+an ephemeral relation (name starting with `_`) inside a chained transaction,
+then reuse it. Here the set of high-importance memories is staged once and
+then self-joined:
+
+```prolog
+{ :create _hot { id: String } }
+{
+    ?[id] := *memory{ id, importance }, importance >= 0.75
+    :put _hot { id }
+}
+{
+    ?[a, b] := *_hot[a], *_hot[b], *recalls{ from: a, to: b }
+    :order a
+}
+```
+
+```
+a     b
+m2    m5
+m4    m5
+m8    m5
+```
+
+Ephemeral relations live exactly as long as their transaction: a standalone
+`:create _draft { .. }` script succeeds and the relation is gone before the
+next script runs. The chaining mini-language (`%loop`, `%if`, `%swap`, …) where
+ephemeral relations do their real work is covered in
+[Chaining queries](/docs/stored-relations#chaining-queries).
+
+## Give every unbounded query a budget
+
+Explicit unification makes it possible to write queries with infinite results,
+and no compiler can reject them all without also rejecting valid queries:
+
+```prolog
+count_up[n] := n = 1
+count_up[n] := count_up[m], n = m + 1
+?[n] := count_up[n]
+:timeout 1
+```
+
+```
+eval::timeout
+
+  × Query exceeded its time budget
+  help: The query ran past its wall-clock budget, set by a `:timeout`
+        option, a per-call timeout, or the Db default query timeout.
+        Narrow the query or raise the budget.
+```
+
+Make the budget a habit for any query whose termination depends on data you
+do not control — recursion over user-supplied graphs, exploratory joins, and
+especially queries authored by an LLM. A runaway query can also be stopped
+from outside with `::kill` (see
+[System ops](/docs/system-ops#monitor-and-kill)).
+
+<Callout type="fork">
+  Since mnestic 0.10.5 the timeout is a real wall-clock budget that interrupts
+  a query mid-join (upstream, a `::kill` could queue behind the very query it
+  targeted, and a `:timeout` was only honoured between rule applications). A
+  Db-wide default can be set from Rust, Python,
+  or the server binary, and the effective deadline is the minimum of whatever
+  is set — a `:timeout` can tighten the budget, never extend it. See
+  [Interruptibility & query budgets](/docs/fork/interruptibility) and
+  [`:timeout`](/docs/queries#timeout-n).
+</Callout>
+
+## Dealing with nulls
+
+The engine is strict about types: comparisons are only defined between values
+of the same type. Given `confidence { memory => score: Float? }` where some
+scores are null, this query throws as soon as it meets one:
+
+```prolog
+?[memory] := *confidence[memory, score], score > 0.5
+```
+
+```
+eval::throw
+
+  × Evaluation of expression failed
+  help: comparison can only be done between the same datatypes, got null
+        and 0.5
+```
+
+One solution is to treat null as equivalent to a default value with `~`, the
+coalesce operator:
+
+```prolog
+?[memory] := *confidence[memory, score], (score ~ -1) > 0.5
+```
+
+```
+memory
+m2
+```
+
+The parentheses are not necessary — `~` binds tighter than the comparison —
+but it reads better this way. You can also check for null explicitly:
+
+```prolog
+?[memory] := *confidence[memory, score], if(is_null(score), false, score > 0.5)
+```
+
+`cond` is also helpful in this case; see
+[Functions](/docs/functions) for `coalesce`, `if` and `cond`.
 
 <Attribution page="tips.html" />
