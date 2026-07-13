@@ -23,6 +23,18 @@ the `validity(...)` constructor, and the write path. Engine (`cozo-core`) only �
 the public Rust API is byte-identical to 0.12.1, and no grammar, planner or
 `mnestic-rocks` change.
 
+**The bug predates the fork, and it is as old as Cozo's time travel.** Three of the
+four sites are verbatim upstream code at the fork point (`481af05`, 2024-12-04): the
+`@` selector (`expr2vld_spec`), the `validity(...)` constructor (`op_validity`), and —
+worst — the write path itself, whose `DataValue::List` arm of `ColType::Validity` is
+byte-identical to upstream's. So is the accessor all three funnel through:
+`Num::get_int`, which coerces any whole-numbered float to an `i64`. Only the transaction-time
+selector is ours, and it inherited the coercion rather than introducing it — 0.10.0
+extended the same accessor onto a new axis. `Validity` columns and `@` time travel are
+a Cozo feature that predates the fork by years, so this is not something bitemporality
+broke: every CozoDB database with a `Validity` column has it, and the upstream code that
+writes 1970 still ships today. Nobody was reading it. That is what the fork is for.
+
 <Callout type="warning">
   **Upgrade action, if any `Validity` column has a default built on `now()`.**
   `Validity default [floor(now()), true]` — and every spelling of it, since
@@ -59,12 +71,12 @@ the public Rust API is byte-identical to 0.12.1, and no grammar, planner or
   `to_int(<expr> * 1000000)`.
 - **`validity(<float>)` is rejected too.** The constructor's own documentation
   said "integer"; it accepted a float and coerced it. It now means what it said.
-- **We found exactly one caller of the broken idiom — our own test suite.** The
-  engine's HNSW test, inherited from upstream, declared
-  `Validity default [floor(now()), true]` and had been writing 1970 into every
-  row it created for as long as the test existed. It never asserted on the
-  value, so nothing ever went red. If it was in our test suite, it is in
-  someone's schema.
+- **We found exactly one caller of the broken idiom — upstream's own test suite.**
+  The HNSW test we inherited unchanged, and which upstream still ships, declared
+  `Validity default [floor(now()), true]` and had been writing 1970 into upstream's
+  own valid-time axis for as long as the test existed. It never asserted on the
+  value, so nothing ever went red. If it was in the test suite we inherited, it is
+  in someone's schema.
 - **What this deliberately does not fix.** An integer in *seconds*
   (`@ 1704067200`) is still accepted and still returns nothing, silently. Valid
   time is an abstract, user-settable logical clock — the

@@ -291,7 +291,7 @@ const forkItems = [
   {
     ver: "0.12.2",
     t: "A float in a validity is now an error",
-    d: "Validity timestamps are integer microseconds; now() and parse_timestamp() return float seconds. The engine coerced one into the other silently, so a fact meant for 2024 was written — permanently — at 1970, visible only under time travel. Four sites, one inherited bug. We found exactly one caller of the broken idiom: our own test suite.",
+    d: "Validity timestamps are integer microseconds; now() and parse_timestamp() return float seconds. The engine coerced one into the other silently, so a fact meant for 2024 was written — permanently — at 1970, visible only under time travel. Three of the four sites are verbatim upstream code, write path included: the bug is as old as Cozo's time travel. The one caller of the broken idiom we found was upstream's own test.",
     metric: "the write path stored 1970 and returned Ok · reads returned zero rows and no error",
   },
   {

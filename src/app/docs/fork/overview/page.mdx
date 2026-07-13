@@ -42,10 +42,21 @@ misread landed before any row was asserted, so the query returned **zero rows an
 no error**. All four now reject a float with a message that names the unit and
 the fix (`to_int(<expr> * 1000000)`).
 
+**Like the 0.12.1 bugs below, this one is inherited — and it predates
+bitemporality.** Three of the four sites are verbatim upstream code at the fork
+point (`481af05`, 2024-12-04): the `@` selector (`expr2vld_spec`), the
+`validity(...)` constructor (`op_validity`), and — worst — the write path itself,
+whose `DataValue::List` arm of `ColType::Validity` is byte-identical to upstream's.
+So is the accessor all three funnel through, `Num::get_int`, which coerces any
+whole-numbered float to an `i64`. Only the transaction-time selector is ours, and 0.10.0 did not introduce
+the coercion there, it inherited it: `Validity` columns and `@` time travel are a
+Cozo feature that predates the fork by years. Every CozoDB database with a
+`Validity` column has this bug, and the upstream code that writes 1970 still ships.
+
 The idiom that triggers it — `Validity default [floor(now()), true]` — had
-exactly one caller we could find anywhere: the engine's own HNSW test, inherited
-from upstream, which had been stamping every row it wrote at 1970 for as long as
-the test existed and never asserted on the value. See
+exactly one caller we could find anywhere: **upstream's own HNSW test**, which we
+inherited unchanged, which had been writing 1970 into upstream's own valid-time axis
+for as long as the test existed, and which never asserted on the value. See
 [Release history](/docs/release-notes#0122) for the upgrade action, and
 [Time travel](/docs/time-travel#what-the--selector-accepts) for what the selector
 accepts.

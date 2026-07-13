@@ -141,10 +141,11 @@ With a default, temporal bookkeeping disappears from the write entirely:
 <Callout type="warning">
   **A default built on `now()` writes 1970.** `now()`, `parse_timestamp()`,
   `round()`, `floor()` and `ceil()` all return float *seconds*; a validity stores
-  integer *microseconds*. Through mnestic 0.12.1 the engine coerced the float
-  without a word, so `Validity default [floor(now()), true]` — the obvious
-  spelling, and one we found in our own inherited test suite — stamped every row
-  it wrote at a moment in January 1970. Such a row reads back perfectly on an
+  integer *microseconds*. Every build through mnestic 0.12.1 — and every CozoDB
+  release, since the coercion is upstream's — took the float without a word, so
+  `Validity default [floor(now()), true]` — the obvious spelling, and the one in
+  upstream's own HNSW test — stamped every row it wrote at a moment in January
+  1970. Such a row reads back perfectly on an
   ordinary query and is wrong only under a time-travel read. The schema still
   compiles; since **0.12.2** it is the write that fails:
 

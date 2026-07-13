@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Migrating from CozoDB",
   description:
-    "How to move a CozoDB project to mnestic: a dependency swap that leaves your CozoScript and your use cozo:: imports untouched.",
+    "How to move a CozoDB project to mnestic: a dependency swap that leaves your CozoScript and your use cozo:: imports untouched — plus the one thing to check if you used a Validity column.",
 };
 
 # Migrating from CozoDB
@@ -55,9 +55,191 @@ mnestic.
   rejects it instead. This is the one migration step that can surface as a new
   error: a schema carrying `Validity default [floor(now()), true]` still
   compiles, but its next write raises `eval::float_validity`. Write
-  `default [to_int(now() * 1000000), true]` (or `default 'ASSERT'`), and see the
-  [0.12.2 notes](/docs/release-notes#0122) — rows already stamped at 1970 cannot
-  be repaired by the upgrade.
+  `default [to_int(now() * 1000000), true]` (or `default 'ASSERT'`), and see
+  [If you used a `Validity` column](#if-you-used-a-validity-column) below plus
+  the [0.12.2 notes](/docs/release-notes#0122) — rows already stamped at 1970
+  cannot be repaired by the upgrade.
+
+## If you used a `Validity` column
+
+Skip this section if none of your relations declare a `Validity` column. If any
+of them do, read it before you write to them: the upgrade will surface a new
+error, and — the part that is easy to miss — some of the rows already on your
+disk are probably wrong.
+
+The bug is not one the fork introduced. `Validity` columns and `@` time travel
+are a CozoDB feature that predates the fork point, and the faulty coercion sits
+in upstream's own code: a validity stores an integer count of *microseconds*,
+while `now()` and `parse_timestamp()` return float *seconds*, and upstream's
+`Num::get_int` quietly accepted any whole-numbered float as an integer. So the
+two units were interchangeable and nothing said a word. Every CozoDB database
+with a `Validity` column has this. Upstream's own HNSW test wrote
+`Validity default [floor(now()), true]` and had been stamping every row it
+wrote at 1970 for as long as the test existed; it never asserted on the value,
+so it never noticed. mnestic 0.12.2 rejects the float.
+
+### Where it bites: the schema compiles, the next write fails
+
+This catches people out because the `:create` is not what breaks. A schema
+carrying the broken idiom still compiles exactly as before:
+
+```prolog
+:create emp {name: String, at: Validity default [floor(now()), true] => title: String}
+```
+
+It is the next **write** that now raises an error:
+
+```prolog
+?[name, title] <- [['ada', 'CTO']] :put emp {name => title}
+```
+
+```text
+eval::float_validity
+
+  × when executing against relation 'emp'
+  ├─▶ when processing tuple ["ada", "CTO"]
+  ╰─▶ a Validity column stores an integer timestamp, got the float 1783955642
+  help: Validity timestamps are integer MICROSECONDS since the Unix epoch. …
+```
+
+Any spelling that produces a *whole-numbered* float does this — `floor(now())`,
+`round(now())`, or `parse_timestamp()` on a whole second. (A bare `[now(), true]`
+already failed before 0.12.2, but only by luck: `now()` returns a *fractional*
+float, and the old coercion accepted whole-numbered ones only.) The fix is to
+give the column integer microseconds:
+
+```prolog
+:create emp {name: String, at: Validity default [to_int(now() * 1000000), true] => title: String}
+```
+
+`default 'ASSERT'` works too, and the string forms (`'2024-06-01T12:00:00Z'`,
+`'ASSERT'`, `'RETRACT'`) remain the safe way to write a validity by hand.
+
+### The quiet half: your existing rows may already be wrong
+
+The error is the loud half, and it is the half that fixes itself the moment you
+change the schema. The quiet half is that **every row your Cozo build already
+wrote through that idiom is on disk at a valid time a million times too small**,
+and upgrading does not touch it. Those rows are plain integers; 0.12.2's float
+rejection guards the door, not the room. It cannot detect them and will not
+repair them.
+
+A row you meant to stamp `2024-06-01` was stored as `1717200000` — the count of
+*seconds* — and a validity reads that as microseconds, i.e. 28 minutes past the
+Unix epoch, `1970-01-01T00:28:37Z`. The consequence is that **the fact leaks
+backwards in time**. Take a relation where `bob` was CTO from 2020, `ada` took
+over on 2024-06-01, and `ada` stepped down in 2024-10 — with `ada`'s assertion
+and `bob`'s retraction both written through the broken idiom. Asking who was CTO
+in 2020:
+
+```prolog
+?[name, title] := *emp{name, title @ '2020-01-01'}
+```
+
+returns `ada` — whose appointment did not begin for another four years —
+alongside `bob`, who really did hold the job then. The same corruption breaks
+retractions in the mirror image: `bob`'s retraction also landed in 1970, which
+is *before* the 2020 assertion it was meant to cancel, so the later assertion
+masks it and the retraction never takes effect at all. `bob` is CTO forever.
+
+| as of | before repair | after repair |
+| --- | --- | --- |
+| 2019-01-01 | `ada` | — |
+| 2021-01-01 | `ada`, `bob` | `bob` |
+| 2024-07-01 | `ada`, `bob` | `ada` |
+| 2025-01-01 | `bob` | — |
+
+Ordinary queries look fine throughout — the damage is visible only under time
+travel, which is exactly where a temporal database is supposed to be
+trustworthy.
+
+### Before you repair anything
+
+<Callout type="warning">
+  **The threshold in the repair below is a heuristic, and it is yours to
+  authorize — one relation at a time. Run it on the wrong relation and it will
+  destroy your data.**
+
+  The repair assumes the relation's valid time is **wall-clock microseconds**,
+  and treats every stamp below `1000000000000` as corrupt. That assumption is
+  not always true, and mnestic cannot make it for you.
+
+  Valid time in CozoDB is a deliberately **abstract, user-set logical clock**.
+  Cozo's own tutorial queries `@ 2019`; the engine's own tests use `@ 250`. On a
+  relation whose validity is an abstract clock rather than wall-clock
+  microseconds, *every* stamp is legitimately below the threshold — and this
+  recipe would dutifully "repair" `250` into `250000000` and **destroy your
+  data**.
+
+  So: take a backup (`::backup`), run the **detection query on its own**, read
+  the rows it returns, and only then repair — one relation at a time, each one a
+  decision you have actually made.
+</Callout>
+
+The threshold works for wall-clock relations because the two units do not
+overlap: `1000000000000` microseconds is 1970-01-12, a genuine microsecond stamp
+from this century is above `1000000000000000` (2001-09-09), and a stamp
+mistakenly written in seconds is down around `1700000000`. Pick a different
+threshold if your data warrants it; the number is a judgement, not a constant.
+
+### Detection
+
+Find the candidate rows and *look at them*:
+
+```prolog
+?[name, ts] := *emp{name, at}, ts = to_int(at), ts < 1000000000000
+```
+
+A bare binding like `*emp{name, at}` sees every validity version of every key,
+not just the current one, so this scan is complete.
+
+### Repair
+
+Two scripts, in this order. The corrected rows go in first, so the fact is never
+absent from the relation:
+
+```prolog
+bad[name, ts, ok, title] := *emp{name, at, title},
+                            ts = to_int(at), ok = to_bool(at), ts < 1000000000000
+?[name, at, title] := bad[name, ts, ok, title], at = [ts * 1000000, ok]
+:put emp {name, at => title}
+```
+
+```prolog
+?[name, at] := *emp{name, at}, to_int(at) < 1000000000000
+:rm emp {name, at}
+```
+
+Two things this gets right that a hastier version does not, both tested:
+
+- **It preserves `is_assert`.** `to_bool(at)` carries the assert/retract flag
+  across, so a corrupt *retraction* is moved to its correct instant and stays a
+  retraction. Rewriting everything as an assertion would silently resurrect
+  deleted facts.
+- **It handles a key with both a corrupt and a correct version.** Repairing
+  `ada` (corrupt assertion, correct retraction) does not disturb the good row,
+  and the two end up correctly ordered.
+
+Re-run the detection query afterwards; it should return nothing, and the
+time-travel answers should agree with the "after repair" column above.
+
+### Why mnestic cannot just ship a `::repair` for this
+
+Because a stored `1717200000` is genuinely ambiguous. On a wall-clock relation
+it is a broken 2024 timestamp; on an abstract-clock relation it is a perfectly
+legitimate value — and nothing in the schema distinguishes the two, because
+CozoDB deliberately lets valid time mean whatever you need it to mean. Only you
+know which clock a given relation keeps.
+
+This is the same reason 0.12.2 rejects a *float* but still accepts an *integer*
+in seconds: `@ 1704067200` remains valid CozoScript and still quietly returns
+nothing, because no magnitude check inside the engine could tell a wrong-unit
+timestamp from a small legitimate one without being wrong somewhere else. A
+guess in a database engine is worse than a refusal. The real answer is a *typed*
+path — `dt_to_validity` plus `@ <Validity>`, so the unit is carried by the type
+and never inferred — and that lands with the datetime library in 0.13.0. Until
+then, integer microseconds are the low-level form and the string forms are the
+safe ones.
 
 ## What is new (opt-in)
 
