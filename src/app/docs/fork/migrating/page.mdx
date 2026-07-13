@@ -24,10 +24,10 @@ rename idiom so the dependency **key stays `cozo`** — that keeps both
 ```toml
 # Cargo.toml
 [dependencies]
-cozo = { package = "mnestic", version = "0.12.1" }
+cozo = { package = "mnestic", version = "0.12.2" }
 
 # with the RocksDB backend:
-# cozo = { package = "mnestic", version = "0.12.1", features = ["storage-rocksdb"] }
+# cozo = { package = "mnestic", version = "0.12.2", features = ["storage-rocksdb"] }
 ```
 
 If you depend on a local checkout instead of crates.io:
@@ -49,6 +49,15 @@ mnestic.
   [Non-blocking HNSW builds](/docs/fork/non-blocking-hnsw).
 - **A keyword-prefixed identifier parser fix** (`nullable_column`, `trueValue`,
   `falsey` now parse in value positions).
+- **A float in a validity stops corrupting the valid-time axis.** Upstream
+  coerced the float *seconds* returned by `now()` / `parse_timestamp()` into a
+  validity's integer *microseconds*, storing the fact at 1970; mnestic 0.12.2
+  rejects it instead. This is the one migration step that can surface as a new
+  error: a schema carrying `Validity default [floor(now()), true]` still
+  compiles, but its next write raises `eval::float_validity`. Write
+  `default [to_int(now() * 1000000), true]` (or `default 'ASSERT'`), and see the
+  [0.12.2 notes](/docs/release-notes#0122) — rows already stamped at 1970 cannot
+  be repaired by the upgrade.
 
 ## What is new (opt-in)
 

@@ -289,6 +289,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.12.2",
+    t: "A float in a validity is now an error",
+    d: "Validity timestamps are integer microseconds; now() and parse_timestamp() return float seconds. The engine coerced one into the other silently, so a fact meant for 2024 was written — permanently — at 1970, visible only under time travel. Four sites, one inherited bug. We found exactly one caller of the broken idiom: our own test suite.",
+    metric: "the write path stored 1970 and returned Ok · reads returned zero rows and no error",
+  },
+  {
     ver: "0.12.1",
     t: "Six inherited bugs, found and named",
     d: "A line-by-line audit of the inherited engine found full-text postings leaking on every in-place update, a transaction API that reported success for a failed commit, and change events fired for writes that never landed. All predate the fork. ::reindex is the repair path.",
@@ -407,7 +413,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.12.1
+                a maintained fork of CozoDB · v0.12.2
               </span>
             </div>
 
@@ -588,7 +594,9 @@ export default function Home() {
             {forkItems.map((f, i) => (
               <div
                 key={i}
-                className="flex flex-col bg-[var(--color-ink)] p-7 transition-colors hover:bg-[var(--color-ink-2)]"
+                className={`flex flex-col bg-[var(--color-ink)] p-7 transition-colors hover:bg-[var(--color-ink-2)] ${
+                  i === 0 ? "md:col-span-2" : ""
+                }`}
               >
                 <div className="mb-4 flex items-center gap-3">
                   <span className="rounded border border-[var(--color-synapse)]/30 bg-[var(--color-synapse)]/10 px-2 py-0.5 font-mono text-[0.68rem] text-[var(--color-synapse)]">
@@ -611,7 +619,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — every fork release, 0.8.0 through 0.12.1.
+            — every fork release, 0.8.0 through 0.12.2.
           </p>
         </section>
 
@@ -840,7 +848,7 @@ export default function Home() {
 cargo add mnestic
 
 # or, with the RocksDB backend:
-# mnestic = { version = "0.12.1", features = ["storage-rocksdb"] }`}
+# mnestic = { version = "0.12.2", features = ["storage-rocksdb"] }`}
               />
               <Code
                 lang="rust"

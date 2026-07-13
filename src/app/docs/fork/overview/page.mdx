@@ -28,6 +28,28 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 
 ## Highlights by release
 
+### 0.12.2 — a float in a validity is now an error
+
+Validity and transaction-time stamps are integer **microseconds** since the Unix
+epoch; `now()` and `parse_timestamp()` return float **seconds**. The engine
+coerced one into the other silently, in all four places a timestamp can enter a
+validity — the `@` selector, the `@ (tt: …)` / `:as_of` selector, the
+`validity(...)` constructor, and the write path. A fact meant for 2024 was
+denominated a million times too small and stored at 1970: the row reads back
+correctly on an ordinary query and is wrong only under time travel, which is
+exactly where a bitemporal engine has to be trustworthy. On the read side the
+misread landed before any row was asserted, so the query returned **zero rows and
+no error**. All four now reject a float with a message that names the unit and
+the fix (`to_int(<expr> * 1000000)`).
+
+The idiom that triggers it — `Validity default [floor(now()), true]` — had
+exactly one caller we could find anywhere: the engine's own HNSW test, inherited
+from upstream, which had been stamping every row it wrote at 1970 for as long as
+the test existed and never asserted on the value. See
+[Release history](/docs/release-notes#0122) for the upgrade action, and
+[Time travel](/docs/time-travel#what-the--selector-accepts) for what the selector
+accepts.
+
 ### 0.12.1 — six inherited bugs, found and named
 
 Every bug in this release is **inherited from upstream CozoDB and has been latent

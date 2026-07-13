@@ -1026,11 +1026,13 @@ $     the end of the text
 
 ## Timestamp functions
 
-There is no dedicated datetime type: time is plain numbers, in seconds since
-the UNIX epoch, as produced by `now()` and consumed by `format_timestamp`.
-Validities — the timestamped assert/retract values behind
-[time travel](/docs/time-travel) — also appear here, and their timestamps count
-in *microseconds*.
+There is no dedicated datetime type: time is plain numbers. The functions in
+this section work in **seconds** since the UNIX epoch, carried as a **float** —
+that is what `now()` returns and what `format_timestamp` consumes. Validities —
+the timestamped assert/retract values behind
+[time travel](/docs/time-travel) — count in **integer microseconds**. The two
+units are a factor of a million apart, and the engine will not bridge them for
+you.
 
 ```prolog
 ?[utc, tokyo, back] := ts = 1751587200,
@@ -1043,9 +1045,36 @@ in *microseconds*.
 ["2025-07-04T00:00:00+00:00", "2025-07-04T09:00:00+09:00", 1751587200.0]
 ```
 
+<Callout type="warning">
+  **`now()` and `parse_timestamp()` cannot be used directly in a validity
+  position.** Their float seconds are a million times smaller than the integer
+  microseconds a validity stores, so a value meant for 2025 denominates as a
+  moment in January 1970. Through mnestic 0.12.1 the engine coerced the float
+  silently — a `:put` stored the row at 1970 and returned success, and an
+  `@ now()` read returned no rows and no error. Since **0.12.2** every validity
+  position rejects a float: the `@` selector and `:as_of`
+  (`parser::float_validity_spec`), the `validity(...)` constructor, and a
+  `Validity` column on the write path (`eval::float_validity`).
+
+  Bridge the units with `to_int`, which truncates a float to an integer:
+
+  ```prolog
+  ?[micros] := micros = to_int(parse_timestamp('2025-07-04T00:00:00Z') * 1000000)
+  ```
+
+  ```
+  [1751587200000000]
+  ```
+
+  `round()`, `floor()` and `ceil()` all return floats and will **not** convert
+  it. A `Validity` column default is written
+  `default [to_int(now() * 1000000), true]`, or, more simply, `default 'ASSERT'`.
+</Callout>
+
 ### `now()`
 
-Returns the current timestamp as seconds since the UNIX epoch (a float). The resolution is much coarser on WASM targets than the others.
+Returns the current timestamp as seconds since the UNIX epoch (a float — see the
+callout above before putting it in a validity). The resolution is much coarser on WASM targets than the others.
 
 ### `format_timestamp(ts, tz?)`
 
@@ -1055,7 +1084,7 @@ If a second string argument is provided, it is interpreted as a [timezone](https
 
 ### `parse_timestamp(str)`
 
-Parses `str` into seconds since the epoch according to RFC3339.
+Parses `str` into seconds since the epoch according to RFC3339. The result is a float, in seconds — `to_int(parse_timestamp(str) * 1000000)` is the microsecond integer a validity wants.
 
 ### `validity(ts_micro, is_assert?)`
 
@@ -1067,6 +1096,20 @@ Returns a validity object with the given timestamp in microseconds. If `is_asser
 
 ```
 [[1751587200000000, true], 1751587200000000]
+```
+
+The timestamp must be an **integer**. Since mnestic 0.12.2 a float is an error rather than a value coerced a millionfold too small:
+
+```prolog
+?[v] := v = validity(parse_timestamp('2025-07-04T00:00:00Z'))
+```
+
+```
+eval::throw: Evaluation of expression failed
+help: 'validity' expects an integer number of MICROSECONDS since the Unix
+epoch, got the float 1751587200. now() and parse_timestamp() return float
+SECONDS: write validity(to_int(<expr> * 1000000)). (round() returns a float and
+will not convert it.)
 ```
 
 ## Interval functions

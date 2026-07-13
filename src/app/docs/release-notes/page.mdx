@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.12.1) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.12.2) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,73 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.12.2
+
+**A float in a validity is now an error, in all four places it was silently
+accepted.** Validity and transaction-time stamps are integer *microseconds*
+since the Unix epoch. `now()` and `parse_timestamp()` return float *seconds*.
+The engine's integer accessor accepted any integral float and coerced one unit
+into the other without a word, so a timestamp meant for 2024 was denominated a
+million times too small and landed in 1970. One inherited bug, four sites: the
+`@` valid-time selector, the `@ (tt: …)` / `:as_of` transaction-time selector,
+the `validity(...)` constructor, and the write path. Engine (`cozo-core`) only —
+the public Rust API is byte-identical to 0.12.1, and no grammar, planner or
+`mnestic-rocks` change.
+
+<Callout type="warning">
+  **Upgrade action, if any `Validity` column has a default built on `now()`.**
+  `Validity default [floor(now()), true]` — and every spelling of it, since
+  `now()`, `parse_timestamp()`, `round()`, `floor()` and `ceil()` all return
+  floats — has been stamping every row it wrote at **1970**, in the valid-time
+  axis, invisibly. As of 0.12.2 that schema still compiles but the next write
+  raises `eval::float_validity` instead of corrupting another row. Multiply
+  through to microseconds and truncate:
+
+  ```prolog
+  last_seen: Validity default [to_int(now() * 1000000), true]
+  ```
+
+  Or use `default 'ASSERT'`, which was always correct. Rows already written
+  carry a valid time no upgrade can repair — they read back normally and are
+  wrong only under time travel, so check any relation whose validity came from a
+  float before you trust its history.
+</Callout>
+
+- **The write path stored 1970 and reported success.** A `:put` of
+  `[parse_timestamp('2024-06-01T00:00:00Z'), true]` into a `Validity` column
+  succeeded and stamped the row at January 1970. The row reads back correctly on
+  an ordinary query; the damage is visible only under a time-travel read —
+  precisely where a bitemporal database is supposed to be trustworthy. That is
+  permanent at-rest corruption, and it is the reason this release exists. The
+  column now raises `eval::float_validity`, naming the unit and the fix.
+- **The read paths returned nothing, and said nothing.**
+  `@ parse_timestamp('2024-06-01T00:00:00Z')` read the relation at a moment in
+  1970 — before any row was asserted — and returned zero rows with no error,
+  indistinguishable from "no data yet". `@ 1e300` was accepted and saturated to
+  `i64::MAX`, silently querying the end of time. Both, plus the `tt:` selector
+  and `:as_of`, now raise `parser::float_validity_spec`, which names the axis,
+  the 1,000,000× magnitude, and the spelling that works:
+  `to_int(<expr> * 1000000)`.
+- **`validity(<float>)` is rejected too.** The constructor's own documentation
+  said "integer"; it accepted a float and coerced it. It now means what it said.
+- **We found exactly one caller of the broken idiom — our own test suite.** The
+  engine's HNSW test, inherited from upstream, declared
+  `Validity default [floor(now()), true]` and had been writing 1970 into every
+  row it created for as long as the test existed. It never asserted on the
+  value, so nothing ever went red. If it was in our test suite, it is in
+  someone's schema.
+- **What this deliberately does not fix.** An integer in *seconds*
+  (`@ 1704067200`) is still accepted and still returns nothing, silently. Valid
+  time is an abstract, user-settable logical clock — the
+  [tutorial](/docs/tutorial) itself queries `@ 2019` — so no magnitude check can
+  distinguish a wrong-unit timestamp from a legitimately small one, and a gate at
+  1e12 breaks fifteen of the engine's own tests. The real answer is a typed path,
+  which arrives with the datetime library in 0.13.0. Until then: integer
+  microseconds is the low-level form, and the string forms (`@ '2024-06-01'`,
+  `@ '2024-06-01T12:00:00Z'`) are unambiguous and safe.
+
+→ [Time travel](/docs/time-travel#what-the--selector-accepts) · [Timestamp functions](/docs/functions#timestamp-functions)
 
 ## 0.12.1
 

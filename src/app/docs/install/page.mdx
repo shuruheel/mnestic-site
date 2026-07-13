@@ -68,12 +68,32 @@ mnestic inherits CozoDB's storage backends. Select them with Cargo features:
 
 ```toml
 # Cargo.toml — enable the RocksDB backend
-mnestic = { version = "0.12.1", features = ["storage-rocksdb"] }
+mnestic = { version = "0.12.2", features = ["storage-rocksdb"] }
 ```
 
 <Callout type="note">
   RocksDB compiles a C++ dependency, so the first build is slow. The in-memory
   and SQLite backends need no native toolchain.
+</Callout>
+
+<Callout type="warning">
+  **Upgrading to 0.12.2? Check your `Validity` column defaults first.**
+  `Validity default [floor(now()), true]` — and every spelling built on
+  `now()`, `parse_timestamp()`, `round()`, `floor()` or `ceil()`, all of which
+  return float *seconds* where a validity stores integer *microseconds* — has
+  been stamping every row it wrote at **1970**. Through 0.12.1 the engine
+  coerced the float silently; since 0.12.2 the write raises
+  `eval::float_validity` instead. The schema still compiles, so the first sign
+  will be a failing write. The correct spelling multiplies through and truncates:
+
+  ```prolog
+  last_seen: Validity default [to_int(now() * 1000000), true]
+  ```
+
+  `default 'ASSERT'` was always correct and stays correct. Rows already written
+  carry a valid time no upgrade can repair — they read back normally, and are
+  wrong only under time travel. See [Time travel](/docs/time-travel#what-the--selector-accepts)
+  and the [0.12.2 notes](/docs/release-notes#0122).
 </Callout>
 
 <Callout type="warning">

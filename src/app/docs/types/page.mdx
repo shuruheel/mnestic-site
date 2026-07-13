@@ -407,7 +407,7 @@ and coerced where a safe conversion exists. Anything else is a hard error — a
 | `Bytes` | `Bytes`; a `String`, decoded as Base64 |
 | `Uuid` | `Uuid`; a `String` in UUID format |
 | `Json` | any value, converted to its JSON representation |
-| `Validity` | a `Validity` value; a `[timestamp, bool]` list; the strings `'ASSERT'`/`'RETRACT'`, an RFC 3339 timestamp, or a `~`-prefixed RFC 3339 timestamp (writes a retraction) — see [time travel](/docs/time-travel) |
+| `Validity` | a `Validity` value; a `[timestamp, bool]` list, where the timestamp is an **integer** (a float is rejected since mnestic 0.12.2, rather than coerced a millionfold too small); the strings `'ASSERT'`/`'RETRACT'`, an RFC 3339 timestamp, or a `~`-prefixed RFC 3339 timestamp (writes a retraction) — see [time travel](/docs/time-travel#writing-temporal-facts) |
 | `<F32; n>` / `<F64; n>` | a `Vector` of exactly that type and length; a list of n numbers; a Base64 `String` of the raw element bytes |
 | `[T]` / `[T; n]` / tuples | a list, with each element coerced recursively and the length enforced |
 

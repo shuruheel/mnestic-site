@@ -94,13 +94,19 @@ before the retraction at an equal timestamp:
 The engine does not interpret the timestamp — that is up to you. If you use it
 to represent calendar time, treat it as **microseconds since the Unix epoch**:
 every convenience below (`'ASSERT'`, RFC 3339 strings, `'NOW'`) assumes that
-interpretation.
+interpretation. And it is an integer, strictly: a float is rejected wherever a
+validity is built, because a float timestamp almost always comes from `now()`
+or `parse_timestamp()`, which count in *seconds* — a million times coarser than
+the unit the column stores. The [write forms](#writing-temporal-facts) and the
+[selector](#what-the--selector-accepts) below each say what that means in
+practice.
 
 ### Writing temporal facts
 
 A `Validity` column accepts several forms on write:
 
-- A two-element list `[timestamp, bool]` — the explicit form.
+- A two-element list `[timestamp, bool]` — the explicit form. The timestamp must
+  be an integer.
 - The string `'ASSERT'` or `'RETRACT'` — an assertion or retraction at the
   current timestamp. Every write using these strings in one transaction is
   guaranteed to receive the **same** timestamp, and they work as column
@@ -131,6 +137,48 @@ With a default, temporal bookkeeping disappears from the write entirely:
 ```
 ["o1","compaction ran clean tonight"]
 ```
+
+<Callout type="warning">
+  **A default built on `now()` writes 1970.** `now()`, `parse_timestamp()`,
+  `round()`, `floor()` and `ceil()` all return float *seconds*; a validity stores
+  integer *microseconds*. Through mnestic 0.12.1 the engine coerced the float
+  without a word, so `Validity default [floor(now()), true]` — the obvious
+  spelling, and one we found in our own inherited test suite — stamped every row
+  it wrote at a moment in January 1970. Such a row reads back perfectly on an
+  ordinary query and is wrong only under a time-travel read. The schema still
+  compiles; since **0.12.2** it is the write that fails:
+
+  ```prolog
+  :create obs_bad { id: String, at: Validity default [floor(now()), true] => note: String }
+  ```
+
+  ```prolog
+  ?[id, note] <- [['o1', 'compaction ran clean tonight']]
+  :put obs_bad { id => note }
+  ```
+
+  ```
+  eval::float_validity: a Validity column stores an integer timestamp, got the
+  float 1783952076
+  help: Validity timestamps are integer MICROSECONDS since the Unix epoch. A
+  float here is almost always float SECONDS from now()/parse_timestamp(), and
+  would have been stored about 1,000,000x too small — a permanently wrong valid
+  time (1970), invisible to an ordinary query and visible only under time travel.
+  Write [to_int(<expr> * 1000000), true], or use the string forms
+  '2024-06-01T12:00:00Z' / 'ASSERT' / 'RETRACT'.
+  ```
+
+  That float in the message is `now()` itself — seconds, not microseconds.
+  Multiply through and truncate with `to_int`, or use `'ASSERT'`, which never had
+  the problem:
+
+  ```prolog
+  :create obs_at { id: String, at: Validity default [to_int(now() * 1000000), true] => note: String }
+  ```
+
+  Rows an earlier build already stamped at 1970 cannot be repaired by upgrading.
+  They have to be rewritten at their true timestamps.
+</Callout>
 
 ### How a history is read
 
@@ -287,6 +335,9 @@ The constant can be:
 | `'NOW'` | `@ 'NOW'` | the current timestamp |
 | `'END'` | `@ 'END'` | the end of time (final state) |
 
+A **float** is none of these, and since mnestic 0.12.2 it is an error rather
+than a coercion.
+
 <Callout type="fork">
   Bare dates landed in mnestic 0.10.0, on both temporal axes; upstream
   required a full RFC 3339 timestamp. The same release fixed two inherited
@@ -300,6 +351,62 @@ The constant can be:
   Quote your dates. `@ 2025-06-15` (unquoted) is integer subtraction — it
   evaluates to `2004` microseconds after the epoch and is accepted silently,
   returning rows (usually none) from the dawn of 1970.
+</Callout>
+
+<Callout type="warning">
+  **Don't hand the selector a float.** `@ now()`, `@ round(now())`,
+  `@ parse_timestamp('2025-06-15T12:30:00Z')` are all float *seconds*, a million
+  times smaller than the microseconds the selector reads. Through mnestic 0.12.1
+  each of them was accepted, read the relation at a moment in 1970 — before any
+  row was asserted — and returned **zero rows and no error**, which is
+  indistinguishable from "no data yet". (`@ 1e300` was accepted too, saturating
+  to the end of time.) Since **0.12.2** a float is rejected outright:
+
+  ```prolog
+  ?[person] := *service_owner{ service: 'search-service', person,
+                               @ parse_timestamp('2025-06-15T12:30:00Z') }
+  ```
+
+  ```
+  parser::float_validity_spec: valid-time timestamp must be an integer, got the
+  float 1749990600
+  help: valid-time timestamps are integer MICROSECONDS since the Unix epoch.
+  `now()` and `parse_timestamp()` return float SECONDS, so a float here would be
+  read about 1,000,000x too small — i.e. 1970, before your data exists.
+  If the value is in seconds:      to_int(<expr> * 1000000)
+  If it is already microseconds:   to_int(<expr>)
+  Note that `round()` returns a float and will NOT convert it.
+  Non-numeric forms also work: '2024-06-01', '2024-06-01T12:00:00Z', 'NOW', 'END'.
+  ```
+
+  Multiply through to microseconds and truncate with `to_int` — `round()`,
+  `floor()` and `ceil()` all return floats and will not do it:
+
+  ```prolog
+  ?[person] := *service_owner{ service: 'search-service', person,
+                               @ to_int(parse_timestamp('2025-06-15T12:30:00Z') * 1000000) }
+  ```
+
+  ```
+  ["Maya"]
+  ```
+
+  The string forms need no arithmetic at all: `@ '2025-06-15'` and
+  `@ '2025-06-15T12:30:00Z'` mean the same instant, unambiguously.
+</Callout>
+
+<Callout type="note">
+  **Integer seconds is the one unit mistake the engine cannot catch for you.**
+  `@ 1750000000` is a perfectly legal validity timestamp — it just means twenty
+  days into 1970, so on a relation stamped in microseconds it returns nothing,
+  silently. Nothing can be done about that here: the timestamp is an abstract
+  logical clock you control, and the [tutorial](/docs/tutorial) reads
+  `@ 2019` on a relation keyed by calendar years, so no magnitude check could
+  tell a wrong-unit timestamp from a small deliberate one without breaking
+  legitimate queries. When a time-travel read comes back empty, check the unit
+  before you conclude the data is missing. A typed path — a real datetime value
+  converted to a `Validity`, with no bare integer in sight — is planned for
+  0.13.0.
 </Callout>
 
 Two scope rules. The selector attaches to stored-relation atoms only, in both
@@ -479,7 +586,9 @@ transaction times are minted at commit):
 ```
 
 `T` accepts integer microseconds, RFC 3339 strings, and bare dates, exactly
-like the valid-time selector. `'NOW'` and `'END'` both mean **current
+like the valid-time selector — and rejects a float exactly like it, with
+`parser::float_validity_spec` naming the transaction-time axis (mnestic 0.12.2;
+before that, `@ (tt: now())` read a moment in 1970 and returned nothing). `'NOW'` and `'END'` both mean **current
 belief** — deliberately the end of transaction time rather than the wall
 clock, since the monotone clock can run ahead of a stepped-back system clock
 and "current belief" must always include every committed record. There is no
@@ -537,7 +646,8 @@ Both the pre-correction limit and the since-retracted `review_style` row
 answer as they were believed then. Explicit per-atom `tt:` selectors win over
 `:as_of`; using it in a block that references no `TxTime` relation is an
 error (a typo guard). It takes the same forms as `tt:` — microseconds, ISO
-strings, `'NOW'`.
+strings, `'NOW'` — and rejects a float on the same terms, so
+`:as_of parse_timestamp(…)` is an error rather than a silent read of 1970.
 
 <Callout type="warning">
   `:as_of` pins only `TxTime`-stamped relations. Plain and valid-time-only

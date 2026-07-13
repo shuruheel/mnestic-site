@@ -674,6 +674,16 @@ row is deleted at this time.
 Note that the integer only identifies a temporal sequence to Cozo. What sequence
 you use is up to you. UNIX _Epoch_ is the default, as we will see.
 
+<Callout type="note">
+  This is why we are about to query `@ 2019` and get a sensible answer: the
+  timestamp is whatever clock you decide it is, and here the clock is calendar
+  years. It is also why the engine cannot check your units for you. If you *do*
+  mean epoch time, the unit is **microseconds** — and a float, which is what
+  `now()` and `parse_timestamp()` return, is rejected rather than guessed at
+  (mnestic 0.12.2; earlier releases quietly read it as seconds and landed in
+  1970). See [Time travel](/docs/time-travel#what-the--selector-accepts).
+</Callout>
+
 Now let's insert some data:
 
 ```prolog

@@ -286,6 +286,17 @@ differ.) Because the generator runs per row, each row gets a fresh id.
   [ULID identifiers](/docs/fork/ulid).
 </Callout>
 
+<Callout type="warning">
+  **A `Validity` default must not be built on `now()` directly.** `now()`,
+  `parse_timestamp()`, `round()`, `floor()` and `ceil()` return float *seconds*,
+  while a validity stores integer *microseconds*, so
+  `Validity default [floor(now()), true]` stamps every row it writes at 1970.
+  mnestic 0.12.2 rejects the float on write (`eval::float_validity`) instead of
+  coercing it, as every release before it did. Write
+  `default [to_int(now() * 1000000), true]`, or `default 'ASSERT'` — see
+  [Time travel](/docs/time-travel#writing-temporal-facts).
+</Callout>
+
 ### Put, update, remove, ensure and ensure-not
 
 For `:put`, `:rm`, `:ensure` and `:ensure_not`, a column may be omitted from
