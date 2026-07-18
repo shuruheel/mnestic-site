@@ -1,7 +1,7 @@
 export const metadata = {
   title: "What mnestic adds",
   description:
-    "An overview of how mnestic diverges from CozoDB: budgeted weighted traversal, cached graph projections, bitemporality, provenance semirings, interruptible queries with wall-clock budgets, a stat-free join reorder, native 3-way fused recall, BM25 full-text search, equality pushdown, and ULID keys.",
+    "An overview of how mnestic diverges from CozoDB: a datetime library with a typed validity bridge, budgeted weighted traversal, cached graph projections, bitemporality, provenance semirings, interruptible queries with wall-clock budgets, a stat-free join reorder, native 3-way fused recall, BM25 full-text search, equality pushdown, and ULID keys.",
 };
 
 # What mnestic adds
@@ -27,6 +27,42 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 0.7.7.
 
 ## Highlights by release
+
+### 0.13.0 — the correctness union, and the features it earned
+
+A nine-bug hardening pass over the storage and index paths, paired with the
+primitives an agentic-memory workload needs. Ships with **mnestic-rocks 0.1.10**.
+
+- **The RocksDB table options you configure now reach RocksDB.** `open_db` loaded
+  your `BlockBasedTableOptions` (block cache, block size, `cache_index_and_filter_blocks`)
+  and then silently threw them away, resetting the table factory to a
+  default-constructed one — so an embedded engine ran with an 8 MB read cache and a
+  4 KB block size regardless of what its host asked for. Fixed in mnestic-rocks
+  0.1.10. **Every read-path benchmark taken before this measured a slower engine
+  than mnestic actually is.** Inherited from upstream Cozo.
+- **Budgeted hybrid retrieval in one call.** `hybrid_search` gains a
+  budgeted-expansion mode — a graph leg with `max_nodes` runs `BudgetedTraversal`'s
+  cheapest-first weighted expansion over a cached `graph:` projection, seeded from
+  the vector/FTS legs' own top-k — and its `vector_index`/`fts_index` are now
+  optional, so any non-empty subset of legs can be fused. A payload missing its leg
+  is a loud error, not a dropped signal.
+- **A datetime standard library (`dt_*`) with a typed validity bridge.** Component
+  extractors, `dt_trunc`, calendar-aware `dt_add`/`dt_diff`, strftime `dt_format`,
+  and `dt_to_validity` — which converts float Unix seconds to a `Validity` where the
+  unit is known. `@` and `:as_of` now accept a `Validity`-typed expression, closing
+  the seconds-vs-microseconds trap 0.12.2 opened the door on.
+- **The `!=` inclusion–exclusion count rewrite is restored, behind a type gate
+  (default OFF).** Sound this time — it fires only when both inequality operands are
+  variant-stable stored columns of one agreed type, so join equality and `op_neq`
+  cannot disagree. LSQB q6: **41.7 s → 0.30 s (~140×)**, count exactly the published
+  oracle.
+- **Errors that name what the engine expected.** Parse errors point their caret at
+  the deepest position reached and list the tokens that would have parsed;
+  index-search diagnostics carry the failing index kind's own code; and
+  `import_from_backup` refuses a schema mismatch — the one path that could write a
+  value violating its column's declared type.
+
+→ [Hybrid retrieval](/docs/fork/hybrid-retrieval) · [Datetime functions](/docs/functions#datetime-functions) · [Release history](/docs/release-notes#0130)
 
 ### 0.12.2 — a float in a validity is now an error
 

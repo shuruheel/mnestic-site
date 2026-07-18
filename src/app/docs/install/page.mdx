@@ -68,12 +68,24 @@ mnestic inherits CozoDB's storage backends. Select them with Cargo features:
 
 ```toml
 # Cargo.toml — enable the RocksDB backend
-mnestic = { version = "0.12.2", features = ["storage-rocksdb"] }
+mnestic = { version = "0.13.0", features = ["storage-rocksdb"] }
 ```
 
 <Callout type="note">
   RocksDB compiles a C++ dependency, so the first build is slow. The in-memory
   and SQLite backends need no native toolchain.
+</Callout>
+
+<Callout type="fork">
+  Specific to mnestic 0.13.0 (via **mnestic-rocks 0.1.10**). The RocksDB
+  `BlockBasedTableOptions` you configure — block cache, block size,
+  `cache_index_and_filter_blocks` — now actually reach RocksDB. Through 0.12.2 they
+  were loaded and then silently discarded on every open, so the read cache reverted
+  to RocksDB's 8 MB default and `block_size` to 4 KB regardless of your options
+  file. The fix changes what RocksDB *writes* as well as what it caches (new SSTs
+  pick up the configured `block_size`), but it is forward-compatible and needs no
+  migration — and it means any read-path benchmark you took before upgrading
+  measured a slower engine than mnestic actually is.
 </Callout>
 
 <Callout type="warning">

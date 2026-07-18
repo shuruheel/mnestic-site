@@ -24,10 +24,10 @@ rename idiom so the dependency **key stays `cozo`** — that keeps both
 ```toml
 # Cargo.toml
 [dependencies]
-cozo = { package = "mnestic", version = "0.12.2" }
+cozo = { package = "mnestic", version = "0.13.0" }
 
 # with the RocksDB backend:
-# cozo = { package = "mnestic", version = "0.12.2", features = ["storage-rocksdb"] }
+# cozo = { package = "mnestic", version = "0.13.0", features = ["storage-rocksdb"] }
 ```
 
 If you depend on a local checkout instead of crates.io:
@@ -237,9 +237,9 @@ nothing, because no magnitude check inside the engine could tell a wrong-unit
 timestamp from a small legitimate one without being wrong somewhere else. A
 guess in a database engine is worse than a refusal. The real answer is a *typed*
 path — `dt_to_validity` plus `@ <Validity>`, so the unit is carried by the type
-and never inferred — and that lands with the datetime library in 0.13.0. Until
-then, integer microseconds are the low-level form and the string forms are the
-safe ones.
+and never inferred — and that
+[landed with the datetime library in 0.13.0](/docs/functions#datetime-functions).
+Integer microseconds remain the low-level form and the string forms the safe ones.
 
 ## What is new (opt-in)
 

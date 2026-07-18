@@ -289,6 +289,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.13.0",
+    t: "The RocksDB options you set are the ones RocksDB now uses",
+    d: "Every BlockBasedTableOptions a host configured — block cache, block size, index/filter caching — was default-constructed away on each open, silently. The read cache reverted to RocksDB's 8 MB default and block_size to 4 KB; block_cache_size was ignored outright. Inherited from upstream, latent since the options-file path was introduced. Fixed in mnestic-rocks 0.1.10 — and it means every read-path benchmark run before it, ours included, measured a slower engine than mnestic actually is.",
+    metric: "block_size 4 KB → configured 16 KB · index/filter blocks now cached · the read cache was 8 MB, not what you asked for",
+  },
+  {
     ver: "0.12.2",
     t: "A float in a validity is now an error",
     d: "Validity timestamps are integer microseconds; now() and parse_timestamp() return float seconds. The engine coerced one into the other silently, so a fact meant for 2024 was written — permanently — at 1970, visible only under time travel. Three of the four sites are verbatim upstream code, write path included: the bug is as old as Cozo's time travel. The one caller of the broken idiom we found was upstream's own test.",
@@ -413,7 +419,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.12.2
+                a maintained fork of CozoDB · v0.13.0
               </span>
             </div>
 
@@ -619,7 +625,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — every fork release, 0.8.0 through 0.12.2.
+            — every fork release, 0.8.0 through 0.13.0.
           </p>
         </section>
 
@@ -848,7 +854,7 @@ export default function Home() {
 cargo add mnestic
 
 # or, with the RocksDB backend:
-# mnestic = { version = "0.12.2", features = ["storage-rocksdb"] }`}
+# mnestic = { version = "0.13.0", features = ["storage-rocksdb"] }`}
               />
               <Code
                 lang="rust"

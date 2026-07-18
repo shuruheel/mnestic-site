@@ -64,12 +64,12 @@ To see (or hand-tune) the CozoScript it generates rather than run it, call
 | --- | --- | --- |
 | `relation` | — | The base stored relation, e.g. `"memory"`. |
 | `id_col` | `"id"` | Key column holding the item id. |
-| `vector_index` | — | HNSW index name (the `<name>` in `relation:<name>`). |
+| `vector_index` | `None` | HNSW index name (the `<name>` in `relation:<name>`). Optional since 0.13.0 — omit to skip the semantic leg. |
 | `query_vector` | — | Query embedding for the semantic leg. |
 | `vector_f64` | `false` | Send the query vector as `F64` to match an `F64` index. |
 | `vector_k` | `10` | `k` for the HNSW search. |
 | `ef` | `50` | HNSW search breadth. |
-| `fts_index` | — | Full-text index name. |
+| `fts_index` | `None` | Full-text index name. Optional since 0.13.0 — omit to skip the keyword leg. |
 | `query_text` | — | Query text for the keyword leg (a CozoScript FTS expression). |
 | `fts_k` | `10` | `k` for the FTS search. |
 | `graph_legs` | `[]` | Typed graph-proximity legs (`GraphLeg`) — bounded-hop traversal fused as ranked lists. **(0.8.3)** |
@@ -99,6 +99,7 @@ GraphLeg {
     seeds:         vec![seed.into()],// query anchors (not themselves scored)
     max_hops:      2,                // bounded expansion; must be >= 1
     undirected:    false,            // also follow to_col -> from_col when true
+    ..GraphLeg::default()            // required since 0.13.0 — GraphLeg is #[non_exhaustive]
 }
 ```
 
@@ -109,6 +110,34 @@ GraphLeg {
   `max_hops == 0` are rejected. Multiple seeds are unioned, and multiple
   `graph_legs` each become their own ranked list in the fusion. An empty
   `graph_legs` generates the exact pre-0.8.3 script (backward compatible).
+</Callout>
+
+<Callout type="fork">
+  **Specific to mnestic 0.13.0 — budgeted expansion and optional legs.** Two
+  changes make `hybrid_search` the whole retrieval pipeline in one call:
+
+  - **Budgeted graph legs.** Setting a `GraphLeg`'s `max_nodes` switches it from the
+    recursive min-hop rule to a [`BudgetedTraversal`](/docs/algorithms#budgetedtraversal)
+    call — cheapest-first weighted expansion under a global distinct-node budget,
+    with optional `max_cost`, an exact layered-label depth bound (`max_hops`), a
+    `weight_col`, an optional liveness gate (`gate_relation` / `gate_cols` /
+    `admit`), and `graph:` naming a pre-created
+    [cached projection](/docs/fork/graph-projections) — the production path, since a
+    positional edge input pays a full scan + CSR build before any budget applies.
+    Seeds default to the union of the vector/FTS legs' own top-k
+    (`seed_from_legs`). With `detailed: true` the output gains the cheapest-path
+    witness (`parent`, `depth`).
+  - **Optional legs.** `vector_index` and `fts_index` are now `Option<String>`, so
+    any non-empty subset of the vector, FTS, graph and `extra_lists` legs can be
+    configured and fused. A payload missing its leg (`query_vector` with no `vector_index`, and
+    vice versa) is a loud error, never a silently dropped signal.
+
+  `HybridSearch` and `GraphLeg` are now `#[non_exhaustive]` — construct with
+  `Default` and field mutation (`..GraphLeg::default()`). This is paid once so that
+  the eight new `GraphLeg` fields, and any future ones, are never breaking. The
+  Python wheel's dict surface gains **optional keys only**, so existing dicts parse
+  unchanged; an unknown key in a `graph_legs` entry is now rejected loudly so a typo
+  (`max_hop`, `seed_from_leg`) can't silently run the leg with defaults.
 </Callout>
 
 #### Escape hatch: `extra_lists`

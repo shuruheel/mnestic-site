@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.12.2) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.13.0) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,90 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.13.0
+
+**The correctness-union release, and the feature tranche it earned.** 0.13.0 pairs
+a nine-bug hardening pass over the storage and index paths with the primitives a
+bitemporal, agentic-memory workload actually needs: budgeted hybrid retrieval in
+one call, a real datetime standard library with a typed validity bridge, and the
+restored `!=` count rewrite. It ships with **mnestic-rocks 0.1.10**, which carries
+the fix below. Engine (`cozo-core`) plus the RocksDB bridge — CozoScript semantics
+are unchanged unless noted.
+
+<Callout type="fork">
+  **The RocksDB table options you configure now actually reach RocksDB.** For as
+  long as the options-file path has existed, `open_db` loaded your
+  `BlockBasedTableOptions` — block cache, block size, `cache_index_and_filter_blocks`
+  — and then default-constructed a fresh one a few lines later, threw yours away,
+  and reset the table factory with the default. Silently: no error, no warning. An
+  embedded engine ran with a read cache two orders of magnitude smaller than its
+  host asked for (RocksDB's 8 MB default), `block_size` at 4 KB, index/filter blocks
+  uncached. `block_cache_size` was ignored outright, and dropped entirely unless an
+  options file was also supplied. Fixed in **mnestic-rocks 0.1.10** by seeding the
+  table options from the factory already in effect. **Every read-path benchmark
+  taken before this — ours included — measured a slower engine than mnestic
+  actually is.** It changes what RocksDB *writes*, not only what it caches (new SSTs
+  pick up the configured `block_size`), but it is forward-compatible and needs no
+  migration. Inherited from upstream Cozo.
+</Callout>
+
+- **`HybridSearch` gains a budgeted-expansion mode and optional legs.** The 0.12.0
+  `BudgetedTraversal` primitive is now reachable from the one-call `hybrid_search`
+  surface (the dict the PyPI wheel already exposes). Setting a graph leg's
+  `max_nodes` switches it from the recursive min-hop rule to cheapest-first weighted
+  expansion under a global distinct-node budget — with `max_cost`, an exact
+  layered-label depth bound, an optional liveness gate, and `graph:` naming a
+  pre-created cached projection (the production path). Seeds default to the union of
+  the vector/FTS legs' own top-k. And `vector_index`/`fts_index` are now optional:
+  configure any non-empty subset of the vector, FTS, graph and extra-list legs and
+  only those are generated and fused — a payload missing its leg is a loud error, never a
+  silently dropped signal. `HybridSearch`/`GraphLeg` are now `#[non_exhaustive]`
+  (construct with `Default` + field mutation); the wheel's dict surface gains
+  optional keys only, so existing dicts parse unchanged.
+- **A datetime standard library (`dt_*`) and a typed validity bridge.** We market a
+  bitemporal database; its datetime surface was three functions with inconsistent
+  units. This adds component extractors (`dt_year` … `dt_dow`/`dt_doy`),
+  `dt_trunc`, calendar-aware `dt_add`/`dt_diff`, strftime `dt_format`, and — the
+  keystone — **`dt_to_validity`**, which converts float Unix seconds to a `Validity`
+  *inside the function, where the unit is known*. `@` and `:as_of` now accept a
+  `Validity`-typed expression (`@ dt_to_validity(parse_timestamp('2024-01-01'))`),
+  so together with 0.12.2's float rejection the seconds-vs-microseconds trap is
+  closed: the raw-float misread errors loudly, and the typed path is the idiomatic
+  spelling. Timezone-sensitive functions take an optional trailing IANA name
+  (default UTC); `parse_timestamp` is widened to accept RFC3339, `"YYYY-MM-DD
+  hh:mm:ss"`, and bare `"YYYY-MM-DD"`, with validity string literals sharing the
+  same grammar. The `dt_*` names are now reserved against user registration.
+- **The `!=` inclusion–exclusion count rewrite is restored, behind a type gate
+  (default OFF).** The factorized-count `!=` extension built in 0.10.5 and cut 34
+  minutes later for a silent Int/Float miscount is back, sound this time: the
+  rewrite fires only when every occurrence of both inequality operands is a
+  declared, non-nullable, variant-stable stored column agreeing on one type — so
+  join equality and `op_neq` cannot disagree. Measured on LSQB q6 (sf0.1, sqlite):
+  **41.7 s → 0.30 s, ~140×**, with the count exactly LSQB's published oracle either
+  way. Default stays OFF (`Db::set_query_factorization`) pending a nightly soak; the
+  nightly LSQB tier now forces the toggle on and asserts the rewrite actually fired.
+- **Errors that name what the engine expected.** A failed parse now points its caret
+  at the deepest position the parser reached and lists the literal tokens that would
+  have been accepted there (`expected one of: :=, <-, <~`). Index-search
+  diagnostics carry the code of the index kind that actually failed
+  (`fts_query_required` instead of `hnsw_query_required`, and so on). And
+  `import_from_backup` now refuses a schema mismatch — the one user-reachable way to
+  put a value at rest that violates its column's declared type, which is exactly the
+  invariant the `!=` gate rests on.
+- **A nine-bug correctness union — the hardening pass.** BM25 counted `N` over the
+  base relation by re-scanning the whole relation on every query (a **30×** score
+  error from non-document rows, and O(corpus) latency that made the FTS leg 2,621 ms
+  at 400k chunks); a no-op `:put` drifted the FTS doc-count upward (**17×**);
+  pre-epoch timestamps could panic and poison an in-memory/SQLite database; HNSW
+  rebuilds mishandled zero/`NaN`/removed vectors; hybrid search conflated fusion legs
+  with graph seeds; restore/open could silently reuse a live relation id; corrupt
+  value blobs and corrupt HNSW/FTS index rows now surface as ordinary query errors
+  instead of process panics; and `::reindex`/`::repair_corrupt` now participate in
+  imperative-program lock planning. Every one is inherited from upstream and was
+  latent before the fork point.
+
+→ [Hybrid retrieval](/docs/fork/hybrid-retrieval) · [Datetime functions](/docs/functions#datetime-functions) · [Time travel](/docs/time-travel#what-the--selector-accepts) · [What mnestic adds](/docs/fork/overview)
 
 ## 0.12.2
 

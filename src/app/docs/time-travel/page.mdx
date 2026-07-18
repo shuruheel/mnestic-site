@@ -331,6 +331,7 @@ The constant can be:
 | Form | Example | Meaning |
 | --- | --- | --- |
 | integer | `@ 1751328000000000` | microseconds since the Unix epoch |
+| `Validity` value | `@ dt_to_validity(parse_timestamp('2025-06-15'))` | that instant, with the unit carried by the type (mnestic 0.13.0+) |
 | RFC 3339 string | `@ '2025-06-15T12:30:00Z'` | that instant |
 | bare date string | `@ '2025-06-15'` | midnight UTC of that date |
 | `'NOW'` | `@ 'NOW'` | the current timestamp |
@@ -405,9 +406,10 @@ than a coercion.
   `@ 2019` on a relation keyed by calendar years, so no magnitude check could
   tell a wrong-unit timestamp from a small deliberate one without breaking
   legitimate queries. When a time-travel read comes back empty, check the unit
-  before you conclude the data is missing. A typed path — a real datetime value
-  converted to a `Validity`, with no bare integer in sight — is planned for
-  0.13.0.
+  before you conclude the data is missing. Or take the typed path, which landed in
+  mnestic 0.13.0: [`dt_to_validity`](/docs/functions#datetime-functions) converts
+  float seconds to a `Validity` where the unit is known, and `@` accepts the
+  `Validity`-typed result directly — no bare integer in sight.
 </Callout>
 
 Two scope rules. The selector attaches to stored-relation atoms only, in both

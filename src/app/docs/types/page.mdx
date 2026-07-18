@@ -333,9 +333,12 @@ comma is allowed after the last item.
 There is no literal representation for `Vector` or `Validity` either. The
 function `vec` converts a list of numbers into a vector, and
 `validity(ts_micro, is_assert?)` builds a validity value from a microsecond
-timestamp, as in the example at the top of this page. In practice validity
-values mostly arrive through the coercions of `Validity`-typed columns,
-described in [time travel](/docs/time-travel).
+timestamp, as in the example at the top of this page. Since mnestic 0.13.0,
+[`dt_to_validity(ts_seconds, is_assert?)`](/docs/functions#datetime-functions)
+builds one from float Unix *seconds*, doing the ×1,000,000 conversion inside the
+function where the unit is known — the typed way to avoid the seconds-vs-microseconds
+trap. In practice validity values mostly arrive through the coercions of
+`Validity`-typed columns, described in [time travel](/docs/time-travel).
 
 Json objects are written between curly braces `{}` as comma-separated
 `key: value` pairs, where both keys and values are expressions:

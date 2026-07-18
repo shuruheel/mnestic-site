@@ -1069,6 +1069,12 @@ you.
   `round()`, `floor()` and `ceil()` all return floats and will **not** convert
   it. A `Validity` column default is written
   `default [to_int(now() * 1000000), true]`, or, more simply, `default 'ASSERT'`.
+
+  Since **0.13.0** the idiomatic bridge is the typed
+  [`dt_to_validity`](#datetime-functions): it does the seconds→microseconds
+  conversion inside the function, where the unit is known, and returns a
+  `Validity` that `@` and `:as_of` accept directly —
+  `@ dt_to_validity(parse_timestamp('2025-07-04T00:00:00Z'))`.
 </Callout>
 
 ### `now()`
@@ -1111,6 +1117,86 @@ epoch, got the float 1751587200. now() and parse_timestamp() return float
 SECONDS: write validity(to_int(<expr> * 1000000)). (round() returns a float and
 will not convert it.)
 ```
+
+## Datetime functions
+
+<Callout type="fork">
+  Specific to mnestic 0.13.0. mnestic markets a bitemporal database; its datetime
+  standard library was three functions with inconsistent units. The `dt_*` family
+  fills in the missing surface on one loudly-stated convention: **timestamps are
+  float Unix seconds** (what `now()` and `parse_timestamp` return), **a float
+  second-count is not a validity** (validities count integer microseconds), and the
+  one bridge between the two worlds is `dt_to_validity`. Timezone-sensitive
+  functions take an optional trailing IANA-name string and default to UTC. The
+  `dt_*` names are reserved against user registration.
+</Callout>
+
+### Component extractors
+
+`dt_year`, `dt_month`, `dt_day`, `dt_hour`, `dt_minute`, `dt_second`,
+`dt_dow` (ISO day-of-week, Monday = 1), and `dt_doy` (day-of-year) each take
+`(ts, tz?)` and return an `Int`, interpreting `ts` as float Unix seconds in the
+given timezone (default UTC).
+
+```prolog
+?[y, mo, d, dow] := ts = parse_timestamp('2025-07-04T09:30:00Z'),
+    y = dt_year(ts), mo = dt_month(ts), d = dt_day(ts), dow = dt_dow(ts)
+```
+
+```
+[2025, 7, 4, 5]
+```
+
+### `dt_trunc(ts, unit, tz?)`
+
+Truncates `ts` down to the start of the given `unit` — one of `year`, `quarter`,
+`month`, `week` (ISO, Monday-based), `day`, `hour`, `minute`, `second` — and
+returns float seconds. DST is handled rather than hand-waved: for sub-day units
+an ambiguous local time resolves within its own fold, and a local time landing in
+a spring-forward gap resolves to the first valid instant after it. Range edges
+raise a loud error instead of panicking.
+
+### `dt_add(ts, n, unit)`
+
+Adds `n` (an integer, possibly negative) units to `ts`, returning float seconds.
+`month`, `quarter` and `year` are **calendar-aware** and clamp to month end
+(`Jan-31 + 1 month = Feb-28/29`); `week`, `day`, `hour`, `minute`, `second` are
+fixed durations. Overflow errors rather than panicking.
+
+### `dt_diff(a, b, unit)`
+
+Returns the signed difference `a − b` in whole `unit`s as an `Int`, truncating
+toward zero and antisymmetric (`dt_diff(a, b, u) == -dt_diff(b, a, u)`).
+`month`/`quarter`/`year` compute the calendar magnitude consistent with
+`dt_add`'s forward clamping, so `dt_diff('2024-01-30', '2024-03-31', 'month')` is
+`-2`, not `-3`.
+
+### `dt_format(ts, fmt, tz?)`
+
+Formats `ts` with a strftime format string. The format is pre-validated — an
+invalid specifier is a loud error where calling the underlying library directly
+would panic — because `dt_format` is expected to receive LLM-authored text.
+`format_timestamp` stays the RFC3339 formatter.
+
+### `dt_to_validity(ts_seconds, is_assert?)`
+
+The typed bridge between the seconds world and the microseconds world: it takes
+float Unix seconds, does the ×1,000,000 conversion **inside the function where the
+unit is known**, and returns a `Validity` (asserting when `is_assert` is `true`,
+the default). Since 0.13.0 `@` and `:as_of` accept a `Validity`-typed expression,
+so this is the idiomatic way to time-travel to a wall-clock instant:
+
+```prolog
+?[name, title] := *emp{name, title @ dt_to_validity(parse_timestamp('2024-06-01T00:00:00Z'))}
+```
+
+Together with 0.12.2's rejection of a raw float in a validity position, this
+closes the seconds-vs-microseconds trap: the untyped misread errors loudly, and
+the typed path carries the unit. The seconds-as-`Int` form (`@ 1704067200`)
+remains inherently ambiguous — valid time is an abstract clock, so no magnitude
+gate can reject it — which is exactly why the typed bridge exists. Both
+`dt_to_validity` and `validity()` reject the reserved `i64` extremes (`'NOW'` /
+`'END'` and the terminal retract sentinel) that every other write path fences.
 
 ## Interval functions
 
