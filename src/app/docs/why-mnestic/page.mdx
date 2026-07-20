@@ -1,0 +1,112 @@
+export const metadata = {
+  title: "Why mnestic",
+  description:
+    "The embedded graph-vector-text engines are dying off: CozoDB is dormant, Kùzu is archived. mnestic is the maintained continuation — here is how to evaluate that claim.",
+};
+
+# Why mnestic
+
+If you are evaluating an embedded database for agent memory in 2026, the first
+question is not a feature question. It is: **will this engine still be
+maintained in two years?** Two of the three serious embedded graph engines for
+this niche have already answered it the wrong way.
+
+## The field
+
+- **CozoDB** — the original, and still a remarkable design: Datalog graph
+  queries, HNSW vector search, and full-text search in one embeddable engine.
+  Its last release (v0.7.6) shipped in 2023; the last commit on `main` landed
+  **2024-12-04**. The community's own issue tracker asked "is this still
+  maintained?" and got no answer.
+- **Kùzu** — the most credible embedded graph database of its generation,
+  **archived October 2025** when its team was acqui-hired. Community forks
+  carry it with varying activity; the most active is pivoting toward lakehouse
+  analytics.
+- **mnestic** — a hard fork of CozoDB, carried forward under its own name the
+  way LadybugDB carried Kùzu and libSQL carried SQLite. Full upstream history
+  preserved, original remote kept as `upstream`, MPL-2.0 headers intact.
+
+<Callout type="fork">
+  Credit where it belongs: CozoDB was created by **Ziyang Hu and the Cozo
+  Project Authors**. The design is theirs. mnestic exists because the design
+  deserved a future, not because it needed replacing. See
+  [License & attribution](/docs/license).
+</Callout>
+
+## The stewardship record
+
+Maintenance is a claim you verify, not a promise you accept. The record since
+the fork:
+
+| Signal | State |
+| --- | --- |
+| Releases | **18 releases, 2026-05-30 → 2026-07-18** (0.8.0 → 0.13.0), on a deliberate biweekly-to-monthly rhythm with migration notes |
+| Correctness posture | Two dedicated correctness patches (0.12.1, 0.12.2) shipped **the day** silent-wrong-answer bugs were confirmed — that class never waits for a release train |
+| Changelog | [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md) documents every divergence from upstream, in the same PR as the change |
+| CI | Test suite, RocksDB build, and clippy green on every commit; a planner regression suite gates optimizer changes |
+| Upstream debts | Dormancy-era upstream issues are being closed under mnestic's name — and bugs we find that predate the fork are reported back upstream (e.g. cozodb/cozo#312), in case Cozo revives |
+
+## What the fork has added
+
+Everything upstream had, plus — each with its own page:
+
+- **[Bitemporality](/docs/fork/bitemporality)** — valid time *and* transaction
+  time on facts, `:as_of` queries, `::history`, and audited eviction
+  (`::evict`): deletion with a trail, never silent.
+- **[Hybrid retrieval](/docs/fork/hybrid-retrieval)** — one call fusing an HNSW
+  vector leg, a BM25 full-text leg, and a k-hop graph leg, with RRF/MMR and
+  per-leg score explanations. Since 0.13.0 the graph leg can run as a budgeted
+  cheapest-first expansion.
+- **[Cached graph projections](/docs/fork/graph-projections)** and
+  **[interruptible queries with budgets](/docs/fork/interruptibility)** — the
+  operational tooling long-lived memory needs.
+- **[Provenance semirings](/docs/fork/provenance-semirings)**,
+  **[skyline aggregates](/docs/fork/skyline-aggregates)**,
+  **[non-blocking HNSW builds](/docs/fork/non-blocking-hnsw)**, planner fixes
+  ([equality pushdown](/docs/fork/equality-pushdown),
+  [join reorder](/docs/fork/join-reorder),
+  [factorized counting](/docs/fork/factorized-counting)), corruption-repair
+  primitives, and [ULIDs](/docs/fork/ulid).
+
+The full inventory is in [What mnestic adds](/docs/fork/overview) and the
+[release history](/docs/release-notes).
+
+## Coming from CozoDB
+
+mnestic is a drop-in continuation: the library name is still `cozo`, your
+CozoScript runs unchanged, and adopting the fork also hands you ~30 upstream
+commits that were merged after v0.7.6 but never released — including a real
+silent-wrong-answer fix. See [Migrating from CozoDB](/docs/fork/migrating).
+
+## Coming from Kùzu
+
+Honesty first: **mnestic is not a Kùzu drop-in.** The query language is Datalog
+(a read-only Cypher surface exists but is alpha), and on fixed-shape analytical
+join benchmarks the columnar Kùzu lineage genuinely wins — we say so plainly
+and don't compete there.
+
+What mnestic offers instead, for the agent-memory workload specifically:
+
+- **Indexes that see your writes.** Agent memory is written continuously, not
+  batch-loaded. mnestic maintains FTS and vector indexes transactionally on
+  every write; there is no "rows added after index creation aren't indexed"
+  failure mode, and `::reindex` exists as an explicit repair primitive.
+- **Recursion at scale.** Recursive reachability at LDBC-SNB sf1 runs in
+  100–161 ms *flat at any depth* in mnestic, where the leading Kùzu fork —
+  measured in its best idiomatic query form — exceeds 120 s from depth 3.
+- **Bitemporal facts and audited eviction**, native to the engine.
+- **A maintained mainline** rather than a fork ecosystem still finding its
+  footing.
+
+## Use it from the stack you already run
+
+You don't have to adopt Datalog to adopt the engine:
+`pip install mnestic-mcp` (any MCP client, including Claude Code and Cursor),
+`langgraph-store-mnestic` (LangGraph `BaseStore`), `langchain-mnestic` and
+`llama-index-vector-stores-mnestic` (vector stores with the graph legs
+exposed) — and via LangChain's provider interface, Mem0 OSS runs on mnestic
+unchanged.
+
+mnestic is alpha and single-node, and says so. What it will not be is
+abandoned quietly: the changelog, the CI, and the cadence are the proof you
+can check.

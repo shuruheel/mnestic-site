@@ -10,6 +10,7 @@ export const docsNav: DocGroup[] = [
     group: "Getting started",
     pages: [
       { slug: "", title: "Introduction", short: "Intro" },
+      { slug: "why-mnestic", title: "Why mnestic", short: "Why mnestic" },
       { slug: "tutorial", title: "Tutorial" },
       { slug: "install", title: "Installation" },
     ],
