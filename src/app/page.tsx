@@ -369,6 +369,55 @@ const recallBench = [
   { e: "lancedb 0.33", recall: "0.501", signals: "vec · FTS", locus: "native · no graph", ryw: "n/a — no graph" },
 ];
 
+const comparisonRows = [
+  {
+    dim: "Where it runs",
+    pg: "Needs a separate database server",
+    dd: "Runs inside your app — but has no way to follow relationships",
+    neo: "Needs a separate server (built on Java)",
+    us: "Runs inside your app, no server needed (though it can run as one, too)",
+  },
+  {
+    dim: "Following chains of connections",
+    pg: "Possible, but limited and slow once the chains get long",
+    dd: "Not supported at all",
+    neo: "Good at direct connections, weaker at general looping logic",
+    us: "Built in, and stays fast even on long, looping chains",
+  },
+  {
+    dim: "Search by meaning + keyword + connections, together",
+    pg: "Bolt-on add-ons (for meaning, for keyword) you wire together yourself",
+    dd: "Similar bolt-on add-ons — and no relationship search at all",
+    neo: "Has meaning-based search, but you still combine it with the rest yourself",
+    us: "One built-in request that combines all three and ranks the results for you",
+  },
+  {
+    dim: "Remembering what used to be true",
+    pg: "Not built in — you'd have to build this yourself",
+    dd: "Not built in",
+    neo: "Not built in",
+    us: "Built in — ask what it believed at any past moment, and see every correction it ever made",
+  },
+];
+
+const useCases = [
+  {
+    n: "01",
+    t: "Agent memory that survives the session",
+    d: "An AI agent has a conversation, then a week later needs to remember what was decided — by the gist of it, by exact keywords, and by what it's connected to. Normally that means juggling several databases and stitching the results together by hand, and the combination goes stale the moment something new comes in. With mnestic, that's a single request — the one shown above — that runs against everything the agent has ever stored, including what it wrote a second ago.",
+  },
+  {
+    n: "02",
+    t: "An audit trail you can actually trust",
+    d: "Say a system judged a transaction \"low risk\" back in June, but by September that call looks wrong. Was the system mistaken, or did the facts change after the fact? Postgres, DuckDB, and Neo4j have no built-in way to answer that — you'd have to build your own history-tracking on top. mnestic keeps a permanent record of both what was true and when the database learned it, so the query above can replay exactly what it knew and when, and nobody can quietly rewrite that history.",
+  },
+  {
+    n: "03",
+    t: "Relationship graphs without a second database",
+    d: "Fraud rings share things — a device, an address, a payment method — often several steps removed from the account that got flagged. Finding those hidden connections is a job for a graph database. But running Neo4j alongside your main database means keeping two systems in sync. mnestic finds those same multi-step connections inside the database that already holds the rest of your data — nothing extra to install, sync, or maintain.",
+  },
+];
+
 export default function Home() {
   return (
     <>
@@ -382,6 +431,9 @@ export default function Home() {
             <Logo />
           </a>
           <div className="flex items-center gap-6">
+            <a href="#compare" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
+              Compare
+            </a>
             <a href="#capabilities" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
               Engine
             </a>
@@ -393,6 +445,9 @@ export default function Home() {
             </a>
             <a href="#bench" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
               Benchmarks
+            </a>
+            <a href="#use-cases" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
+              Use Cases
             </a>
             <a href={DOCS} className="label link-grow hover:text-[var(--color-paper)]">
               Docs
@@ -508,6 +563,74 @@ export default function Home() {
               being the memory an agent can trust.
             </span>{" "}
             Every divergence is documented, every original copyright preserved.
+          </p>
+        </section>
+
+        <div className="rule" />
+
+        {/* ── Comparison: Postgres / DuckDB / Neo4j ─────── */}
+        <section id="compare" className="py-20">
+          <div className="mb-3 flex items-center gap-3">
+            <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-synapse)]" />
+            <span className="label">Why not what you already have</span>
+          </div>
+          <h2 className="mb-5 max-w-3xl font-serif text-4xl font-medium leading-tight tracking-tight md:text-5xl">
+            Where Postgres, DuckDB, and Neo4j{" "}
+            <span className="italic text-[var(--color-synapse)]">hit a wall</span>.
+          </h2>
+          <p className="mb-10 max-w-2xl text-lg leading-relaxed text-[var(--color-paper-dim)]">
+            Each of these is a great database — for its job. None of them do
+            this job: search by meaning, keyword, and relationship in one
+            request; follow long chains of connections without slowing down;
+            and remember what used to be true, not just what&apos;s true now
+            — all inside one lightweight engine you can embed straight into
+            your app.
+          </p>
+
+          <div className="overflow-x-auto rounded-xl border border-[var(--color-line)]">
+            <table className="w-full border-collapse text-left text-sm">
+              <thead>
+                <tr className="border-b border-[var(--color-line)] bg-[var(--color-ink-2)]">
+                  <th className="label px-5 py-3 font-normal">What matters</th>
+                  <th className="label px-5 py-3 font-normal">Postgres</th>
+                  <th className="label px-5 py-3 font-normal">DuckDB</th>
+                  <th className="label px-5 py-3 font-normal">Neo4j</th>
+                  <th className="label px-5 py-3 font-normal">mnestic</th>
+                </tr>
+              </thead>
+              <tbody className="text-[0.82rem]">
+                {comparisonRows.map((r) => (
+                  <tr
+                    key={r.dim}
+                    className="border-b border-[var(--color-line)] last:border-0"
+                  >
+                    <td className="px-5 py-4 font-medium text-[var(--color-paper)]">
+                      {r.dim}
+                    </td>
+                    <td className="px-5 py-4 text-[var(--color-paper-dim)]">
+                      {r.pg}
+                    </td>
+                    <td className="px-5 py-4 text-[var(--color-paper-dim)]">
+                      {r.dd}
+                    </td>
+                    <td className="px-5 py-4 text-[var(--color-paper-dim)]">
+                      {r.neo}
+                    </td>
+                    <td className="bg-[var(--color-synapse)]/5 px-5 py-4 font-medium text-[var(--color-synapse)]">
+                      {r.us}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-5 font-mono text-xs leading-relaxed text-[var(--color-paper-faint)]">
+            These are structural differences, not a speed test — see the
+            measured recall numbers further down for real benchmarks. Each
+            column reflects that database&apos;s own built-in and
+            official tooling (Postgres: pgvector + full-text search; DuckDB:
+            its vector and full-text extensions; Neo4j: its native Cypher
+            and vector index).
           </p>
         </section>
 
@@ -836,6 +959,39 @@ export default function Home() {
             </a>
             .
           </p>
+        </section>
+
+        <div className="rule" />
+
+        {/* ── Use cases ──────────────────────────────────── */}
+        <section id="use-cases" className="py-20">
+          <div className="mb-3 flex items-center gap-3">
+            <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-synapse)]" />
+            <span className="label">From capability to application</span>
+          </div>
+          <h2 className="mb-5 max-w-3xl font-serif text-4xl font-medium leading-tight tracking-tight md:text-5xl">
+            What people build with it.
+          </h2>
+          <p className="mb-10 max-w-2xl text-lg leading-relaxed text-[var(--color-paper-dim)]">
+            The queries above aren&apos;t syntax demos — they&apos;re the
+            core of three problems people run into once their app needs
+            more than a single database can offer.
+          </p>
+          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] md:grid-cols-3">
+            {useCases.map((u) => (
+              <div key={u.n} className="bg-[var(--color-ink)] p-7">
+                <span className="font-mono text-xs text-[var(--color-synapse)]">
+                  {u.n}
+                </span>
+                <h3 className="mb-3 mt-4 font-serif text-lg font-medium leading-snug">
+                  {u.t}
+                </h3>
+                <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
+                  {u.d}
+                </p>
+              </div>
+            ))}
+          </div>
         </section>
 
         <div className="rule" />
