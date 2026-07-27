@@ -28,6 +28,25 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 
 ## Highlights by release
 
+### 0.13.1 — the count rewrite ships on
+
+A patch release. The factorized `count()` rewrite, opt-in since 0.10.5 while the
+planner-regression suite was built out, is now **on by default**: an eligible
+single-clause `count()`-over-a-positive-join is counted without materializing the
+join. Answers are identical by construction — the pass fires only on a provably
+exact decomposition and leaves declined queries byte-identical — and
+`set_query_factorization(false)` restores the previous behaviour. Measured on LSQB
+sf0.1 (SQLite, release), both paths returning LDBC's published count: **q1
+72.4 s → 1.05 s (~69×)**, **q6 42.1 s → 0.31 s (~134×)**.
+
+Shipped alongside it: 0.13.0's expected-token parse hints, which pest 2.8 had
+silently disabled for anyone resolving dependencies fresh (tracking became opt-in;
+our caret requirement admitted 2.8; the committed lockfile meant CI never saw it).
+The floor is now `pest = "2.8"`, the tracking is enabled only around a re-parse of
+an already-failed script — it is a process-wide global with a real cost, and an
+embedded engine should not leave it on inside its host — and a weekly fresh-resolve
+CI lane now covers the class.
+
 ### 0.13.0 — the correctness union, and the features it earned
 
 A nine-bug hardening pass over the storage and index paths, paired with the

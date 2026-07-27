@@ -289,6 +289,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.13.1",
+    t: "Counting a join without building it, by default",
+    d: "The factorized count() rewrite has been opt-in since 0.10.5 while the planner-regression suite was built out. Its gate — a nightly soak against LDBC's own count oracle — has run green every night, so it now ships on. An eligible count()-over-a-join is counted without materializing the join; answers are identical by construction, and any query the pass cannot prove exact is left byte-identical. Flipping it also exposed a hole in its own gate: the nightly arm covered one of the two queries the rewrite fires on, so the tier now covers every firing query.",
+    metric: "LSQB sf0.1 · q1 72.4 s → 1.05 s (~69×) · q6 42.1 s → 0.31 s (~134×) · counts match the published oracle on both paths",
+  },
+  {
     ver: "0.13.0",
     t: "The RocksDB options you set are the ones RocksDB now uses",
     d: "Every BlockBasedTableOptions a host configured — block cache, block size, index/filter caching — was default-constructed away on each open, silently. The read cache reverted to RocksDB's 8 MB default and block_size to 4 KB; block_cache_size was ignored outright. Inherited from upstream, latent since the options-file path was introduced. Fixed in mnestic-rocks 0.1.10 — and it means every read-path benchmark run before it, ours included, measured a slower engine than mnestic actually is.",
@@ -474,7 +480,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.13.0
+                a maintained fork of CozoDB · v0.13.1
               </span>
             </div>
 
@@ -748,7 +754,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — every fork release, 0.8.0 through 0.13.0.
+            — every fork release, 0.8.0 through 0.13.1.
           </p>
         </section>
 
@@ -1010,7 +1016,7 @@ export default function Home() {
 cargo add mnestic
 
 # or, with the RocksDB backend:
-# mnestic = { version = "0.13.0", features = ["storage-rocksdb"] }`}
+# mnestic = { version = "0.13.1", features = ["storage-rocksdb"] }`}
               />
               <Code
                 lang="rust"

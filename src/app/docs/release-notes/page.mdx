@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.13.0) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.13.1) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,49 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.13.1
+
+**The factorized `count()` rewrite ships on, and a dependency upgrade's silent
+casualty is repaired.** A patch release: no new surface, one planner default, one
+regression closed.
+
+- **The factorized `count()` rewrite is ON by default.** It has been opt-in since
+  0.10.5 — not because it failed, but because the planner-regression suite that
+  would catch it if it ever did was still being built. That suite's nightly tier
+  has run green against LDBC's own count oracle every night since it first went
+  green, so the default flips. An eligible single-clause `count()`-over-a-positive-join
+  is counted without materializing the join; answers are identical by construction
+  (the pass fires only on a provably exact decomposition and leaves every query it
+  declines byte-identical), and `set_query_factorization(false)` restores the old
+  behaviour. Measured on LSQB sf0.1 (SQLite, release), both paths returning the
+  published count: **q1 72.4 s → 1.05 s (~69×)**, **q6 42.1 s → 0.31 s (~134×)**.
+
+<Callout type="fork">
+  **A gate that only half-covered what it gated — found by another gate.** The
+  nightly tier's rewrite-ON arm ran the one query the rewrite had been benchmarked
+  on, while the rewrite in fact fires on two; the main loop ran the default, and the
+  default was OFF. So q1 had never been executed in the configuration this release
+  makes standard. We found it because the zero-data plan-shape gate went red on two
+  queries when we expected one. The tier now covers every firing query, pins the
+  firing set, and asserts the default path actually fired — a silent decline would
+  otherwise hide behind a green-but-slow run. The rule going forward: a default flip
+  widens its coverage first.
+</Callout>
+
+- **0.13.0's expected-token parse hints work again on current dependencies.**
+  pest 2.8.0 made parse-attempt tracking opt-in and off by default. Our requirement
+  was a caret `2.7.9`, so anyone resolving fresh built 0.13.0 against 2.8.x — where
+  the `help:` token list and the corrected caret position silently reverted to
+  pre-0.13.0 behaviour. Our own CI never saw it: the committed lockfile pinned
+  2.7.x. The floor is now `pest = "2.8"`, and the tracking is enabled **only around
+  a re-parse of a script that already failed** — it is a pest-wide global with a
+  documented performance cost, and an embedded engine should not leave it switched
+  on inside its host's process. A weekly fresh-resolve CI lane now covers the class
+  of regression a committed lockfile hides.
+
+- **Source compatibility across the uuid 1.x range**, so the crate builds against
+  whichever uuid a consumer's lockfile resolves.
 
 ## 0.13.0
 

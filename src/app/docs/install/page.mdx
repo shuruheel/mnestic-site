@@ -68,7 +68,7 @@ mnestic inherits CozoDB's storage backends. Select them with Cargo features:
 
 ```toml
 # Cargo.toml — enable the RocksDB backend
-mnestic = { version = "0.13.0", features = ["storage-rocksdb"] }
+mnestic = { version = "0.13.1", features = ["storage-rocksdb"] }
 ```
 
 <Callout type="note">
@@ -77,7 +77,7 @@ mnestic = { version = "0.13.0", features = ["storage-rocksdb"] }
 </Callout>
 
 <Callout type="fork">
-  Specific to mnestic 0.13.0 (via **mnestic-rocks 0.1.10**). The RocksDB
+  Specific to mnestic 0.13.0 and later (via **mnestic-rocks 0.1.10**). The RocksDB
   `BlockBasedTableOptions` you configure — block cache, block size,
   `cache_index_and_filter_blocks` — now actually reach RocksDB. Through 0.12.2 they
   were loaded and then silently discarded on every open, so the read cache reverted
