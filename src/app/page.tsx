@@ -289,6 +289,18 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.15.0",
+    t: "Bound the memory of queries and every RocksDB instance",
+    d: "A query can now carry a byte budget that aborts cleanly before commit, while every RocksDB database in a process can join one shared block-cache/write-buffer envelope. The same release adds relational RDF intake/export and a runnable JSON-LD/tree modeling guide: interchange at the edge, Datalog inside.",
+    metric: "typed eval::mem_budget_exceeded · one process-wide RocksDB envelope · mnestic-rocks 0.1.11",
+  },
+  {
+    ver: "0.14.0",
+    t: "Make every indirect read obey the same authorization boundary",
+    d: "Stored-relation ACLs now cover indexes, negation, fixed rules, exports, history, and cached graph projections. The release also made script-controlled file/network readers opt-in for Rust, added exact-phrase FTS with matched spans and snippets, and exposed typed query warnings.",
+    metric: "one checked relation resolver · exact phrase positions · warnings with stable codes",
+  },
+  {
     ver: "0.13.1",
     t: "Counting a join without building it, by default",
     d: "The factorized count() rewrite has been opt-in since 0.10.5 while the planner-regression suite was built out. Its gate — a nightly soak against LDBC's own count oracle — has run green every night, so it now ships on. An eligible count()-over-a-join is counted without materializing the join; answers are identical by construction, and any query the pass cannot prove exact is left byte-identical. Flipping it also exposed a hole in its own gate: the nightly arm covered one of the two queries the rewrite fires on, so the tier now covers every firing query.",
@@ -480,7 +492,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.13.1
+                a maintained fork of CozoDB · v0.15.0
               </span>
             </div>
 
@@ -754,7 +766,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — every fork release, 0.8.0 through 0.13.1.
+            — every fork release, 0.8.0 through 0.15.0.
           </p>
         </section>
 
@@ -1016,7 +1028,7 @@ export default function Home() {
 cargo add mnestic
 
 # or, with the RocksDB backend:
-# mnestic = { version = "0.13.1", features = ["storage-rocksdb"] }`}
+# mnestic = { version = "0.15.0", features = ["storage-rocksdb"] }`}
               />
               <Code
                 lang="rust"

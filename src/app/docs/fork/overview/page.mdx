@@ -1,7 +1,7 @@
 export const metadata = {
   title: "What mnestic adds",
   description:
-    "An overview of how mnestic diverges from CozoDB: a datetime library with a typed validity bridge, budgeted weighted traversal, cached graph projections, bitemporality, provenance semirings, interruptible queries with wall-clock budgets, a stat-free join reorder, native 3-way fused recall, BM25 full-text search, equality pushdown, and ULID keys.",
+    "An overview of how mnestic diverges from CozoDB: bounded query and RocksDB memory, RDF boundary I/O, bitemporality, hybrid retrieval, provenance semirings, cached graph projections, planner improvements, and operational recovery.",
 };
 
 # What mnestic adds
@@ -27,6 +27,25 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 0.7.7.
 
 ## Highlights by release
+
+### 0.15.0 — memory ceilings and interchange at the edge
+
+Queries can now carry byte budgets that min-compose across script, per-call, and
+Db-wide settings and abort with `eval::mem_budget_exceeded` before commit.
+Separately, every RocksDB database in a process can share one block-cache and
+write-buffer envelope, with conflict-checked process defaults and observable
+per-instance usage. The release also adds feature-gated Turtle-family RDF
+intake/export through ordinary relations and a runnable JSON-LD/tree modeling
+guide. The core remains relational; the new interchange formats do not add a
+second storage model.
+
+### 0.14.0 — one checked read boundary
+
+Stored-relation authorization now covers indexes, negation, fixed rules, exports,
+history, and cached projections through one resolver. The release also made
+script-controlled import opt-in for Rust, added exact-phrase FTS with matched
+spans and snippets, exposed typed query warnings, and hardened the HTTP server's
+authentication and transaction boundaries.
 
 ### 0.13.1 — the count rewrite ships on
 

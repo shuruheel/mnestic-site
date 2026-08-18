@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Interruptibility & query budgets",
   description:
-    "mnestic makes a running query always stoppable: ::kill and ::running dispatch without blocking, and a per-query wall-clock :timeout budget aborts inside the join enumeration.",
+    "mnestic makes a running query stoppable and bounded: ::kill, wall-clock :timeout, and estimated-byte :mem_limit budgets abort cleanly before commit.",
 };
 
 # Interruptibility & query budgets
@@ -110,6 +110,43 @@ instead of panicking.
 A killed or timed-out **mutable** script rolls back cleanly: there is no partial
 commit. The abort surfaces as the corresponding error (`eval::killed` /
 `eval::timeout`) and the database is left in its pre-script state.
+
+## Per-query memory budget
+
+Since 0.15.0, native builds can also cap the estimated engine-held bytes of a
+query. The three sources min-compose just like the wall-clock budget:
+
+- **In-script:** `:mem_limit <bytes>` on a query block.
+- **Per-call:** `ScriptRunOptions::new().with_mem_limit(bytes)`.
+- **Db-wide:** `Db::set_default_query_mem_limit(Some(bytes))`.
+
+```prolog
+?[m1, m2] := *member{ id: m1, group: g },
+             *member{ id: m2, group: g },
+             m1 < m2
+
+:mem_limit 67108864
+```
+
+The effective limit is the minimum of the settings present, so script text can
+only tighten a host policy. Exceeding it raises
+**`eval::mem_budget_exceeded`** before commit; a mutable script leaves no partial
+writes and the Db remains usable.
+
+<Callout type="warning">
+  The number is an **estimate of engine-held bytes**, not RSS or a hard process
+  sandbox. Temp stores, sorting, and final-result staging are charged. The
+  materialized-join right-side cache and normal-aggregate work map are documented
+  uncharged channels; allocator retention and storage-engine caches are outside
+  this query budget. Use the separate RocksDB shared-memory envelope for the
+  dominant persistent-backend pools.
+</Callout>
+
+The engine library default is unlimited. `cozo-bin` supplies a 4 GiB default and
+accepts `mem_limit` in its HTTP query payload; pass
+`--default-query-mem-limit 0` to disable the server default. Python callers can
+use in-script `:mem_limit`; the per-call and Db-wide memory APIs are currently
+Rust/server surfaces.
 
 ### From cozo-bin and Python
 

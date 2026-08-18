@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.13.1) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.15.0) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,64 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.15.0
+
+**Bounded memory and explicit interchange boundaries.** This minor release ships
+with **mnestic-rocks 0.1.11**.
+
+- **Per-query byte budgets.** `:mem_limit`, a per-call
+  `ScriptRunOptions::with_mem_limit`, and the Db-wide default min-compose, so a
+  script can tighten but never raise its host's ceiling. A trip returns
+  `eval::mem_budget_exceeded` before commit. The estimate covers engine-held temp
+  stores, sorting, and final-result staging; the materialized-join right-side
+  cache and normal-aggregate work map are documented uncharged channels.
+- **One RocksDB envelope across databases.** A ref-counted shared block cache and
+  `WriteBufferManager` can be passed to every instance, or configured as a
+  conflict-checked process default through the options JSON. Per-instance and
+  handle-level statistics expose the memory RocksDB reports. The envelope is
+  soft: table readers outside the cache, WAL, and allocator retention are not
+  charged.
+- **RDF at the relational boundary.** The opt-in `rdf-io` feature reads Turtle,
+  N-Triples, N-Quads, and TriG into a fixed six-column relation, exports
+  triple/quad-shaped relations, and adds IRI/CURIE helpers. The core remains
+  relational: no triple-native catalog, SPARQL, or OWL reasoning.
+- **Runnable JSON-LD/tree modeling guidance.** Nested objects map to parent/child
+  relations, arrays to positional rows, and heterogeneous trees to node plus
+  adjacency relations. The examples are pinned by an SQLite integration test.
+
+<Callout type="warning">
+  **Python wheel trust-boundary change.** The 0.15.0 wheel enables `rdf-io`.
+  That feature implies `data-import`, and the wheel includes `requests`, so
+  CozoScript can use `RdfReader`, `CsvReader`, and `JsonReader` to read
+  process-readable files and fetch HTTP(S) URLs. Run only trusted scripts, or
+  build without `rdf-io`. Rust's default feature set remains locked down.
+</Callout>
+
+Memory budgets and shared RocksDB resources are opt-in. There is no storage-format
+migration.
+
+## 0.14.0
+
+**A security-first minor release, plus exact-phrase retrieval and operational
+diagnostics.**
+
+- Stored-relation authorization now covers ordinary indexes, negation, fixed
+  rules, imperative returns, exports, history, and warm/cold graph projections
+  through one checked resolver.
+- The HTTP server authenticates loopback by default; explicit insecure mode is
+  loopback-only and validates Host/authority, Origin, and Fetch Metadata. Remote
+  transactions are principal-bound and re-authorized on every operation.
+- `CsvReader` and `JsonReader` became opt-in for Rust through `data-import`, with
+  network access separately gated by `requests`.
+- Quoted multi-word FTS queries now enforce adjacency and order. `bind_spans`
+  returns matching byte offsets, and `snippet()` formats tokenizer-consistent
+  context without re-tokenizing.
+- `set_durable_writes`, typed `::warnings`, and recursive plan/result CI guards
+  make operational behavior inspectable and release defaults safer.
+
+Migration details—including HTTP authentication, backup confinement, `Hidden`
+relation reads, and exact-phrase semantics—are in the authoritative changelog.
 
 ## 0.13.1
 

@@ -50,11 +50,23 @@ let db = DbInstance::new("sqlite", "./memory.db", "")?;
 | `"rocksdb"` | `storage-rocksdb` | The high-concurrency persistent backend; `path` is a directory. |
 | `"sled"` | `storage-sled` | Experimental; slower than SQLite for typical workloads, no time travel. Its `del()` never actually deleted until mnestic 0.12.1 (upstream #306). |
 | `"newrocksdb"` | `storage-new-rocksdb` | Experimental next-generation RocksDB backend; not part of any default build. It silently lost concurrent updates until mnestic 0.12.1 — conflict validation was never armed. |
-| `"tikv"` | `storage-tikv` | Experimental distributed client; no time travel. `path` is ignored, and it is the only engine that reads `options` (JSON with `end_points` and `optimistic`). |
+| `"tikv"` | `storage-tikv` | Experimental distributed client; no time travel. `path` is ignored; `options` is JSON with `end_points` and `optimistic`. |
 
-`options` is ignored by every engine except `tikv`; pass `""`. An engine name
-that was not compiled in fails at runtime with a clear error, so a build that
-wants RocksDB must enable the `storage-rocksdb` feature.
+`options` is ignored by every engine except `tikv` and `rocksdb`; pass `""` for
+the others. Since 0.15.0, RocksDB accepts a process-default shared-memory envelope:
+
+```rust
+let options = r#"{"shared_memory":{"total_bytes":268435456,"memtable_fraction":0.25}}"#;
+let db = DbInstance::new("rocksdb", "./memory.db", options)?;
+```
+
+The first such open fixes the process-default configuration; later identical
+configs join the same block cache and write-buffer manager, while a different
+config is a typed conflict. Rust hosts that need several independent envelopes
+can construct `RocksMemoryResources` handles and call
+`new_cozo_rocksdb_with_memory`. An engine name that was not compiled in fails at
+runtime with a clear error, so a build that wants RocksDB must enable the
+`storage-rocksdb` feature.
 
 ### Running scripts
 
@@ -143,16 +155,16 @@ pub fn run_script_with_options(
 pub fn set_default_query_timeout(&self, secs: Option<f64>)
 ```
 
-`ScriptRunOptions` currently carries one option, a per-call wall-clock budget
-in seconds; build it with `ScriptRunOptions::new().with_timeout(secs)` or
+`ScriptRunOptions` carries a per-call wall-clock budget in seconds and an
+estimated-byte memory budget; build it with
+`ScriptRunOptions::new().with_timeout(secs).with_mem_limit(bytes)` or
 struct-update syntax so future options do not break your call sites.
-`set_default_query_timeout` arms a Db-wide default that every subsequent query
-inherits (`None` clears it; `default_query_timeout()` reads it back). The
-effective deadline is the **minimum** of the per-call timeout, any in-script
-`:timeout`, and the Db default — a script can tighten its budget but never
-escape the handle-wide guard. The deadline covers the whole script, and expiry
-aborts before any commit, so a timed-out mutable script leaves no partial
-writes.
+`set_default_query_timeout` and `set_default_query_mem_limit` arm Db-wide
+defaults that every subsequent query inherits (`None` clears one). Each
+effective budget is the **minimum** of its per-call value, in-script
+`:timeout`/`:mem_limit`, and Db default — a script can tighten a budget but
+never escape the handle-wide guard. Either expiry aborts before commit, so a
+mutable script leaves no partial writes.
 
 ```rust
 use cozo::ScriptRunOptions;

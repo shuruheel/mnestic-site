@@ -176,9 +176,17 @@ Read a CSV file from disk or an HTTP GET request and convert the result to a
 relation.
 
 Reading from `http://` or `https://` URLs requires the `requests` feature
-(part of the default `compact` set); without it, only local files work. This
-utility is not available on WASM targets (which mnestic does not currently
-ship).
+(part of the default `compact` set); without it, only local files work. The
+reader itself must also be enabled with `data-import` (or `rdf-io`, which
+implies it). This utility is not available on WASM targets (which mnestic does
+not currently ship).
+
+<Callout type="warning">
+  These are script-controlled file/network readers. Rust's default build does
+  not register them; enable `data-import` only for trusted CozoScript. The
+  published 0.15.0 Python wheel enables `rdf-io`, so it registers `CsvReader`,
+  `JsonReader`, and `RdfReader` and can fetch HTTP(S) URLs.
+</Callout>
 
 - `url` (required): URL for the CSV file. For local file, use
   `file://<PATH_TO_FILE>`.
@@ -210,6 +218,33 @@ relation. The same feature and platform restrictions as `CsvReader` apply.
   `null` in its place. If `false` and the requested field is absent, will throw
   an error.
 - `prepend_index`: If `true`, row index will be prepended to the columns.
+
+### RdfReader(...) — mnestic 0.15.0
+
+`RdfReader(url: ..., format: 'turtle', base: ..., prefixes: ..., skolemize: ..., prepend_index: false)`
+
+With the `rdf-io` feature, read Turtle, N-Triples, N-Quads, or TriG into the
+fixed relation shape:
+
+```
+subject  predicate  object  graph  language_tag  datatype
+```
+
+All six columns are strings or null. Literals remain lexical; language tags and
+datatype IRIs occupy their own columns. Triple formats emit a null graph. The
+format defaults from `.ttl`, `.nt`, `.nq`, or `.trig`; set `format` explicitly
+when the URL has no useful extension. `skolemize` accepts a namespace IRI and
+turns blank-node labels into deterministic source-salted IRIs.
+
+```prolog
+triples[s, p, o, g, lang, dt] <~ RdfReader(url: 'file://./data.ttl')
+?[s, o] := triples[s, 'http://xmlns.com/foaf/0.1/knows', o, _, _, _]
+```
+
+The scalar helpers `iri_valid`, `iri_resolve`, `curie_expand`, and
+`curie_compact` are always registered. RDF export is a Rust API for relations
+already in this six-column shape; mnestic deliberately does not add SPARQL,
+OWL reasoning, triple-native storage, or general relational-to-RDF mapping.
 
 ### ReciprocalRankFusion(...)
 
