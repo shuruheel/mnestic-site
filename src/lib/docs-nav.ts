@@ -46,6 +46,7 @@ export const docsNav: DocGroup[] = [
     group: "mnestic — the fork",
     pages: [
       { slug: "fork/overview", title: "What mnestic adds", short: "Overview" },
+      { slug: "fork/stored-queries", title: "Stored queries", short: "Stored queries" },
       { slug: "fork/graph-projections", title: "Cached graph projections", short: "Graph projections" },
       { slug: "fork/hybrid-retrieval", title: "Hybrid retrieval (RRF + MMR)", short: "Hybrid retrieval" },
       { slug: "fork/bitemporality", title: "Bitemporality" },

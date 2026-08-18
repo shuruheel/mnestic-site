@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.15.0) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.16.0) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,30 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.16.0
+
+**Persistent, composable named read queries.** This minor release keeps
+**mnestic-rocks at 0.1.11** because the storage bridge did not change.
+
+- `::query create`, `remove`, `list`, `show`, and `run` provide a transactional
+  catalog of reusable query definitions.
+- Stored queries can also be used as rule atoms inside a larger CozoScript
+  query. Their rules are hygienically renamed, so private helpers do not collide
+  with the caller, and normal magic-set specialization still applies.
+- Parameters are declared explicitly, with optional types and defaults. Runtime
+  values are coerced through the declared column type, and the catalog exposes a
+  complete signature for tools to inspect.
+- Definitions are persisted as ordinary relation data, so backup, export,
+  import, access levels, and transaction snapshots behave consistently with the
+  rest of the engine.
+- Bodies are read-only in v1. Every invocation reparses and evaluates against
+  the current transaction snapshot: these are views, not materialized results or
+  cached plans.
+
+There is no storage-format migration. See
+[Stored queries](/docs/fork/stored-queries) for the command surface, composition
+rules, and examples.
 
 ## 0.15.0
 
