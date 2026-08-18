@@ -1,7 +1,7 @@
 export const metadata = {
   title: "What mnestic adds",
   description:
-    "An overview of how mnestic diverges from CozoDB: bounded query and RocksDB memory, RDF boundary I/O, bitemporality, hybrid retrieval, provenance semirings, cached graph projections, planner improvements, and operational recovery.",
+    "An overview of how mnestic diverges from CozoDB: stored queries, bounded query and RocksDB memory, RDF boundary I/O, bitemporality, hybrid retrieval, provenance semirings, cached graph projections, planner improvements, and operational recovery.",
 };
 
 # What mnestic adds
@@ -27,6 +27,17 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 0.7.7.
 
 ## Highlights by release
+
+### 0.16.0 — reusable queries as data
+
+Read-only CozoScript queries can now be named, persisted, inspected, and reused.
+`::query run` invokes one directly, while rule-atom composition lets a stored
+query participate in a larger recursive query with ordinary magic-set
+specialization. Declared parameters support optional types and defaults. The
+definition is snapshot-read on every use—there is no materialized result, plan
+cache, or storage migration.
+
+→ [Stored queries](/docs/fork/stored-queries) · [Release history](/docs/release-notes#0160)
 
 ### 0.15.0 — memory ceilings and interchange at the edge
 

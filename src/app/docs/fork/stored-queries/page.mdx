@@ -1,0 +1,143 @@
+export const metadata = {
+  title: "Stored queries",
+  description:
+    "Persist, inspect, invoke, and compose reusable read-only CozoScript queries with typed parameter contracts.",
+};
+
+# Stored queries
+
+Since **mnestic 0.16.0**, a read-only CozoScript query can be stored under a
+name and reused later. A stored query is a view-like definition: mnestic keeps
+the query text, then reparses and evaluates it against the current transaction
+snapshot on every use.
+
+<Callout type="fork">
+  Stored queries do **not** cache or materialize results. There is no refresh
+  cycle or stale-result window, and upgrading to 0.16.0 requires no data
+  migration.
+</Callout>
+
+## Create and run one
+
+```cozoscript
+:create items {id: Int => label: String}
+?[id, label] <- [[1, 'one'], [2, 'two']]
+:put items {id => label}
+
+::query create item_labels {
+  ?[id, label] := *items[id, label]
+}
+```
+
+Run the stored query directly:
+
+```cozoscript
+::query run item_labels
+```
+
+Or compose it into another query as if it were a local rule:
+
+```cozoscript
+?[label] := item_labels[2, label]
+```
+
+The second form participates in normal Datalog planning and magic-set
+specialization. Private rules inside the stored definition are hygienically
+renamed, so they cannot capture—or be captured by—rules in the caller.
+
+## Parameters, types, and defaults
+
+Every `$parameter` used by a stored body must be declared. Types and defaults
+are optional:
+
+```cozoscript
+::query create by_id ($id: Int default 1) {
+  ?[label] := *items[$id, label]
+}
+```
+
+```cozoscript
+::query run by_id
+```
+
+Bindings are supplied through the same parameter map used by ordinary
+CozoScript execution. A declared type coerces the value at invocation time; for
+example, a `Float` value of `2.0` supplied for `$id: Int` becomes the integer
+`2` instead of silently missing integer keys.
+
+Parameters have run-wide scope. To bind a different value at each rule atom,
+make it an output column and use ordinary Datalog unification:
+
+```cozoscript
+::query create all_items {
+  ?[id, label] := *items[id, label]
+}
+
+?[label] := all_items[id, label], id in [1, 2]
+```
+
+## Inspect and manage the catalog
+
+```cozoscript
+::query list
+::query show item_labels
+::query remove item_labels
+```
+
+`list` exposes each query's ordered parameter contract and output head, which
+makes the catalog useful to tools that need to discover callable queries.
+Definitions live in the reserved ordinary relation
+`mnestic_stored_queries`, so existing relation export, import, backup, and
+access-level controls apply. Setting that relation read-only is a supported way
+to freeze the catalog.
+
+There is no in-place replace in v1. Remove and recreate a definition; removal
+is refused while another stored query depends on it.
+
+## Read-only and composition rules
+
+- Stored bodies must contain one read-only query. `:put`, `:create`, and other
+  relation mutations are rejected at creation and checked again at use.
+- `::query run` honors the body's output options such as `:limit`.
+- Rule-atom composition rejects stored bodies with non-default output options,
+  because silently dropping or partially applying them would be ambiguous.
+- Triggers and imperative scripts can reference stored queries. A trigger has
+  no runtime parameter map, so every parameter it needs must have a default.
+- `::explain { ?[x] := query_name[x] }` shows the real spliced and rewritten
+  plan. The generated rule names are visible as `query_name::?` and helper
+  names beneath it.
+- Timeouts, memory budgets, relation access levels, and `:as_of` continue to
+  apply to the resulting query as a whole.
+
+## Python example
+
+```python
+from mnestic import CozoDbPy
+
+db = CozoDbPy("mem", "", "{}")
+db.run_script("""
+::query create recent_items ($since: Int) {
+    ?[uid, created_at] := *item{uid, created_at}, created_at >= $since
+}
+""", {}, False)
+
+rows = db.run_script(
+    "::query run recent_items",
+    {"since": 1_700_000_000},
+    True,
+)["rows"]
+```
+
+## What is intentionally not included
+
+0.16.0 does not add materialized views, cached plans, mutating stored bodies,
+or per-atom argument syntax. The catalog and one resolution pass leave room for
+those additions if real usage justifies their complexity, without imposing
+their invalidation and permission models today.
+
+## See also
+
+- [Queries](/docs/queries)
+- [Query execution](/docs/query-execution)
+- [Interruptibility and query budgets](/docs/fork/interruptibility)
+- [0.16.0 release notes](/docs/release-notes#0160)

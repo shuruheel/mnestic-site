@@ -289,6 +289,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.16.0",
+    t: "Name a query once, reuse it everywhere",
+    d: "Persistent stored queries turn repeated read logic into composable, typed building blocks. Invoke one directly by name or use it like a rule inside a larger Datalog query; every run stays fresh against the current transaction snapshot, with no materialized result or cache to invalidate.",
+    metric: "::query create · typed parameters + defaults · hygienic rule composition · no storage migration",
+  },
+  {
     ver: "0.15.0",
     t: "Bound the memory of queries and every RocksDB instance",
     d: "A query can now carry a byte budget that aborts cleanly before commit, while every RocksDB database in a process can join one shared block-cache/write-buffer envelope. The same release adds relational RDF intake/export and a runnable JSON-LD/tree modeling guide: interchange at the edge, Datalog inside.",
@@ -492,7 +498,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.15.0
+                a maintained fork of CozoDB · v0.16.0
               </span>
             </div>
 
@@ -766,7 +772,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — every fork release, 0.8.0 through 0.15.0.
+            — every fork release, 0.8.0 through 0.16.0.
           </p>
         </section>
 
@@ -1028,7 +1034,7 @@ export default function Home() {
 cargo add mnestic
 
 # or, with the RocksDB backend:
-# mnestic = { version = "0.15.0", features = ["storage-rocksdb"] }`}
+# mnestic = { version = "0.16.0", features = ["storage-rocksdb"] }`}
               />
               <Code
                 lang="rust"
