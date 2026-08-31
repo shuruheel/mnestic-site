@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.16.0) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.17.0) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,38 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.17.0
+
+**Atomic columnar copy-in and candidate-scoped full-text retrieval.** This minor
+release ships with **mnestic-rocks 0.1.12**, which must be published before the
+`mnestic` crate.
+
+- The off-by-default Rust `columnar-io` feature adds
+  `Db::import_columnar_file` and the backend-erased `DbInstance` equivalent.
+  Published Python packages include the same method and release the GIL while
+  it runs.
+- One local Parquet file, Arrow IPC file, or Arrow IPC stream is projected into
+  an existing non-`TxTime` relation. The import uses put/upsert semantics and
+  either commits every decoded row in one transaction or leaves the relation
+  unchanged.
+- Explicit column mappings and ceilings for source bytes, rows, decoded-batch
+  bytes, value bytes, nesting depth, and wall-clock time let the host bound
+  admitted work. `batch_rows` bounds conversion-loop slices, not decoder peak
+  memory or the size of the single storage transaction.
+- FTS atoms accept a constant `candidates:` list of base-relation primary keys.
+  Eligibility is applied before sorting, top-k, and base-row fetches, so an
+  allowed document below the unrestricted global top-k can surface.
+- Candidate scopes do not create isolated scoring corpora. BM25 document count,
+  average document length, and term document frequencies remain index-global,
+  and a retained document keeps the same score at a fixed corpus state.
+
+There is no storage-format migration. Columnar import does not infer schemas,
+read remote or partitioned datasets, import into `TxTime` relations, run
+triggers or callbacks, or maintain HNSW/FTS/LSH indexes. Rebuild the search
+indexes named in the import report with `::reindex`. Arrow export is not part of
+this release. See [Beyond CozoScript](/docs/beyond-cozoscript#columnar-copy-in-0170)
+and [Proximity searches](/docs/proximity-search#candidate-scoped-fts-0170).
 
 ## 0.16.0
 

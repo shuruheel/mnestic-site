@@ -68,7 +68,7 @@ mnestic inherits CozoDB's storage backends. Select them with Cargo features:
 
 ```toml
 # Cargo.toml — enable the RocksDB backend
-mnestic = { version = "0.16.0", features = ["storage-rocksdb"] }
+mnestic = { version = "0.17.0", features = ["storage-rocksdb"] }
 ```
 
 <Callout type="note">
@@ -86,6 +86,21 @@ mnestic = { version = "0.16.0", features = ["storage-rocksdb"] }
   pick up the configured `block_size`), but it is forward-compatible and needs no
   migration — and it means any read-path benchmark you took before upgrading
   measured a slower engine than mnestic actually is.
+</Callout>
+
+<Callout type="fork">
+  **Specific to mnestic 0.17.0.** Local Parquet and Arrow IPC copy-in is behind
+  Rust's off-by-default `columnar-io` feature:
+
+  ```toml
+  mnestic = { version = "0.17.0", features = ["columnar-io"] }
+  ```
+
+  Published Python wheels and source distributions include this support, so
+  `CozoDbPy.import_columnar_file(...)` is available after `pip install mnestic`
+  and releases the GIL while decoding and committing. The API imports into an
+  existing relation; it does not infer a schema or query a file in place. See
+  [Columnar copy-in](/docs/beyond-cozoscript#columnar-copy-in-0170).
 </Callout>
 
 <Callout type="warning">

@@ -357,7 +357,41 @@ score and add `:order -s` to present results ranked.
 | `k1` | `1.2` | BM25 term-frequency saturation parameter (ignored for other score kinds). |
 | `b` | `0.75` | BM25 document-length normalization, must be in `[0, 1]` (ignored for other score kinds). |
 | `bind_score` | none | Binds the relevance score. |
+| `candidates` | none | A constant list of eligible base-relation primary keys. One-column keys use scalar list elements; composite keys use lists in declared key order. Applied before sorting and `k`. |
 | `filter` | none | An expression evaluated on each scored candidate; rows failing it are skipped before `k` is filled. |
+
+### Candidate-scoped FTS (0.17.0)
+
+Use `candidates:` when retrieval must rank only within an explicit allowlist of
+base-relation keys:
+
+```prolog
+?[id, s] := ~memory:by_text{ id |
+        query: $query,
+        k: 5,
+        candidates: $allowed,
+        bind_score: s,
+    }
+```
+
+`$allowed` must resolve to a list. For a one-column key, each element is the key
+value; for a composite key, each element is a list with the key columns in
+declared order. Key values are coerced through the relation schema. Empty lists
+return no rows, while malformed, wrong-arity, or nonconstant inputs fail loudly.
+
+Candidate membership is applied before scoring-result growth, sorting, top-k,
+and base-row fetches. It can therefore surface an eligible document that ranked
+below the unrestricted global `k`. Scoring statistics remain corpus-global:
+BM25 document count, average document length, and term document frequencies do
+not shrink to the allowlist, so a retained document's score is unchanged at a
+fixed corpus state. The existing `filter:` option remains separate and runs on
+fetched base rows after ranking.
+
+<Callout type="note">
+  Candidate scoping still scans matching posting ranges to preserve global
+  document-frequency statistics. Its cost is not strictly proportional to the
+  allowlist size, so callers should bound candidate lists.
+</Callout>
 
 <Callout type="fork">
   **mnestic 0.8.3 changed the default `score_kind`** from `'tf_idf'` to Okapi

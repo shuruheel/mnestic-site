@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Beyond CozoScript",
   description:
-    "Embedding mnestic in your program: the Rust API and Python binding — parameterized scripts, timeouts, open transactions, change callbacks, custom rules and aggregates, one-call hybrid search, read-only Cypher, and bulk export, import, backup and restore.",
+    "Embedding mnestic in your program: the Rust API and Python binding — parameterized scripts, transactions, callbacks, custom rules, hybrid search, read-only Cypher, atomic Parquet and Arrow copy-in, backup and restore.",
 };
 
 # Beyond CozoScript
@@ -623,6 +623,49 @@ method names below follow the Python binding; the Rust equivalents on
 `restore_backup`, and `import_from_backup`, each with a `_str` JSON variant
 for FFI. The standalone server exposes them as `/export/:relations`,
 `/import`, `/backup`, and `/import-from-backup`.
+
+### Columnar copy-in (0.17.0)
+
+With Rust's off-by-default `columnar-io` feature, `Db` and `DbInstance` can copy
+one local Parquet file, Arrow IPC file, or Arrow IPC stream into an existing
+stored relation:
+
+```rust
+use cozo::{ColumnarFileFormat, ColumnarImportOptions, DbInstance};
+
+let db = DbInstance::new("sqlite", "./memory.db", "")?;
+let options = ColumnarImportOptions::new(ColumnarFileFormat::Parquet)
+    .with_batch_rows(8_192)
+    .with_max_source_bytes(Some(512 * 1024 * 1024));
+let report = db.import_columnar_file("memory", "memory.parquet", &options)?;
+```
+
+The published Python package includes the same operation and releases the GIL
+while it runs:
+
+```python
+report = db.import_columnar_file(
+    "memory",
+    "memory.arrow",
+    format="arrow_ipc_file",
+    batch_rows=8192,
+    max_source_bytes=512 * 1024 * 1024,
+)
+```
+
+The target relation must already exist and cannot contain a `TxTime` column.
+The operation uses put/upsert semantics, target-schema coercion, and one storage
+transaction: either every converted row commits or the relation is unchanged.
+Column mappings and ceilings for source bytes, rows, decoded-batch bytes, value
+bytes, nesting depth, and wall-clock time are explicit options. `batch_rows`
+bounds conversion-loop slices; it is not a bound on decoder peak memory or on
+the accumulated write transaction.
+
+This is local copy-in, not federation. It does not infer schemas, read URLs,
+globs, directories, or partitioned datasets, run triggers or callbacks, or
+export Arrow. B-tree indexes are maintained, but HNSW, FTS, and LSH indexes are
+not. The returned report names search indexes that require
+[`::reindex`](/docs/system-ops#reindex-rel_name).
 
 ### `export_relations(self, relations)`
 

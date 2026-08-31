@@ -289,6 +289,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.17.0",
+    t: "Copy columnar data in atomically, scope full-text before top-k",
+    d: "A host can copy one local Parquet or Arrow IPC file into an existing relation with explicit resource ceilings and one all-or-nothing transaction. Full-text atoms can independently take a primary-key allowlist, applying eligibility before ranking and top-k while preserving corpus-global BM25 scores.",
+    metric: "Parquet + Arrow IPC file/stream · atomic put semantics · candidate-aware FTS · mnestic-rocks 0.1.12",
+  },
+  {
     ver: "0.16.0",
     t: "Name a query once, reuse it everywhere",
     d: "Persistent stored queries turn repeated read logic into composable, typed building blocks. Invoke one directly by name or use it like a rule inside a larger Datalog query; every run stays fresh against the current transaction snapshot, with no materialized result or cache to invalidate.",
@@ -498,7 +504,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.16.0
+                a maintained fork of CozoDB · v0.17.0
               </span>
             </div>
 
@@ -772,7 +778,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — every fork release, 0.8.0 through 0.16.0.
+            — every fork release, 0.8.0 through 0.17.0.
           </p>
         </section>
 
@@ -1034,7 +1040,7 @@ export default function Home() {
 cargo add mnestic
 
 # or, with the RocksDB backend:
-# mnestic = { version = "0.16.0", features = ["storage-rocksdb"] }`}
+# mnestic = { version = "0.17.0", features = ["storage-rocksdb"] }`}
               />
               <Code
                 lang="rust"
