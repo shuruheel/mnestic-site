@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.17.0) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.18.0) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,45 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.18.0
+
+**String and JSON correctness, normalized full-text prefixes.** This minor
+release keeps **mnestic-rocks at 0.1.12**. There is no storage-format migration,
+but scripts and applications that depended on the old conversions need review.
+
+- Double-quoted strings decode escapes. Fenced raw strings preserve comment
+  markers, newlines and edge whitespace; fences require contiguous underscores
+  on both sides. Use raw strings when backslashes must stay verbatim and trim
+  explicitly when intended. Unknown escapes now fail. Unicode escape sequences
+  remain BMP-only; literal non-BMP characters and bound parameters work.
+- Nested JSON, JSON builtins, `to_string`, value-derived keys and paths, and new
+  `Json`-column writes share one conversion: UUID strings, base64 byte strings,
+  and string markers for scalar infinities. NaN and non-finite vector elements
+  remain null. Non-contiguous vectors no longer panic during JSON conversion.
+- Single-term FTS prefixes apply configured lowercase and ASCII-folding filters
+  in order. Incomplete words skip tokenization, stemming, stopword removal,
+  length filters and compound splitting. Prefixes still match indexed terms;
+  no index rebuild is needed. Integer boosts no longer panic. Empty prefixes,
+  leading wildcards and quoted multi-token prefixes remain unsupported.
+
+<Callout type="warning">
+  **Audit scripts and known typed JSON fields before upgrading.** Existing
+  strings and JSON are not rewritten. Stored query bodies are reparsed when
+  invoked, so they need the same string-literal audit as application scripts.
+  Quotes inside apparent comments within a literal can now close the string.
+  Old UUID/byte arrays can coexist with new strings; migrate only fields whose
+  types you know. Old infinity-derived nulls cannot be recovered without
+  another source of truth. Native binding conversions and MindGraph's snapshot
+  format are unchanged.
+</Callout>
+
+The temporary `parser.string_decoding_changed` warning reports a byte offset,
+without literal contents, for potentially changed escapes or edge trivia. It
+is conservative and does not identify every affected script. It is scheduled
+for removal in 0.19.0. See [String literals](/docs/types#literals),
+[JSON conversion](/docs/functions#json-functions), and
+[FTS query syntax](/docs/proximity-search#the-query-mini-language).
 
 ## 0.17.0
 

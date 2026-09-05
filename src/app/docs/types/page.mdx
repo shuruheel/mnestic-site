@@ -66,7 +66,7 @@ One query can produce every one of them:
   render as a Base64 string, `Uuid` as its string form, `Vector` as a plain
   list of numbers, and `Validity` as a `[timestamp, is_assert]` pair. The
   stored value keeps its engine type — only the display coincides.
-  In 0.18.0 (unreleased), nested JSON and new `Json`-column conversions use
+  Since 0.18.0, nested JSON and new `Json`-column conversions use
   these same forms. Existing JSON is unchanged; see the
   [JSON migration note](/docs/functions#json-functions).
 </Callout>
@@ -305,7 +305,7 @@ characters such as `😀` work. Python callers can bind parameters or use
 `json.dumps(text, ensure_ascii=False)` when producing a literal.
 
 <Callout type="warning">
-  **0.18.0 upgrade (unreleased):** double-quoted backslashes previously stayed
+  **0.18.0 upgrade:** double-quoted backslashes previously stayed
   verbatim in many literals, and edge whitespace/comment-like text could be
   trimmed. Use raw strings for verbatim backslashes and trim explicitly if
   intended. Unknown escapes now fail; a final backslash can escape the closing
@@ -313,7 +313,9 @@ characters such as `😀` work. Python callers can bind parameters or use
   comments contain quotes, since those quotes now close the string.
   The temporary `parser.string_decoding_changed` diagnostic in `::warnings`
   flags potentially changed literals; it is conservative and cannot find every
-  affected script. Parameters and existing stored strings are unchanged.
+  affected script. It is scheduled for removal in 0.19.0. Stored query bodies
+  are reparsed on invocation and need the same audit. Parameters and existing
+  stored strings are unchanged.
 </Callout>
 
 ```prolog

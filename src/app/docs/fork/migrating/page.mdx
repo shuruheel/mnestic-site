@@ -1,18 +1,19 @@
 export const metadata = {
   title: "Migrating from CozoDB",
   description:
-    "How to move a CozoDB project to mnestic: a dependency swap that leaves your CozoScript and your use cozo:: imports untouched — plus the one thing to check if you used a Validity column.",
+    "How to move a CozoDB project to mnestic: preserve your cozo imports, review string and JSON behavior, and check Validity column defaults.",
 };
 
 # Migrating from CozoDB
 
-Moving from CozoDB to mnestic is a dependency change. The query language
-(CozoScript) and the engine semantics are unchanged, and the importable library
-name stays `cozo`, so your application code does not change.
+Moving from CozoDB to mnestic starts with a dependency change. The importable
+library name stays `cozo`. Review the behavior changes below before upgrading,
+particularly string literals, JSON conversion and `Validity` column defaults.
 
 <Callout type="fork">
   mnestic forks CozoDB at upstream `481af05` (2024-12-04). Your data files,
-  schemas, and queries are compatible.
+  and schemas require no storage-format migration. Query behavior changes are
+  documented in the [release history](/docs/release-notes).
 </Callout>
 
 ## Swap the dependency
@@ -24,10 +25,10 @@ rename idiom so the dependency **key stays `cozo`** — that keeps both
 ```toml
 # Cargo.toml
 [dependencies]
-cozo = { package = "mnestic", version = "0.17.0" }
+cozo = { package = "mnestic", version = "0.18.0" }
 
 # with the RocksDB backend:
-# cozo = { package = "mnestic", version = "0.17.0", features = ["storage-rocksdb"] }
+# cozo = { package = "mnestic", version = "0.18.0", features = ["storage-rocksdb"] }
 ```
 
 If you depend on a local checkout instead of crates.io:
@@ -38,6 +39,20 @@ cozo = { package = "mnestic", path = "../mnestic/cozo-core" }
 
 No source changes are required — `use cozo::DbInstance;` and friends resolve to
 mnestic.
+
+## Review 0.18.0 string and JSON behavior
+
+Double-quoted escapes now decode and raw strings retain edge whitespace and
+comment-like text. Unknown escapes fail, and quotes inside apparent comments
+can close a literal. Audit stored query bodies as well as application scripts;
+use raw strings for verbatim backslashes and bind application values as
+parameters where possible.
+
+Nested JSON and new `Json`-column writes now use UUID and base64 strings in
+place of the old arrays. Existing JSON is not rewritten. Migrate only fields
+whose types you know; infinity values already reduced to null cannot be
+recovered without another source. See the complete
+[0.18.0 migration notes](/docs/release-notes#0180).
 
 ## What you get immediately
 
@@ -52,7 +67,7 @@ mnestic.
 - **A float in a validity stops corrupting the valid-time axis.** Upstream
   coerced the float *seconds* returned by `now()` / `parse_timestamp()` into a
   validity's integer *microseconds*, storing the fact at 1970; mnestic 0.12.2
-  rejects it instead. This is the one migration step that can surface as a new
+  rejects it instead. This migration step can surface as a new
   error: a schema carrying `Validity default [floor(now()), true]` still
   compiles, but its next write raises `eval::float_validity`. Write
   `default [to_int(now() * 1000000), true]` (or `default 'ASSERT'`), and see

@@ -456,7 +456,7 @@ individual NEAR terms. Leading wildcards such as `*stall` are unsupported;
 use `stall*` to search the start of an indexed term.
 
 <Callout type="warning">
-  **Unreleased — planned for 0.18.0:** integer boosts such as `Di*^3` no
+  **Since 0.18.0:** integer boosts such as `Di*^3` no
   longer panic; use decimal boosts (`Di*^3.0`) on 0.17.0. Prefixes apply the index's configured
   `Lowercase` and `AsciiFolding` filters in order. On a lowercase index,
   `Di*` and `di*` both match `Diwank`. In 0.17.0, supply the already-normalized
