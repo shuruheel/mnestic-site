@@ -1,0 +1,245 @@
+# Page examples in order. Schema shapes and placeholder syntax are not executable.
+:create memory { id: String => kind: String, text: String, importance: Float, at: Float, v: <F32; 4> }
+
+;;;
+
+?[id, kind, text, importance, at, v] <- [
+  ['m1', 'note',     'Maya prefers pull requests under 400 lines',                0.6,  1751328000.0, [0.1, 0.9, 0.1, 0.1]],
+  ['m2', 'decision', 'Chose RocksDB over sled for the write path',                0.9,  1751414400.0, [0.9, 0.1, 0.2, 0.1]],
+  ['m3', 'note',     'Nightly compaction stalls search-service around 03:00',    0.7,  1751500800.0, [0.6, 0.1, 0.8, 0.1]],
+  ['m4', 'insight',  'Compaction stalls correlate with oversized SST files',      0.8,  1751587200.0, [0.7, 0.1, 0.7, 0.1]],
+  ['m5', 'decision', 'Cap SST file size at 128 MB',                               0.85, 1751673600.0, [0.8, 0.1, 0.4, 0.1]],
+  ['m6', 'note',     'Sam owns the Postgres connector',                           0.5,  1751760000.0, [0.1, 0.8, 0.1, 0.5]],
+  ['m7', 'note',     'The Postgres connector timeout is 30 seconds',              0.4,  1751846400.0, [0.1, 0.2, 0.2, 0.9]],
+  ['m8', 'insight',  'Slow connector queries trace to a missing tenant_id index', 0.75, 1751932800.0, [0.2, 0.1, 0.5, 0.8]],
+]
+:put memory { id => kind, text, importance, at, v }
+
+;;;
+# Page prolog block 2
+::hnsw create memory:semantic {
+    dim: 4,
+    dtype: F32,
+    fields: [v],
+    distance: Cosine,
+    m: 16,
+    ef_construction: 50,
+}
+
+;;;
+# Page prolog block 3
+?[id, text, d] := ~memory:semantic{ id, text |
+        query: q,
+        k: 3,
+        ef: 50,
+        bind_distance: dist,
+    }, q = vec([0.7, 0.1, 0.6, 0.1]), d = round(dist * 1000) / 1000
+
+:order d
+
+;;;
+# Page prolog block 5
+?[id, kind, text] := ~memory:semantic{ id, kind, text |
+        query: q,
+        k: 3,
+        ef: 50,
+        filter: kind == 'decision',
+    }, q = vec([0.7, 0.1, 0.6, 0.1])
+
+;;;
+# Page prolog block 6
+?[id, d] := ~memory:semantic{ id |
+        query: q,
+        k: 5,
+        ef: 50,
+        radius: 0.05,
+        bind_distance: dist,
+    }, q = vec([0.7, 0.1, 0.6, 0.1]), d = round(dist * 1000) / 1000
+
+:order d
+
+;;;
+# Page prolog block 7
+?[id, f, fi, d] := ~memory:semantic{ id |
+        query: q,
+        k: 1,
+        ef: 50,
+        bind_distance: dist,
+        bind_field: f,
+        bind_field_idx: fi,
+        bind_vector: bv,
+    }, q = vec([0.7, 0.1, 0.6, 0.1]), d = round(dist * 1000) / 1000
+
+;;;
+# Page prolog block 9
+?[to_id, d] := *memory:semantic{ layer: 0, fr_id: 'm4', to_id, dist },
+    to_id != 'm4',
+    d = round(dist * 1000) / 1000
+
+:order d
+
+;;;
+# Page prolog block 10
+::hnsw drop memory:semantic
+
+;;;
+# Page prolog block 11
+::fts create memory:by_text {
+    extractor: text,
+    tokenizer: Simple,
+    filters: [Lowercase],
+}
+
+;;;
+# Page prolog block 12
+?[id, text, s] := ~memory:by_text{ id, text |
+        query: 'compaction stalls',
+        k: 5,
+        bind_score: score,
+    }, s = round(score * 1000) / 1000
+
+:order -s
+
+;;;
+# Page prolog block 13
+#!params {"query":"compaction stalls","allowed":["m3","m4"]}
+?[id, s] := ~memory:by_text{ id |
+        query: $query,
+        k: 5,
+        candidates: $allowed,
+        bind_score: s,
+    }
+
+;;;
+# Page prolog block 14
+?[id, text, s] := ~memory:by_text{ id, text, importance |
+        query: 'compaction stalls',
+        k: 5,
+        filter: importance > 0.7,
+        bind_score: score,
+    }, s = round(score * 1000) / 1000
+
+;;;
+# Page prolog block 15
+?[id, s] := ~memory:by_text{ id | query: 'connector OR compaction', k: 10, bind_score: score },
+    s = round(score * 1000) / 1000
+
+:order -s
+
+;;;
+# Page prolog block 16
+?[id, text] := ~memory:by_text{ id, text | query: 'connector NOT timeout', k: 10 }
+
+:order id
+
+;;;
+# Page prolog block 17
+?[id, text] := ~memory:by_text{ id, text | query: 'compact*', k: 10 }
+
+:order id
+
+;;;
+# Page prolog block 18
+?[id, text] := ~memory:by_text{ id, text | query: 'NEAR/3(connector timeout)', k: 10 }
+
+;;;
+# Page prolog block 19
+?[id, s] := ~memory:by_text{ id | query: 'compaction^2.0 OR connector', k: 10, bind_score: score },
+    s = round(score * 1000) / 1000
+
+:order -s
+
+;;;
+# Page prolog block 20
+?[id, s] := ~memory:by_text{ id |
+        query: 'compaction stalls',
+        k: 5,
+        score_kind: 'bm25',
+        k1: 1.2,
+        b: 0.0,
+        bind_score: score,
+    }, s = round(score * 1000) / 1000
+
+:order -s
+
+;;;
+# Page prolog block 21
+?[id, s] := ~memory:by_text{ id |
+        query: 'compaction stalls',
+        k: 5,
+        score_kind: 'tf_idf',
+        bind_score: score,
+    }, s = round(score * 1000) / 1000
+
+:order -s
+
+;;;
+# Page prolog block 23
+::fts drop memory:by_text
+
+;;;
+# Page prolog block 24
+::lsh create memory:dup {
+    extractor: text,
+    tokenizer: Simple,
+    filters: [Lowercase],
+    n_gram: 3,
+    n_perm: 200,
+    target_threshold: 0.5,
+}
+
+;;;
+# Page prolog block 25
+?[id, text] := ~memory:dup{ id, text |
+        query: 'The Postgres connector timeout is 30 seconds by default',
+        k: 3,
+    }
+
+;;;
+# Page prolog block 26
+?[id, text] := ~memory:dup{ id, text |
+        query: 'Compaction sometimes stalls the search service',
+    }
+
+;;;
+# Page prolog block 29
+::lsh drop memory:dup
+
+;;;
+# Page prolog block 30
+::fts create memory:trigram {
+    extractor: text,
+    tokenizer: NGram(3),
+    filters: [Lowercase],
+}
+
+;;;
+# Page prolog block 31
+::fts create memory:by_text_en {
+    extractor: text,
+    tokenizer: Simple,
+    filters: [Lowercase, Stemmer('english'), Stopwords('en')],
+}
+
+;;;
+# Page prolog block 32
+?[id, text] := ~memory:by_text_en{ id, text | query: 'stalling compactions', k: 5 }
+
+:order id
+
+;;;
+:create prefix_doc {id: Int => text: String}
+;;;
+::fts create prefix_doc:fts {extractor: text, tokenizer: Simple, filters: [Lowercase]}
+;;;
+?[id,text] <- [[1,'Diwank'],[2,'compaction stalls'],[3,'compaction often stalls']] :put prefix_doc {id => text}
+;;;
+?[id] := ~prefix_doc:fts{id | query: 'Di*^3', k: 10}
+;;;
+?[id] := ~prefix_doc:fts{id | query: '"compaction stalls"', k: 10}
+;;;
+#!expect_error
+?[id] := ~prefix_doc:fts{id | query: '*stall', k: 10}
+;;;
+#!expect_error
+?[id] := ~prefix_doc:fts{id | query: '"compaction stalls"*', k: 10}
