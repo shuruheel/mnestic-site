@@ -448,12 +448,22 @@ The query string is parsed into an expression tree before tokenization:
 - `hello^2.0 OR world`: boost `hello` to twice its usual weight when scoring.
 - Terms combine and nest with parentheses: `hello AND (world OR bye)`.
 
+Quoted multi-token text is an exact phrase: `"compaction stalls"` requires
+adjacency in that order (since 0.14.0). A quoted
+multi-token phrase with a trailing `*`, or a multi-token phrase inside `NEAR`,
+returns a named unsupported-query error; use a separate exact phrase or list
+individual NEAR terms. Leading wildcards such as `*stall` are unsupported;
+use `stall*` to search the start of an indexed term.
+
 <Callout type="warning">
-  Write boosters with a decimal point (`^2.0`). An integer booster (`^2`)
-  trips an inherited defect in the query parser and panics instead of
-  returning an error. And note that a quoted multi-word string is **not** a
-  phrase search: `"compaction stalls"` tokenizes into `compaction AND stalls`
-  with no adjacency requirement — use `NEAR` for proximity.
+  **Since 0.18.0:** integer boosts such as `Di*^3` no
+  longer panic; use decimal boosts (`Di*^3.0`) on 0.17.0. Prefixes apply the index's configured
+  `Lowercase` and `AsciiFolding` filters in order. On a lowercase index,
+  `Di*` and `di*` both match `Diwank`. In 0.17.0, supply the already-normalized
+  prefix yourself. Prefix normalization does not split, stem or remove
+  incomplete words: `the*` can match `theory` even with `the` in the stopword
+  list. Prefixes match indexed terms, so a stemmed index may match `run*` but
+  not `running*`. No index rebuild is needed for this query-side change.
 </Callout>
 
 Each operator, verified against the eight-row corpus:

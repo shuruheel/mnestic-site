@@ -1,7 +1,7 @@
 export const metadata = {
   title: "What mnestic adds",
   description:
-    "An overview of how mnestic diverges from CozoDB: atomic columnar copy-in, candidate-scoped FTS, stored queries, bounded memory, bitemporality, hybrid retrieval, cached graph projections, and operational recovery.",
+    "An overview of how mnestic diverges from CozoDB: string and JSON correctness, normalized FTS prefixes, atomic columnar copy-in, stored queries, bounded memory, bitemporality, hybrid retrieval, cached graph projections, and operational recovery.",
 };
 
 # What mnestic adds
@@ -27,6 +27,19 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 0.7.7.
 
 ## Highlights by release
+
+### 0.18.0 — string and JSON correctness, normalized FTS prefixes
+
+Double-quoted escapes decode, raw literals retain their contents, and nested
+JSON uses the same UUID and byte representations as top-level results.
+Single-term FTS prefixes apply configured lowercase and ASCII folding without
+stemming or dropping incomplete words. Integer FTS boosts no longer panic.
+
+Existing stored values remain unchanged. Audit scripts, including stored query
+bodies, and known typed JSON fields before upgrading; there is no storage-format
+migration or FTS index rebuild.
+
+→ [String literals](/docs/types#literals) · [JSON conversion](/docs/functions#json-functions) · [FTS query syntax](/docs/proximity-search#the-query-mini-language) · [Release history](/docs/release-notes#0180)
 
 ### 0.17.0 — atomic columnar copy-in and scoped FTS
 
