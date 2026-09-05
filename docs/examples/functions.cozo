@@ -1,0 +1,151 @@
+:create memory { id: String => kind: String, text: String, importance: Float, at: Float, v: <F32; 4> }
+;;;
+?[id, kind, text, importance, at, v] <- [
+  ['m1', 'note',     'Maya prefers pull requests under 400 lines',                0.6,  1751328000.0, [0.1, 0.9, 0.1, 0.1]],
+  ['m2', 'decision', 'Chose RocksDB over sled for the write path',                0.9,  1751414400.0, [0.9, 0.1, 0.2, 0.1]],
+  ['m3', 'note',     'Nightly compaction stalls search-service around 03:00',    0.7,  1751500800.0, [0.6, 0.1, 0.8, 0.1]],
+  ['m4', 'insight',  'Compaction stalls correlate with oversized SST files',      0.8,  1751587200.0, [0.7, 0.1, 0.7, 0.1]],
+  ['m5', 'decision', 'Cap SST file size at 128 MB',                               0.85, 1751673600.0, [0.8, 0.1, 0.4, 0.1]],
+  ['m6', 'note',     'Sam owns the Postgres connector',                           0.5,  1751760000.0, [0.1, 0.8, 0.1, 0.5]],
+  ['m7', 'note',     'The Postgres connector timeout is 30 seconds',              0.4,  1751846400.0, [0.1, 0.2, 0.2, 0.9]],
+  ['m8', 'insight',  'Slow connector queries trace to a missing tenant_id index', 0.75, 1751932800.0, [0.2, 0.1, 0.5, 0.8]],
+]
+:put memory { id => kind, text, importance, at, v }
+;;;
+:create entity { id: String => name: String, kind: String }
+;;;
+?[id, name, kind] <- [
+  ['e_rocksdb', 'RocksDB',        'tool'],
+  ['e_pg',      'Postgres',       'tool'],
+  ['e_maya',    'Maya',           'person'],
+  ['e_sam',     'Sam',            'person'],
+  ['e_search',  'search-service', 'project'],
+]
+:put entity { id => name, kind }
+;;;
+:create mentions { memory: String, entity: String }
+;;;
+?[memory, entity] <- [
+  ['m1', 'e_maya'],
+  ['m2', 'e_rocksdb'],
+  ['m3', 'e_search'],
+  ['m4', 'e_rocksdb'],
+  ['m5', 'e_rocksdb'],
+  ['m6', 'e_sam'], ['m6', 'e_pg'],
+  ['m7', 'e_pg'],
+  ['m8', 'e_pg'],
+]
+:put mentions { memory, entity }
+;;;
+:create recalls { from: String, to: String => strength: Float }
+;;;
+?[from, to, strength] <- [
+  ['m1', 'm2', 0.2],
+  ['m2', 'm3', 0.6],
+  ['m2', 'm5', 0.4],
+  ['m3', 'm4', 0.9],
+  ['m4', 'm5', 0.85],
+  ['m6', 'm7', 0.5],
+  ['m7', 'm8', 0.7],
+  ['m8', 'm5', 0.3],
+]
+:put recalls { from, to => strength }
+
+;;;
+?[when, id, tag, score] := *memory{ id, text, importance, at, v },
+    sim = 1 - cos_dist(v, vec([0.7, 0.1, 0.6, 0.1])),
+    sim > 0.5,
+    score = round(100 * (0.7 * sim + 0.3 * importance)) / 100,
+    tag = if(regex_matches(text, '(?i)compaction|sst'), 'storage', 'other'),
+    when = slice_string(format_timestamp(at), 0, 10)
+:order -score
+
+;;;
+?[x] := x = 1 or x = 2, x = 2
+
+;;;
+?[a, b, c] := a = 2 + 3 % 4, b = 2 ^ 3 ^ 2, c = -2 ^ 2
+
+;;;
+?[x, y] := x = (1 == 1.0), y = ('one' == 1)
+
+;;;
+?[a, b, c, d] := a = round(-0.5), b = floor(-0.5), c = mod(-7, 3), d = 2 ^ 10
+
+;;;
+?[id, dist] := *memory{ id, v },
+    dist = round(1000 * cos_dist(v, vec([0.7, 0.1, 0.6, 0.1]))) / 1000
+:order dist
+:limit 3
+
+;;;
+?[n] := n = l2_normalize(vec([3.0, 4.0], 'F64'))
+
+;;;
+?[name, lang, tags] := profile = parse_json('{"name": "Maya", "prefs": {"lang": "rust"}}'),
+    name = profile->'name',
+    lang = get(profile, ['prefs', 'lang']),
+    tags = dump_json(profile->'tags' ~ json([]))
+
+;;;
+?[id, payload, text] := id = to_uuid('550e8400-e29b-41d4-a716-446655440000'),
+    payload = {'id': id, 'bytes': decode_base64('AQID')}, text = to_string(id)
+
+;;;
+?[merged] := merged = dump_json(parse_json('{"a": 1, "b": {"x": 1}}') ++ parse_json('{"b": {"y": 2}}'))
+
+;;;
+?[date] := date = slice_string(format_timestamp(1751587200), 0, 10)
+
+;;;
+?[xs, top, pairs, u] := xs = int_range(1, 6),
+    top = last(xs),
+    pairs = chunks(xs, 2),
+    u = union([1, 2], [2, 3])
+
+;;;
+?[id, ms] := id = rand_ulid(), ms = ulid_timestamp(id)
+
+;;;
+?[id, num] := *memory{ id, text },
+    regex_matches(text, '[0-9]+'),
+    num = to_int(regex_extract_first(text, '[0-9]+'))
+
+;;;
+?[utc, tokyo, back] := ts = 1751587200,
+    utc = format_timestamp(ts),
+    tokyo = format_timestamp(ts, 'Asia/Tokyo'),
+    back = parse_timestamp(utc)
+
+;;;
+?[micros] := micros = to_int(parse_timestamp('2025-07-04T00:00:00Z') * 1000000)
+
+;;;
+?[v, ts] := v = validity(1751587200000000), ts = to_int(v)
+
+;;;
+#!expect_error
+?[v] := v = validity(parse_timestamp('2025-07-04T00:00:00Z'))
+
+;;;
+?[y, mo, d, dow] := ts = parse_timestamp('2025-07-04T09:30:00Z'),
+    y = dt_year(ts), mo = dt_month(ts), d = dt_day(ts), dow = dt_dow(ts)
+
+;;;
+:create emp {name: String, v: Validity => title: String}
+;;;
+?[name,v,title] <- [['Maya',[1714521600000000,true],'Engineer']] :put emp {name,v => title}
+;;;
+?[name, title] := *emp{name, title @ dt_to_validity(parse_timestamp('2024-06-01T00:00:00Z'))}
+
+;;;
+?[touching, apart, nested, empty] :=
+    touching = interval_overlaps([0, 5], [5, 10]),
+    apart    = interval_overlaps([0, 5], [7, 10]),
+    nested   = interval_overlaps([0, 10], [2, 3]),
+    empty    = interval_overlaps([3, 3], [0, 10])
+
+;;;
+#!expect_error
+?[x] := x = interval_overlaps([5, 0], [0, 10])
+

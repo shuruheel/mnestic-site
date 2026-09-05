@@ -454,6 +454,27 @@ The `->` operator makes path access read naturally:
 ["Maya", "rust", "[]"]
 ```
 
+<Callout type="warning">
+  **0.18.0 upgrade (unreleased):** UUIDs and bytes nested in JSON now use UUID
+  and base64 strings, matching top-level results. Scalar infinities use
+  `"INFINITY"` and `"NEGATIVE_INFINITY"`; NaN and non-finite vector elements
+  remain `null`. `to_string`, value-derived keys/paths and new writes into
+  `Json` columns follow the same conversion.
+  Existing JSON and stored text are not rewritten. Audit known typed fields
+  and migrate old byte arrays client-side when needed; do not infer types from
+  arbitrary arrays. Old infinity-derived nulls cannot be recovered without
+  another source of truth. JSON conversion remains lossy and one-way.
+</Callout>
+
+```prolog
+?[id, payload, text] := id = to_uuid('550e8400-e29b-41d4-a716-446655440000'),
+    payload = {'id': id, 'bytes': decode_base64('AQID')}, text = to_string(id)
+```
+
+```
+["550e8400-e29b-41d4-a716-446655440000",{"bytes":"AQID","id":"550e8400-e29b-41d4-a716-446655440000"},"550e8400-e29b-41d4-a716-446655440000"]
+```
+
 ### `json(x)`
 
 Converts any value to a Json value. This function is idempotent and never fails.

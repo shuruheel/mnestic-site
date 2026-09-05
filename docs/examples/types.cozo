@@ -1,0 +1,125 @@
+?[type, value] <- [
+  ['null',   null],
+  ['bool',   true],
+  ['int',    299_792_458],
+  ['float',  6.02e23],
+  ['string', 'a string'],
+  ['bytes',  decode_base64('bW5lc3RpYw==')],
+  ['uuid',   to_uuid('550e8400-e29b-41d4-a716-446655440000')],
+  ['list',   [1, 'two', [3.0]]],
+  ['vector', vec([0.25, 0.5])],
+  ['json',   {'kind': 'note', 'pinned': true}],
+  ['validity', validity(1751328000000000)],
+]
+
+;;;
+vals[x] <- [[true], [-0.5], [42], ['text'], [[1, 2]], [vec([1.0, 2.0])], [null], [false]]
+?[x] := vals[x]
+:order x
+
+;;;
+#!expect_error
+?[x] := x = (1 < 'a')
+
+;;;
+?[id] := id = rand_ulid()
+
+;;;
+?[eq, neq, lt, ge] := eq = (1 == 1.0), neq = (1 != 1.0), lt = (1 < 1.0), ge = (1 >= 1.0)
+
+;;;
+nums[x] <- [[2], [1.0], [1], [0.5]]
+?[x] := nums[x]
+:order x
+
+;;;
+:create seen { x: Any }
+
+;;;
+?[x] <- [[1], [1.0]]
+:put seen { x }
+
+;;;
+?[x] := *seen[x]
+
+;;;
+:create by_score { score: Float => id: String }
+
+;;;
+?[score, id] <- [[1, 'm9']]
+:put by_score { score => id }
+
+;;;
+?[id] := *by_score[1, id]    # Int constant: finds nothing
+
+;;;
+?[id] := *by_score[1.0, id]  # Float constant: finds the row
+
+;;;
+?[id] := *by_score[s, id], s == 1
+
+;;;
+?[hex, oct, bin, sep, trailing, sci] :=
+    hex = 0x2a, oct = 0o52, bin = 0b10_1010,
+    sep = 299_792_458, trailing = 10., sci = 2.5e-3
+
+;;;
+?[n, m] := n = length('a\nb'), m = length("a\nb")
+
+;;;
+?[s] := s = ___"a "quoted" word"___
+
+;;;
+?[cfg] := cfg = {'retries': 3, 'fallback': null}
+
+;;;
+:create memory { id: String => kind: String, text: String, importance: Float, at: Float, v: <F32; 4> }
+
+;;;
+:create profile { id: Uuid => avatar: Bytes }
+
+;;;
+?[id, avatar] <- [['550e8400-e29b-41d4-a716-446655440000', 'aGVsbG8=']]
+:put profile { id => avatar }
+
+;;;
+?[id, avatar] := *profile{ id, avatar }
+
+;;;
+:create counts { n: Int => label: String }
+
+;;;
+?[n, label] <- [[7.0, 'seven']]
+:put counts { n => label }
+
+;;;
+?[n, label] := *counts{ n, label }
+
+;;;
+#!expect_error
+?[n, label] <- [[7.5, 'seven and a half']]
+:put counts { n => label }
+
+;;;
+:create calib { t: (Int, Float, String), l: [Int; 3], note: String? }
+
+;;;
+#!expect_error
+?[t, l, note] <- [[[1, 2.5, 'x'], [1, 2], null]]
+:put calib { t, l, note }
+
+;;;
+:create config_audit { key: String, tt: TxTime => value: String }
+
+;;;
+?[key, value] <- [['embedder', 'nomic-embed-v2']]
+:put config_audit { key => value }
+
+;;;
+?[key, tt, value] := *config_audit{ key, tt, value }
+
+;;;
+#!expect_error
+?[key, tt, value] <- [['embedder', [1, true], 'oops']]
+:put config_audit { key, tt => value }
+

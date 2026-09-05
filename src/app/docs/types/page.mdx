@@ -66,6 +66,9 @@ One query can produce every one of them:
   render as a Base64 string, `Uuid` as its string form, `Vector` as a plain
   list of numbers, and `Validity` as a `[timestamp, is_assert]` pair. The
   stored value keeps its engine type — only the display coincides.
+  In 0.18.0 (unreleased), nested JSON and new `Json`-column conversions use
+  these same forms. Existing JSON is unchanged; see the
+  [JSON migration note](/docs/functions#json-functions).
 </Callout>
 
 ## Equality and ordering
@@ -279,35 +282,38 @@ underscores `_` for readability:
   fails to parse them.
 </Callout>
 
-Strings come in three notations, and they differ in how escapes are handled:
+Strings come in three notations:
 
-- _Single-quoted_ strings `'…'` process JSON-style escapes — `\'`, `\\`, `\n`,
-  `\r`, `\t`, `\b`, `\f`, `\/`, `\uXXXX` — with the roles of single and double
-  quotes switched relative to JSON.
-- _Double-quoted_ strings `"…"` take every character between the quotes exactly
-  as typed, backslashes included, and end at the first double quote.
-- _Raw strings_ generalize the double-quoted form: some number of underscores,
-  then a double quote; the string ends at a double quote followed by the same
-  number of underscores. Everything in between, newlines and quotes included,
-  passes through untouched.
+- _Single-quoted_ strings `'…'` process JSON-style escapes with the roles of single
+  and double quotes switched: `\'`, `\\`, `\n`, `\r`, `\t`, `\b`, `\f`, `\/`, `\uXXXX`.
+- _Double-quoted_ strings `"…"` process the same escapes, with `\"` for a quote.
+- _Raw strings_ have one or more underscores followed by a double quote, with an
+  equal fence at the end. Their contents are verbatim, including backslashes,
+  hashes, newlines and whitespace. No gaps are allowed between fences and quotes.
 
 ```prolog
 ?[n, m] := n = length('a\nb'), m = length("a\nb")
 ```
 
 ```
-[3,4]
+[3,3]
 ```
 
-The single-quoted string is three characters — its `\n` became a newline. The
-double-quoted one keeps the backslash and the `n`.
+Both quoted strings contain three characters: `a`, a newline, and `b`.
+Each `\uXXXX` must encode a BMP scalar. Surrogate pairs are rejected; literal
+characters such as `😀` work. Python callers can bind parameters or use
+`json.dumps(text, ensure_ascii=False)` when producing a literal.
 
 <Callout type="warning">
-  Escapes are processed **only in single-quoted strings**. The upstream manual
-  describes double quotes as JSON-like with escape rules, but in the engine as
-  shipped a double-quoted string is the zero-underscore raw string: `"\n"` is a
-  backslash and an `n`, and there is no way to put a `"` inside one. Use single
-  quotes when text needs escapes, and raw strings when it contains quotes.
+  **0.18.0 upgrade (unreleased):** double-quoted backslashes previously stayed
+  verbatim in many literals, and edge whitespace/comment-like text could be
+  trimmed. Use raw strings for verbatim backslashes and trim explicitly if
+  intended. Unknown escapes now fail; a final backslash can escape the closing
+  quote and move the error later in the script. Audit literals whose apparent
+  comments contain quotes, since those quotes now close the string.
+  The temporary `parser.string_decoding_changed` diagnostic in `::warnings`
+  flags potentially changed literals; it is conservative and cannot find every
+  affected script. Parameters and existing stored strings are unchanged.
 </Callout>
 
 ```prolog
@@ -318,8 +324,8 @@ double-quoted one keeps the backslash and the `n`.
 ["a \"quoted\" word"]
 ```
 
-By varying the number of underscores, you can represent any string without
-escaping.
+A quote followed by at least as many underscores as the fence ends a raw
+string. Choose a longer fence when its contents contain that sequence.
 
 There is no literal representation for `Bytes` or `Uuid`. Construct them with
 the functions `decode_base64` and `to_uuid`, as in the example at the top of
