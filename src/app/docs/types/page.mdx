@@ -311,9 +311,10 @@ characters such as `😀` work. Python callers can bind parameters or use
   intended. Unknown escapes now fail; a final backslash can escape the closing
   quote and move the error later in the script. Audit literals whose apparent
   comments contain quotes, since those quotes now close the string.
-  The temporary `parser.string_decoding_changed` diagnostic in `::warnings`
+  The temporary `parser.string_decoding_changed` diagnostic in 0.18's `::warnings`
   flags potentially changed literals; it is conservative and cannot find every
-  affected script. It is scheduled for removal in 0.19.0. Stored query bodies
+  affected script. The 0.19 candidate retires it without changing decoding or
+  errors. Its absence does not replace this audit. Stored query bodies
   are reparsed on invocation and need the same audit. Parameters and existing
   stored strings are unchanged.
 </Callout>

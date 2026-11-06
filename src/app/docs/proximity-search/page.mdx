@@ -230,6 +230,46 @@ non-termination).
   larger-than-RAM data.
 </Callout>
 
+### HNSW mutation recovery (0.19.0 candidate)
+
+The 0.19 candidate preserves pre-existing directed paths between surviving
+vertices when a node is deleted or replaced. Incremental pruning removes an
+edge only when the local neighborhood retains an alternate path. Online-build
+reconciliation retains snapshot vectors for changed/deleted nodes and removes
+those nodes before reinserting current rows.
+
+**Rebuild every pre-0.19 HNSW index before relying on this invariant.** Local
+repair cannot discover already-disconnected components or missing reverse-edge
+records from legacy incremental maintenance. Back up the database, schedule a
+maintenance window, and rebuild each indexed base relation:
+
+```prolog
+::reindex memory
+```
+
+Validate expected keys against exact base-row/vector queries after rebuilding.
+The package upgrade does not rebuild automatically, and increasing `ef` cannot
+reconnect a disconnected component. See [`::reindex`](/docs/system-ops#reindex-rel_name)
+for its locking and rollback behavior.
+
+Repair can fail with `hnsw::repair_limit` if degree or local work limits cannot
+be met, including during a fresh insertion. Ordinary script failures and governed
+query errors roll back. In a legacy explicit transaction, **abort after this
+error**: an incomplete HNSW mutation prevents commit, and a later successful
+statement cannot clear that guard. Investigate the index configuration or use
+exact eligible-key retrieval; repeatedly retrying the same mutation is not recovery.
+
+The local ceilings are 256 incident/pruning vertices, 4,096 physical rows per
+adjacency scan, 1,048,576 incident-vector components per layer, 16,777,216 distance
+components per layer repair, and 1,048,576 adjacency checks per pruning pass.
+These are not total RSS or hard latency bounds; retained vectors across layers
+and reconciliation caches are outside the per-layer component cap.
+
+This maintenance invariant does not promise exact ANN recall, change `filter:`
+eligibility, or guarantee that a selective filter fills `k`. Use an exact eligible
+set query where completeness is required. Release performance/recall measurements
+are pending.
+
 ### The index as a graph relation
 
 The index itself is readable as a normal (read-only) relation, which makes the
@@ -359,6 +399,21 @@ score and add `:order -s` to present results ranked.
 | `bind_score` | none | Binds the relevance score. |
 | `candidates` | none | A constant list of eligible base-relation primary keys. One-column keys use scalar list elements; composite keys use lists in declared key order. Applied before sorting and `k`. |
 | `filter` | none | An expression evaluated on each scored candidate; rows failing it are skipped before `k` is filled. |
+
+### Transactional FTS statistics (0.19.0 candidate)
+
+Document counts and average lengths are computed from the querying transaction's
+posting snapshot, including its pending writes. Aborts and failed commits cannot
+leak speculative statistics into later scores, and older RocksDB readers cannot
+replace current cached statistics. Scores/top-k can therefore change when the
+old results depended on stale statistics; the formulas and tokenization are
+unchanged. Recheck ranking fixtures after upgrading.
+
+A cold cache, invalidation or overlapping snapshot may scan postings for its own
+statistics. An incomplete posting mutation prevents commit until a complete
+rebuild restores index consistency; the normal response to a storage error is to
+abort the explicit transaction. See the
+[transactional statistics contract](https://github.com/shuruheel/mnestic/blob/main/docs/specs/fts-transaction-stats.md).
 
 ### Candidate-scoped FTS (0.17.0)
 

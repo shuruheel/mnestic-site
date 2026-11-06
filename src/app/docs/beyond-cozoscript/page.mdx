@@ -243,6 +243,51 @@ the server's `/transact` endpoints ride the same `MultiTransaction` wrapper.
   a single-core host) deadlocked every rayon-using query in the process.
 </Callout>
 
+### Governed transactions (0.19.0 candidate)
+
+The unreleased 0.19 native Rust API adds
+`DbInstance::governed_transaction(write, options)`, returning a serialized client
+and a worker. Construct `GovernedTransactionOptions::new(absolute_deadline)` with
+an `Instant`. The transaction's deadline includes scheduling delay; query and
+Db limits can tighten it. The default idle limit between commands is five seconds,
+and the optional memory limit estimates bytes per statement.
+
+The host must start `worker.run()` on a dedicated blocking thread. Acquire
+admission once and keep the permit in that worker's closure until it exits,
+including when an async waiter is cancelled. Moving the worker alone does not
+start a thread. Use the
+[complete native example](https://github.com/shuruheel/mnestic/blob/main/cozo-core/examples/governed_transaction.rs)
+for the ownership and join-on-error pattern.
+
+- `client.run_script(...)` takes one query program; imperative scripts and system
+  ops are unsupported. Read-only clients reject writes.
+- Any query error terminates and rolls back the whole governed transaction.
+  The first error preserves its diagnostic; later calls return
+  `transaction::closed`. `commit()` and `abort()` consume the client.
+- Dropping the client requests cancellation; `client.cancellation()` provides a
+  separately cloneable cancellation signal. Deadline or idle expiry reports
+  `eval::timeout`. Warnings flush after each query, even when it fails.
+- RocksDB readers retain a snapshot while writers commit. SQLite readers retain
+  a store-wide read guard and therefore hold concurrent writers until they close.
+- After successful commit, callback delivery uses the remaining transaction
+  deadline. A stalled bounded subscriber is disconnected with
+  `callback.delivery_timeout`; already committed data remains committed and the
+  subscriber must resubscribe and reconcile.
+
+<Callout type="warning">
+  Cancellation and deadlines are cooperative. Blocking storage calls or arbitrary
+  host fixed rules can outlive a client's timeout, so retain admission until the
+  actual worker exits. Cancellation racing commit does not prove rollback:
+  reconcile uncertain outcomes using the application's idempotency contract.
+  Estimated per-statement memory is not a bound on process RSS or all retained
+  transaction state. The API does not activate host admission policies on its own.
+</Callout>
+
+The existing transaction API remains available. Python exposure of this new
+client/worker API is not included in 0.19. Both APIs reject commit after an
+incomplete HNSW mutation; abort that explicit transaction even if a later
+statement succeeds. See [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190-candidate).
+
 ### Change callbacks
 
 Register a callback to be notified when a stored relation changes:
@@ -258,8 +303,10 @@ pub fn register_callback(
 Events are delivered on a [crossbeam](https://docs.rs/crossbeam) channel after
 the writing transaction **successfully commits** — you never observe a
 rolled-back write. `capacity: None` gives an unbounded channel; `Some(n)`
-bounds it, and a full bounded channel blocks the writing call (after its
-commit) until the consumer catches up, so size it for your consumer. Each
+bounds it, and a full bounded channel blocks ordinary/legacy delivery (after its
+commit) until the consumer catches up, so size it for your consumer. The 0.19
+governed API applies the remaining transaction deadline and disconnects a stalled
+subscriber as described above. Each
 event is `(op, new_rows, old_rows)`:
 
 | `op` | `new_rows` | `old_rows` |
