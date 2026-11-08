@@ -106,8 +106,8 @@ function when you want to be explicit.
   `::hnsw create` assembles the graph in contiguous integer-indexed memory (the
   hnswlib/pgvector layout) with parallel insertion; `MNESTIC_INDEX_BUILD_THREADS`
   controls the worker count (unset or `0` = all cores, `1` = serial insertion in
-  scan order). Parallel insertion means the exact link set varies between builds
-  — recall does not. Since **0.8.2** the build also no longer blocks readers of
+  scan order). Parallel insertion can vary the link set and approximate recall
+  between builds. Since **0.8.2** the build also no longer blocks readers of
   the base relation on the RocksDB backend: see
   [Non-blocking HNSW builds](/docs/fork/non-blocking-hnsw).
 </Callout>
