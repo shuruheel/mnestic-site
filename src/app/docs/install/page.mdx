@@ -11,13 +11,6 @@ name stays **`cozo`**. That means every `use cozo::…` in existing CozoDB-based
 code keeps working unchanged — adopting the fork is a dependency swap, not a
 rewrite.
 
-<Callout type="note">
-  **0.19.0 is an unreleased candidate.** The versioned examples below are prepared
-  for its publication. Unversioned registry installs currently select the latest
-  published release; use the exact source candidate chosen by your release process
-  when evaluating 0.19 before publication.
-</Callout>
-
 ## Add the crate
 
 ```bash
@@ -71,11 +64,11 @@ db.run_script("?[x] <- [[1],[2],[3]]", {}, False)
 </Callout>
 
 <Callout type="warning">
-  **Preparing to upgrade to 0.19.0?** Back up your database and rebuild every
+  **Upgrading to 0.19.0?** Back up your database and rebuild every
   pre-0.19 HNSW index with `::reindex your_relation` in a maintenance window.
   Validate the rebuilt results against exact base-row/vector queries. A
   `hnsw::repair_limit` error requires aborting an explicit transaction; investigate
-  the configuration before retrying. See the [candidate notes](/docs/release-notes#0190).
+  the configuration before retrying. See the [release notes](/docs/release-notes#0190).
 </Callout>
 
 ## Choosing a backend

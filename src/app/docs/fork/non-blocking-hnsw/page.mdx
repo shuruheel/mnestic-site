@@ -50,7 +50,7 @@ four guarantees:
 - **Crash safety.** Index relation ids are always freshly allocated, so a crash
   mid-publish leaves at worst unreferenced dead keys, never a torn index.
 
-## Reconciliation in the 0.19.0 candidate
+## Reconciliation in the 0.19.0
 
 Changed/deleted snapshot nodes are removed before current rows are inserted.
 Reconciliation retains their old vectors, including removed list elements, so
@@ -62,7 +62,7 @@ memory bound for the reconciliation pass.
 Existing pre-0.19 indexes still need an explicit rebuild with `::reindex` to
 recover disconnected components and missing reverse-edge bookkeeping. That
 maintenance command holds the relation lock; it does not use this off-lock build
-path. See [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190-candidate).
+path. See [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190).
 
 ## Backends
 

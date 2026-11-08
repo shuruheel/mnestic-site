@@ -383,7 +383,7 @@ was rebuilt from. Reach for it in these situations:
   to recover already-disconnected paths and missing legacy reverse-edge records.
   Local mutation repair cannot discover those hidden edges. Back up first and
   validate rebuilt search against exact base-row/vector queries. See
-  [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190-candidate).
+  [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190).
 - **After the 0.12.1 full-text fix.** Full-text postings leaked on every in-place
   update of a relation carrying *only* an FTS index (see
   [Release history](/docs/release-notes)). The fix stops new leakage but cannot
@@ -438,7 +438,7 @@ ring. Clear it explicitly with a separate system operation:
 ```
 
 <Callout type="fork">
-  **0.19.0 candidate:** reading and clearing warnings no longer opens a storage
+  **0.19.0:** reading and clearing warnings no longer opens a storage
   transaction, so it remains available while a read or write multi-transaction
   is active on memory or SQLite. Governed workers flush warnings after each query,
   including failed queries. Call these operations on the database, outside the

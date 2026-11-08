@@ -289,10 +289,10 @@ const capabilities = [
 
 const forkItems = [
   {
-    ver: "0.19.0 · candidate",
+    ver: "0.19.0",
     t: "Govern transactions, preserve search indexes through mutations",
     d: "Native Rust hosts gain governed transactions with deadlines, cooperative cancellation and worker-owned admission. Full-text scores follow the transaction snapshot; HNSW deletion and replacement preserve surviving paths or reject the mutation. Rebuild pre-0.19 HNSW indexes before relying on the repair.",
-    metric: "unreleased · native Rust governance · transactional FTS · explicit HNSW rebuild",
+    metric: "native Rust governance · transactional FTS · explicit HNSW rebuild",
   },
   {
     ver: "0.18.0",
@@ -516,7 +516,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.19.0 candidate
+                a maintained fork of CozoDB · v0.19.0
               </span>
             </div>
 
@@ -790,7 +790,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — released versions 0.8.0 through 0.18.0, plus the 0.19.0 candidate.
+            — every fork release, 0.8.0 through 0.19.0.
           </p>
         </section>
 
@@ -1052,7 +1052,6 @@ export default function Home() {
 cargo add mnestic
 
 # or, with the RocksDB backend:
-# After 0.19.0 publication (currently an unreleased candidate):
 # mnestic = { version = "0.19.0", features = ["storage-rocksdb"] }`}
               />
               <Code

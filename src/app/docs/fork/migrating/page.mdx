@@ -16,11 +16,6 @@ particularly string literals, JSON conversion and `Validity` column defaults.
   documented in the [release history](/docs/release-notes).
 </Callout>
 
-<Callout type="note">
-  **0.19.0 is an unreleased candidate.** The pins below are prepared for publication;
-  use your release process's exact source candidate to evaluate it beforehand.
-</Callout>
-
 ## Swap the dependency
 
 The published crate is `mnestic`, but its `[lib] name` is `cozo`. Use Cargo's
@@ -57,12 +52,12 @@ with an existing HNSW index, run:
 The rebuild recovers disconnected components and missing reverse-edge bookkeeping
 that local mutation repair cannot discover. It rebuilds the relation's search
 indexes from their stored manifests. Validate results against exact base-row/vector
-queries afterward. The candidate preserves surviving paths on subsequent mutations,
+queries afterward. Mnestic 0.19 preserves surviving paths on subsequent mutations,
 but can reject a deletion, replacement or insertion with `hnsw::repair_limit` when
 its degree or local work bounds cannot be met. Abort the explicit transaction;
 catching the error and running another statement cannot make it committable.
 Investigate the index configuration or use exact eligible-key retrieval before
-retrying. See [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190-candidate).
+retrying. See [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190).
 
 ## Review 0.18.0 string and JSON behavior
 
@@ -71,7 +66,7 @@ comment-like text. Unknown escapes fail, and quotes inside apparent comments
 can close a literal. Audit stored query bodies as well as application scripts;
 use raw strings for verbatim backslashes and bind application values as
 parameters where possible. The temporary `parser.string_decoding_changed` warning
-is retired in the 0.19 candidate without changing decoding or errors; its absence
+is retired in 0.19 without changing decoding or errors; its absence
 is not evidence that a legacy script has been audited.
 
 Nested JSON and new `Json`-column writes now use UUID and base64 strings in

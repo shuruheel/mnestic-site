@@ -243,9 +243,9 @@ the server's `/transact` endpoints ride the same `MultiTransaction` wrapper.
   a single-core host) deadlocked every rayon-using query in the process.
 </Callout>
 
-### Governed transactions (0.19.0 candidate)
+### Governed transactions (0.19.0)
 
-The unreleased 0.19 native Rust API adds
+The 0.19 native Rust API adds
 `DbInstance::governed_transaction(write, options)`, returning a serialized client
 and a worker. Construct `GovernedTransactionOptions::new(absolute_deadline)` with
 an `Instant`. The transaction's deadline includes scheduling delay; query and
@@ -286,7 +286,7 @@ for the ownership and join-on-error pattern.
 The existing transaction API remains available. Python exposure of this new
 client/worker API is not included in 0.19. Both APIs reject commit after an
 incomplete HNSW mutation; abort that explicit transaction even if a later
-statement succeeds. See [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190-candidate).
+statement succeeds. See [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190).
 
 ### Change callbacks
 

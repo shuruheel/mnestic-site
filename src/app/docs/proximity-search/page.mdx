@@ -230,12 +230,12 @@ non-termination).
   larger-than-RAM data.
 </Callout>
 
-### HNSW mutation recovery (0.19.0 candidate)
+### HNSW mutation recovery (0.19.0)
 
-The 0.19 candidate preserves pre-existing directed paths between surviving
+Mnestic 0.19 preserves pre-existing directed paths between surviving
 vertices when a node is deleted or replaced. Incremental pruning removes an
-edge only when the local neighborhood retains an alternate path. Online-build
-reconciliation retains snapshot vectors for changed/deleted nodes and removes
+edge only when a local or bounded external search proves an alternate path.
+Online-build reconciliation retains snapshot vectors for changed/deleted nodes and removes
 those nodes before reinserting current rows.
 
 **Rebuild every pre-0.19 HNSW index before relying on this invariant.** Local
@@ -262,13 +262,17 @@ exact eligible-key retrieval; repeatedly retrying the same mutation is not recov
 The local ceilings are 256 incident/pruning vertices, 4,096 physical rows per
 adjacency scan, 1,048,576 incident-vector components per layer, 16,777,216 distance
 components per layer repair, and 1,048,576 adjacency checks per pruning pass.
+Bounded external path proofs additionally cap cached/visited vertices at 1,024,
+physical adjacency rows read at 16,384, and traversed adjacency entries at
+1,048,576 across witness attempts in one insertion-pruning or removal-repair call.
 These are not total RSS or hard latency bounds; retained vectors across layers
 and reconciliation caches are outside the per-layer component cap.
 
 This maintenance invariant does not promise exact ANN recall, change `filter:`
 eligibility, or guarantee that a selective filter fills `k`. Use an exact eligible
-set query where completeness is required. Release performance/recall measurements
-are pending.
+set query where completeness is required. There is no automatic exact-routing
+strategy in this release. Review the [latency caveats](/docs/release-notes#0190)
+and measure your own read/write workload before upgrading.
 
 ### The index as a graph relation
 
@@ -400,7 +404,7 @@ score and add `:order -s` to present results ranked.
 | `candidates` | none | A constant list of eligible base-relation primary keys. One-column keys use scalar list elements; composite keys use lists in declared key order. Applied before sorting and `k`. |
 | `filter` | none | An expression evaluated on each scored candidate; rows failing it are skipped before `k` is filled. |
 
-### Transactional FTS statistics (0.19.0 candidate)
+### Transactional FTS statistics (0.19.0)
 
 Document counts and average lengths are computed from the querying transaction's
 posting snapshot, including its pending writes. Aborts and failed commits cannot

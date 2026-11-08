@@ -313,7 +313,7 @@ characters such as `😀` work. Python callers can bind parameters or use
   comments contain quotes, since those quotes now close the string.
   The temporary `parser.string_decoding_changed` diagnostic in 0.18's `::warnings`
   flags potentially changed literals; it is conservative and cannot find every
-  affected script. The 0.19 candidate retires it without changing decoding or
+  affected script. Mnestic 0.19 retires it without changing decoding or
   errors. Its absence does not replace this audit. Stored query bodies
   are reparsed on invocation and need the same audit. Parameters and existing
   stored strings are unchanged.

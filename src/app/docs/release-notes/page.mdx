@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.19.0 candidate) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.19.0) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -12,8 +12,8 @@ fully-detailed log lives in
 
 ## 0.19.0
 
-**Unreleased candidate — governed native Rust transactions and transactional
-search-index maintenance.** Publication and release qualification are pending.
+**2026-11-08 — governed native Rust transactions and transactional search-index
+maintenance.**
 The storage encoding and **mnestic-rocks 0.1.12** dependency are unchanged.
 
 ### Added
@@ -70,11 +70,19 @@ hosts must reconcile it. Memory estimates are per statement, and HNSW repair cap
 are local work bounds; neither guarantees total process RSS or hard latency.
 Stalled governed-transaction callbacks are disconnected with
 `callback.delivery_timeout` after commit without undoing the committed data.
-Filtered-ANN eligibility and approximate recall limitations remain unchanged;
-0.19 performance and recall measurements are pending.
+Filtered-ANN eligibility and approximate recall limitations remain unchanged.
+Automatic exact routing in the consumer remains deferred.
 
-See [Governed transactions](/docs/beyond-cozoscript#governed-transactions-0190-candidate),
-[HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190-candidate),
+**Latency tradeoffs:** focused measurements between two 0.19 candidates observed
+workload-specific regressions, including a seed-specific SQLite write tail and
+slower selected high-dimensional reads. The comparison does not quantify the full
+0.18-to-0.19 upgrade cost: dependency locks differed, and the synthetic workload
+used three seeds across two measurement windows. These results establish neither a general speedup nor
+a uniformly small upgrade cost. Measure your own filtered-read and mutation
+workloads before upgrading; retain the rebuild and error-handling steps above.
+
+See [Governed transactions](/docs/beyond-cozoscript#governed-transactions-0190),
+[HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190),
 and [System warnings](/docs/system-ops#warnings--warnings-clear).
 
 ## 0.18.0
