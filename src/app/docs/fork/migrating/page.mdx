@@ -25,10 +25,10 @@ rename idiom so the dependency **key stays `cozo`** — that keeps both
 ```toml
 # Cargo.toml
 [dependencies]
-cozo = { package = "mnestic", version = "0.18.0" }
+cozo = { package = "mnestic", version = "0.19.0" }
 
 # with the RocksDB backend:
-# cozo = { package = "mnestic", version = "0.18.0", features = ["storage-rocksdb"] }
+# cozo = { package = "mnestic", version = "0.19.0", features = ["storage-rocksdb"] }
 ```
 
 If you depend on a local checkout instead of crates.io:
@@ -40,13 +40,34 @@ cozo = { package = "mnestic", path = "../mnestic/cozo-core" }
 No source changes are required — `use cozo::DbInstance;` and friends resolve to
 mnestic.
 
+## Rebuild pre-0.19 HNSW indexes
+
+Back up the database and schedule a maintenance window. On each base relation
+with an existing HNSW index, run:
+
+```prolog
+::reindex your_relation
+```
+
+The rebuild recovers disconnected components and missing reverse-edge bookkeeping
+that local mutation repair cannot discover. It rebuilds the relation's search
+indexes from their stored manifests. Validate results against exact base-row/vector
+queries afterward. Mnestic 0.19 preserves surviving paths on subsequent mutations,
+but can reject a deletion, replacement or insertion with `hnsw::repair_limit` when
+its degree or local work bounds cannot be met. Abort the explicit transaction;
+catching the error and running another statement cannot make it committable.
+Investigate the index configuration or use exact eligible-key retrieval before
+retrying. See [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190).
+
 ## Review 0.18.0 string and JSON behavior
 
 Double-quoted escapes now decode and raw strings retain edge whitespace and
 comment-like text. Unknown escapes fail, and quotes inside apparent comments
 can close a literal. Audit stored query bodies as well as application scripts;
 use raw strings for verbatim backslashes and bind application values as
-parameters where possible.
+parameters where possible. The temporary `parser.string_decoding_changed` warning
+is retired in 0.19 without changing decoding or errors; its absence
+is not evidence that a legacy script has been audited.
 
 Nested JSON and new `Json`-column writes now use UUID and base64 strings in
 place of the old arrays. Existing JSON is not rewritten. Migrate only fields

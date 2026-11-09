@@ -63,6 +63,14 @@ db.run_script("?[x] <- [[1],[2],[3]]", {}, False)
   [0.18.0 migration notes](/docs/release-notes#0180) before updating.
 </Callout>
 
+<Callout type="warning">
+  **Upgrading to 0.19.0?** Back up your database and rebuild every
+  pre-0.19 HNSW index with `::reindex your_relation` in a maintenance window.
+  Validate the rebuilt results against exact base-row/vector queries. A
+  `hnsw::repair_limit` error requires aborting an explicit transaction; investigate
+  the configuration before retrying. See the [release notes](/docs/release-notes#0190).
+</Callout>
+
 ## Choosing a backend
 
 mnestic inherits CozoDB's storage backends. Select them with Cargo features:
@@ -75,7 +83,7 @@ mnestic inherits CozoDB's storage backends. Select them with Cargo features:
 
 ```toml
 # Cargo.toml — enable the RocksDB backend
-mnestic = { version = "0.18.0", features = ["storage-rocksdb"] }
+mnestic = { version = "0.19.0", features = ["storage-rocksdb"] }
 ```
 
 <Callout type="note">
@@ -100,7 +108,7 @@ mnestic = { version = "0.18.0", features = ["storage-rocksdb"] }
   Rust's off-by-default `columnar-io` feature:
 
   ```toml
-  mnestic = { version = "0.18.0", features = ["columnar-io"] }
+  mnestic = { version = "0.19.0", features = ["columnar-io"] }
   ```
 
   Published Python wheels and source distributions include this support, so

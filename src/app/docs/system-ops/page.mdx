@@ -377,8 +377,13 @@ index's contents have drifted from its base relation:
 ```
 
 One row per rebuilt index — its name, its kind, and the number of base rows it
-was rebuilt from. Reach for it in three situations:
+was rebuilt from. Reach for it in these situations:
 
+- **When upgrading to the 0.19 HNSW repair.** Rebuild every pre-0.19 HNSW index
+  to recover already-disconnected paths and missing legacy reverse-edge records.
+  Local mutation repair cannot discover those hidden edges. Back up first and
+  validate rebuilt search against exact base-row/vector queries. See
+  [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190).
 - **After the 0.12.1 full-text fix.** Full-text postings leaked on every in-place
   update of a relation carrying *only* an FTS index (see
   [Release history](/docs/release-notes)). The fix stops new leakage but cannot
@@ -394,15 +399,17 @@ a drop-and-recreate: an LSH manifest keeps the *derived* band geometry
 (`n_bands`, `n_rows_in_band`, `perms`) but not the weights that produced it, so
 recreating it by hand silently recomputes that geometry from defaults and hands
 back an index with a different recall profile than the one you asked for. Rows
-are re-derived through the same per-row maintenance path `:put` uses, so a
-rebuilt index is identical to an incrementally-maintained one.
+are re-derived from the base relation through index maintenance using the stored
+configuration. HNSW remains approximate; rebuild is not an exact-recall guarantee.
 
 <Callout type="warning">
   `::reindex` is a **maintenance operation, not an online one.** It runs in one
   write transaction and holds the relation's write lock for the whole rebuild —
   on a large relation, that is minutes during which the relation is blocked. A
-  crash mid-rebuild rolls back to the intact old index; re-running is always the
-  cure. Nothing auto-invokes it: the import paths point at it, they do not run it.
+  crash mid-rebuild rolls back to the intact old index. A 0.19
+  `hnsw::repair_limit` failure requires investigating the index's degree/work
+  limits before retrying; the same inputs may fail again. Nothing auto-invokes
+  the rebuild: the import paths point at it, they do not run it.
 </Callout>
 
 A relation with no HNSW/FTS/LSH index is a loud no-op rather than an error, which
@@ -412,6 +419,33 @@ to know which ones carry search indexes:
 ```
 ['no HNSW/FTS/LSH index on this relation — nothing to rebuild']
 ```
+
+## Warnings
+
+### `::warnings` / `::warnings clear`
+
+Read recent structured diagnostics from this database's in-memory warning ring:
+
+```prolog
+::warnings
+```
+
+The columns are `seq`, `code`, `message` and `hint`. Reading does not drain the
+ring. Clear it explicitly with a separate system operation:
+
+```prolog
+::warnings clear
+```
+
+<Callout type="fork">
+  **0.19.0:** reading and clearing warnings no longer opens a storage
+  transaction, so it remains available while a read or write multi-transaction
+  is active on memory or SQLite. Governed workers flush warnings after each query,
+  including failed queries. Call these operations on the database, outside the
+  transaction client; that client accepts query programs rather than system ops.
+  The temporary `parser.string_decoding_changed` warning is retired in 0.19;
+  other structured diagnostics remain available.
+</Callout>
 
 ## Monitor and kill
 

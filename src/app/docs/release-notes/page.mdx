@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.18.0) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.19.0) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,81 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.19.0
+
+**2026-11-08 — governed native Rust transactions and transactional search-index
+maintenance.**
+The storage encoding and **mnestic-rocks 0.1.12** dependency are unchanged.
+
+### Added
+
+- Native Rust hosts can use `DbInstance::governed_transaction(write, options)`
+  with an absolute deadline, bounded idle waiting, estimated per-statement memory
+  limits and cooperative cancellation. Every query error ends and rolls back the
+  governed transaction. The host runs the worker on its own blocking thread and
+  retains admission until that worker exits. Python exposure is not included.
+
+### Changed
+
+- **BREAKING (results):** FTS document counts and average lengths now follow the
+  querying transaction's postings and pending writes. Aborted or failed writes
+  cannot leak speculative statistics, and old RocksDB snapshots cannot replace
+  current statistics. Scores and top-k can change where earlier results depended
+  on stale statistics; there is no legacy-bug mode. Recheck application ranking
+  fixtures. The scoring formulas and corpus-global candidate-scoped BM25 semantics
+  stay the same. Thanks to GrumpyChubbyCat for
+  [PR #69](https://github.com/shuruheel/mnestic/pull/69).
+- HNSW deletion and vector replacement preserve existing directed paths between
+  surviving vertices. Incremental pruning and online-build reconciliation use
+  the same maintenance invariant. If degree or local work limits cannot be met,
+  the mutation returns `hnsw::repair_limit` instead of committing a degraded graph.
+  This can also reject a fresh insertion. Abort an explicit transaction after
+  this error: subsequent successful statements cannot make its partial mutation
+  committable.
+
+### Removed
+
+- The temporary `parser.string_decoding_changed` migration warning is retired.
+  Decoding and errors are unchanged. Keep the
+  [0.18 string-literal audit](/docs/types#literals); absence of this diagnostic
+  does not prove an old script is safe.
+
+### Fixed
+
+- `::warnings` and `::warnings clear` access the in-memory diagnostic ring without
+  opening a storage transaction, so an active multi-transaction no longer blocks
+  warning inspection on memory or SQLite backends.
+
+<Callout type="warning">
+  **Rebuild every pre-0.19 HNSW index.** Back up the database, schedule a maintenance
+  window, and run `::reindex your_relation` on each indexed base relation. This
+  recovers existing disconnections and restores reverse-edge bookkeeping for
+  legacy indexes. Validate search against exact base-row/vector queries afterward.
+  Upgrading the package alone does not perform the rebuild. Repeatedly increasing
+  `ef` or retrying the same rejected mutation is not a recovery procedure.
+</Callout>
+
+Cancellation is cooperative: blocking storage calls and host fixed rules cannot
+be preempted. Cancellation racing commit can leave an uncertain write outcome;
+hosts must reconcile it. Memory estimates are per statement, and HNSW repair caps
+are local work bounds; neither guarantees total process RSS or hard latency.
+Stalled governed-transaction callbacks are disconnected with
+`callback.delivery_timeout` after commit without undoing the committed data.
+Filtered-ANN eligibility and approximate recall limitations remain unchanged.
+Automatic exact routing in the consumer remains deferred.
+
+**Latency tradeoffs:** focused measurements between two 0.19 candidates observed
+workload-specific regressions, including a seed-specific SQLite write tail and
+slower selected high-dimensional reads. The comparison does not quantify the full
+0.18-to-0.19 upgrade cost: dependency locks differed, and the synthetic workload
+used three seeds across two measurement windows. These results establish neither a general speedup nor
+a uniformly small upgrade cost. Measure your own filtered-read and mutation
+workloads before upgrading; retain the rebuild and error-handling steps above.
+
+See [Governed transactions](/docs/beyond-cozoscript#governed-transactions-0190),
+[HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190),
+and [System warnings](/docs/system-ops#warnings--warnings-clear).
 
 ## 0.18.0
 

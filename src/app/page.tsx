@@ -289,6 +289,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.19.0",
+    t: "Govern transactions, preserve search indexes through mutations",
+    d: "Native Rust hosts gain governed transactions with deadlines, cooperative cancellation and worker-owned admission. Full-text scores follow the transaction snapshot; HNSW deletion and replacement preserve surviving paths or reject the mutation. Rebuild pre-0.19 HNSW indexes before relying on the repair.",
+    metric: "native Rust governance · transactional FTS · explicit HNSW rebuild",
+  },
+  {
     ver: "0.18.0",
     t: "Predictable strings, consistent JSON, normalized text prefixes",
     d: "Double-quoted escapes now decode and raw strings retain their contents. Nested JSON uses the same UUID and byte representations as top-level results. Full-text prefixes apply case and ASCII normalization, and integer boosts no longer panic. Existing stored data stays unchanged; audit scripts and typed JSON fields before upgrading.",
@@ -510,7 +516,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.18.0
+                a maintained fork of CozoDB · v0.19.0
               </span>
             </div>
 
@@ -784,7 +790,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — every fork release, 0.8.0 through 0.18.0.
+            — every fork release, 0.8.0 through 0.19.0.
           </p>
         </section>
 
@@ -1046,7 +1052,7 @@ export default function Home() {
 cargo add mnestic
 
 # or, with the RocksDB backend:
-# mnestic = { version = "0.18.0", features = ["storage-rocksdb"] }`}
+# mnestic = { version = "0.19.0", features = ["storage-rocksdb"] }`}
               />
               <Code
                 lang="rust"

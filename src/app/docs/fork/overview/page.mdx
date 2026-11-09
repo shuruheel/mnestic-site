@@ -1,7 +1,7 @@
 export const metadata = {
   title: "What mnestic adds",
   description:
-    "An overview of how mnestic diverges from CozoDB: string and JSON correctness, normalized FTS prefixes, atomic columnar copy-in, stored queries, bounded memory, bitemporality, hybrid retrieval, cached graph projections, and operational recovery.",
+    "An overview of how mnestic diverges from CozoDB: the governed transactions and index maintenance, string and JSON correctness, normalized FTS prefixes, atomic columnar copy-in, stored queries, bounded memory, bitemporality, hybrid retrieval, cached graph projections, and operational recovery.",
 };
 
 # What mnestic adds
@@ -27,6 +27,22 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 0.7.7.
 
 ## Highlights by release
+
+### 0.19.0 — governed transactions and index maintenance
+
+Native Rust hosts gain governed multi-transactions with deadlines, cooperative
+cancellation and worker-owned admission. Full-text statistics follow the querying
+transaction's snapshot and pending writes. HNSW removal and incremental pruning
+preserve surviving directed paths or fail with `hnsw::repair_limit`; explicit
+transactions must abort after an incomplete graph mutation.
+
+Rebuild pre-0.19 HNSW indexes with `::reindex your_relation` before relying on the
+repair. The temporary string-decoding warning is retired without changing decoding.
+Filtered ANN remains approximate; this release does not add automatic exact
+routing or a new recall guarantee. Measurements show workload-specific latency
+tradeoffs, documented in the release notes.
+
+→ [Governed transactions](/docs/beyond-cozoscript#governed-transactions-0190) · [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190) · [Release notes](/docs/release-notes#0190)
 
 ### 0.18.0 — string and JSON correctness, normalized FTS prefixes
 
