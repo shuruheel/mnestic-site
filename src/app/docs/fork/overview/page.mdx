@@ -39,6 +39,28 @@ marking an ambiguous commit. No storage version change; mnestic-rocks moves to 0
 
 → [Persisted FTS statistics](/docs/proximity-search#persisted-fts-statistics-0193) · [Governed transactions from Python](/docs/beyond-cozoscript#governed-transactions-from-python-0193) · [Release notes](/docs/release-notes#0193)
 
+### 0.19.2 — faster writes and complete filtered search
+
+SQLite connections use a write-ahead log (still `synchronous = FULL`), a 32 MiB
+cache and a busy timeout, and new files store their table `WITHOUT ROWID`. The
+first write after reopening no longer scans the full-text corpus, and edits skip
+index work for fields that did not change. Selective filtered vector search returns
+the true top `k`, HNSW fallbacks keep every vector reachable, and Python raises
+`mnestic.MnesticError` with `code`, `kind` and `retryable`. On SQLite at 40,000
+rows: update p50 300 → 20 ms, first write after reopen 7.8 s → 0.03 s, filtered
+recall@10 0.18 → 1.0. No storage-format change.
+
+→ [Release notes](/docs/release-notes#0192)
+
+### 0.19.1 — HNSW repair limits no longer fail writes
+
+A repair that exceeds its work bounds now falls back to a bounded step and records
+an `hnsw.repair_fallback` warning instead of rejecting the write. Under sustained
+churn no write is rejected (0.19.0 rejected up to about 20%) and recall@10 stays at
+1.000. No storage-format or API change.
+
+→ [Release notes](/docs/release-notes#0191)
+
 ### 0.19.0 — governed transactions and index maintenance
 
 Native Rust hosts gain governed multi-transactions with deadlines, cooperative

@@ -46,6 +46,77 @@ No storage version change; existing files keep working. **mnestic-rocks moves to
   handle raise `transaction::governed_write_open` while a governed write is open.
   See [Governed transactions](/docs/beyond-cozoscript#governed-transactions-from-python-0193).
 
+## 0.19.2
+
+**2026-11-12 — faster writes, complete filtered search, no unreachable vectors.**
+No storage-format change; existing files keep working and mnestic-rocks stays
+0.1.12. SQLite files switch to write-ahead logging on first open.
+
+Measured with `mnestic-benchmarks` (40,000 memories, dim 384; SQLite unless noted;
+one run each):
+
+| | 0.19.0 | 0.19.2 |
+|---|---|---|
+| writes rejected during churn | 517 of 6,000 | 0 |
+| update / delete p50 | 300 / 193 ms | 20 / 7.2 ms |
+| first write after reopen | 7.8 s | 0.03 s |
+| filtered search, 1.9% filter, `ef: 100` | recall 0.18 | recall 1.0, 100 ms |
+| hybrid search p50 / fused p99 | 189 / 4,454 ms | 37 / 65 ms |
+
+### Changed
+
+- **SQLite connections.** `journal_mode = WAL` with `synchronous = FULL` (an
+  acknowledged commit still survives power loss), a 32 MiB page cache per pooled
+  connection, a 5 s busy timeout and `BEGIN IMMEDIATE` for writes, so a second
+  process waits instead of failing with `database is locked`. Opening an existing
+  file converts it; it then has `-wal`/`-shm` sidecars while open. Copy a database
+  with `::backup`, not by copying an open file. Opt out with
+  `{"journal_mode": "delete"}`. New files store their key-value table
+  `WITHOUT ROWID`.
+- **Unchanged fields skip index work.** Editing only a row's text keeps its HNSW
+  entry; re-embedding only its vector keeps its full-text postings.
+
+### Fixed
+
+- **Writes no longer scan the full-text corpus.** The first write after opening a
+  database seeded BM25 totals with a scan of every posting (6.8–30 s at 10,000
+  documents on SQLite). Writes now apply deltas only to totals they hold; the
+  first search seeds them instead.
+- **Selective filtered vector search returns complete results.** When fewer than
+  `k` candidates pass a `filter:`, the search scores every eligible row exactly
+  (up to 200,000 rows, else it warns `hnsw.filtered_incomplete`). A partial index
+  stays the faster path for frequent selective filters.
+- **HNSW orphan guards.** The 0.19.1 fallbacks could leave a vector no ANN search
+  could reach; insertion, pruning and removal now keep an in-edge for every vector.
+
+### Added
+
+- **Python `mnestic.MnesticError`**, a subclass of `Exception` (existing handlers
+  still catch it; `args[0]` is unchanged), with `code`, `kind`, `retryable` and
+  `message`.
+
+## 0.19.1
+
+**2026-11-12 — HNSW repair limits no longer fail writes.** No storage-format or API
+change; mnestic-rocks stays 0.1.12. Upgrading from 0.18 still needs the 0.19.0
+`::reindex` step.
+
+### Fixed
+
+- 0.19.0 rejected a write with `hnsw::repair_limit` whenever its path-preserving
+  HNSW repair exceeded its work bounds: about 4% of writes in the first churn round,
+  rising to about 20% by the seventh. The repair now falls back to a bounded step
+  and records an `hnsw.repair_fallback` warning (`::warnings`). Same churn, ten
+  rounds at 2,000 rows: 0 writes rejected, recall@10 1.000, 1 row unreachable
+  (0.18.0: 227). Residual unreachable rows are restored by `::reindex` and stay
+  reachable through exact scans and other indexes.
+
+### Added (`mnestic-mcp` 0.3.0, published with `py-v0.19.1`)
+
+- Two-axis recall with evidence: `recall_believed(valid_at, known_at, query)` and
+  `memory_timeline(id)`, backed by a `memory_belief` relation written with every
+  store, update and delete.
+
 ## 0.19.0
 
 **2026-11-08 — governed native Rust transactions and transactional search-index

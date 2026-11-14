@@ -295,6 +295,18 @@ const forkItems = [
     metric: "1,168 ms to a snapshot sum at 40,000 documents (122 ms warm) · opt-in · mnestic-rocks 0.1.13",
   },
   {
+    ver: "0.19.2",
+    t: "Faster writes, complete filtered search, no unreachable vectors",
+    d: "SQLite moves to a write-ahead log with a larger cache, the first write after reopening no longer scans the full-text corpus, and edits skip index work for fields that did not change. A selective filter now returns the true top k instead of a partial result, HNSW fallbacks never strand a vector, and Python errors carry a stable code, kind and retryable flag.",
+    metric: "update p50 300 → 20 ms · first write after reopen 7.8 s → 0.03 s · filtered recall 0.18 → 1.0 (SQLite, 40,000 rows)",
+  },
+  {
+    ver: "0.19.1",
+    t: "HNSW repair limits no longer fail writes",
+    d: "0.19.0 rejected a write when its HNSW repair exceeded the work bounds, up to about 20% of writes under sustained churn. The repair now falls back to a bounded step and records an hnsw.repair_fallback warning, so every write lands and recall holds.",
+    metric: "0 of 2,000 writes rejected over ten churn rounds · recall@10 1.000",
+  },
+  {
     ver: "0.19.0",
     t: "Govern transactions, preserve search indexes through mutations",
     d: "Native Rust hosts gain governed transactions with deadlines, cooperative cancellation and worker-owned admission. Full-text scores follow the transaction snapshot; HNSW deletion and replacement preserve surviving paths or reject the mutation. Rebuild pre-0.19 HNSW indexes before relying on the repair.",
