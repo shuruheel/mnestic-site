@@ -28,6 +28,17 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 
 ## Highlights by release
 
+### 0.19.3 — persisted BM25 totals and governed transactions from Python
+
+Opt in on RocksDB and each full-text index stores its corpus totals as a base
+record plus one delta per write transaction. A search sums them for its snapshot,
+exactly, instead of rescanning every posting after a reopen or an overlapping
+write (1,168 ms against 122 ms warm at 40,000 documents). Python gains
+`db.governed_transact` and `db.run_governed`, with `MnesticError.maybe_committed`
+marking an ambiguous commit. No storage version change; mnestic-rocks moves to 0.1.13.
+
+→ [Persisted FTS statistics](/docs/proximity-search#persisted-fts-statistics-0193) · [Governed transactions from Python](/docs/beyond-cozoscript#governed-transactions-from-python-0193) · [Release notes](/docs/release-notes#0193)
+
 ### 0.19.0 — governed transactions and index maintenance
 
 Native Rust hosts gain governed multi-transactions with deadlines, cooperative

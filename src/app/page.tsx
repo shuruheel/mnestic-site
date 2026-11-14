@@ -289,6 +289,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.19.3",
+    t: "Exact BM25 totals without the scan, governed transactions from Python",
+    d: "A full-text search after opening a database, or one overlapping a write, rescanned every posting to rebuild its corpus totals. Opt in on RocksDB and the totals persist as per-transaction deltas that writers never contend on; a read sums them for its snapshot, exactly. Python gains governed transactions with deadlines, cancellation and a retry helper that never retries an ambiguous commit.",
+    metric: "1,168 ms to a snapshot sum at 40,000 documents (122 ms warm) · opt-in · mnestic-rocks 0.1.13",
+  },
+  {
     ver: "0.19.0",
     t: "Govern transactions, preserve search indexes through mutations",
     d: "Native Rust hosts gain governed transactions with deadlines, cooperative cancellation and worker-owned admission. Full-text scores follow the transaction snapshot; HNSW deletion and replacement preserve surviving paths or reject the mutation. Rebuild pre-0.19 HNSW indexes before relying on the repair.",
@@ -516,7 +522,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.19.0
+                a maintained fork of CozoDB · v0.19.3
               </span>
             </div>
 
@@ -790,7 +796,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — every fork release, 0.8.0 through 0.19.0.
+            — every fork release, 0.8.0 through 0.19.3.
           </p>
         </section>
 
