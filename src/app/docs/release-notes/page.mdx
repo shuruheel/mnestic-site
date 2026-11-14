@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.19.0) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.19.3) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,113 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.19.3
+
+**2026-11-14 — persisted BM25 corpus totals (opt-in, RocksDB) and governed
+transactions from Python.**
+No storage version change; existing files keep working. **mnestic-rocks moves to
+0.1.13** for one new bridge function, `RocksDb::latest_sequence_number`.
+
+### Added
+
+- **Persisted BM25 corpus totals (Rust API, RocksDB, opt-in).** A full-text search
+  needs each index's document and token totals. They lived only in memory, so a
+  search after opening the database, or one whose snapshot overlapped a write
+  commit, rescanned every posting of the index. Measured on RocksDB at 40,000
+  documents: **1,168 ms median while a writer commits, against 122 ms warm**, and
+  the scan grows with the index. `db.enable_persisted_fts_stats()` stores a base
+  record plus one delta record per write transaction inside each index, so writers
+  never contend; a read-only search sums them for its snapshot, exactly, with no
+  scan. `db.seed_fts_stats()` computes the base without pausing writers;
+  `db.fold_fts_stats(min_deltas)` folds deltas into the base (call it
+  periodically); `db.verify_fts_stats()` and `db.repair_fts_stats()` check and
+  correct against a scan. Records are trusted only if nothing else wrote to the
+  store since the last clean close, compared through RocksDB's sequence number;
+  after a crash, a restore or a write by an older engine they are ignored until
+  reseeded. Off unless enabled; an unseeded index behaves exactly as before. See
+  [Persisted FTS statistics](/docs/proximity-search#persisted-fts-statistics-0193).
+- **Governed transactions from Python.** `db.governed_transact(write, timeout=...,
+  idle_timeout=5.0, mem_limit=None)` returns a `GovernedTx` with `run_script`,
+  `commit`, `abort` and `cancel`; as a context manager it commits on a clean exit
+  and aborts on an exception. `db.run_governed(fn, write=True, timeout=30.0,
+  max_attempts=3)` retries `retryable` errors with jittered backoff inside one
+  overall timeout and never retries an ambiguous commit. `MnesticError.maybe_committed`
+  is true when `commit()` failed and the commit may have completed. `db.close()`
+  cancels the handle's open governed transactions; on SQLite, other calls on the
+  handle raise `transaction::governed_write_open` while a governed write is open.
+  See [Governed transactions](/docs/beyond-cozoscript#governed-transactions-from-python-0193).
+
+## 0.19.2
+
+**2026-11-12 — faster writes, complete filtered search, no unreachable vectors.**
+No storage-format change; existing files keep working and mnestic-rocks stays
+0.1.12. SQLite files switch to write-ahead logging on first open.
+
+Measured with `mnestic-benchmarks` (40,000 memories, dim 384; SQLite unless noted;
+one run each):
+
+| | 0.19.0 | 0.19.2 |
+|---|---|---|
+| writes rejected during churn | 517 of 6,000 | 0 |
+| update / delete p50 | 300 / 193 ms | 20 / 7.2 ms |
+| first write after reopen | 7.8 s | 0.03 s |
+| filtered search, 1.9% filter, `ef: 100` | recall 0.18 | recall 1.0, 100 ms |
+| hybrid search p50 / fused p99 | 189 / 4,454 ms | 37 / 65 ms |
+
+### Changed
+
+- **SQLite connections.** `journal_mode = WAL` with `synchronous = FULL` (an
+  acknowledged commit still survives power loss), a 32 MiB page cache per pooled
+  connection, a 5 s busy timeout and `BEGIN IMMEDIATE` for writes, so a second
+  process waits instead of failing with `database is locked`. Opening an existing
+  file converts it; it then has `-wal`/`-shm` sidecars while open. Copy a database
+  with `::backup`, not by copying an open file. Opt out with
+  `{"journal_mode": "delete"}`. New files store their key-value table
+  `WITHOUT ROWID`.
+- **Unchanged fields skip index work.** Editing only a row's text keeps its HNSW
+  entry; re-embedding only its vector keeps its full-text postings.
+
+### Fixed
+
+- **Writes no longer scan the full-text corpus.** The first write after opening a
+  database seeded BM25 totals with a scan of every posting (6.8–30 s at 10,000
+  documents on SQLite). Writes now apply deltas only to totals they hold; the
+  first search seeds them instead.
+- **Selective filtered vector search returns complete results.** When fewer than
+  `k` candidates pass a `filter:`, the search scores every eligible row exactly
+  (up to 200,000 rows, else it warns `hnsw.filtered_incomplete`). A partial index
+  stays the faster path for frequent selective filters.
+- **HNSW orphan guards.** The 0.19.1 fallbacks could leave a vector no ANN search
+  could reach; insertion, pruning and removal now keep an in-edge for every vector.
+
+### Added
+
+- **Python `mnestic.MnesticError`**, a subclass of `Exception` (existing handlers
+  still catch it; `args[0]` is unchanged), with `code`, `kind`, `retryable` and
+  `message`.
+
+## 0.19.1
+
+**2026-11-12 — HNSW repair limits no longer fail writes.** No storage-format or API
+change; mnestic-rocks stays 0.1.12. Upgrading from 0.18 still needs the 0.19.0
+`::reindex` step.
+
+### Fixed
+
+- 0.19.0 rejected a write with `hnsw::repair_limit` whenever its path-preserving
+  HNSW repair exceeded its work bounds: about 4% of writes in the first churn round,
+  rising to about 20% by the seventh. The repair now falls back to a bounded step
+  and records an `hnsw.repair_fallback` warning (`::warnings`). Same churn, ten
+  rounds at 2,000 rows: 0 writes rejected, recall@10 1.000, 1 row unreachable
+  (0.18.0: 227). Residual unreachable rows are restored by `::reindex` and stay
+  reachable through exact scans and other indexes.
+
+### Added (`mnestic-mcp` 0.3.0, published with `py-v0.19.1`)
+
+- Two-axis recall with evidence: `recall_believed(valid_at, known_at, query)` and
+  `memory_timeline(id)`, backed by a `memory_belief` relation written with every
+  store, update and delete.
 
 ## 0.19.0
 

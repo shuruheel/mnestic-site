@@ -419,6 +419,37 @@ rebuild restores index consistency; the normal response to a storage error is to
 abort the explicit transaction. See the
 [transactional statistics contract](https://github.com/shuruheel/mnestic/blob/main/docs/specs/fts-transaction-stats.md).
 
+### Persisted FTS statistics (0.19.3)
+
+<Callout type="fork">Specific to mnestic 0.19.3 (Rust API, RocksDB, opt-in)</Callout>
+
+A search needs each index's document and token totals. By default they live in
+memory, so a search after opening the database, or one whose snapshot overlaps a
+write commit, rescans every posting of the index. On RocksDB at 40,000 documents
+that took a median 1,168 ms while a writer committed, against 122 ms warm, and the
+scan grows with the index.
+
+Call `db.enable_persisted_fts_stats()` to store a base record plus one delta
+record per write transaction inside each index's key range. Writers write only
+their own delta, so they never contend; a read-only search sums the base and the
+deltas visible to its snapshot, exactly, with no scan.
+
+- `db.seed_fts_stats()` computes the base by one scan in a read-only snapshot and
+  installs it in a short write transaction, without pausing writers. An index is
+  unseeded until then and behaves exactly as before.
+- `db.fold_fts_stats(min_deltas)` folds an index's deltas into its base once it
+  holds at least that many. Call it periodically; it never pauses writers.
+- `db.verify_fts_stats()` compares the persisted totals with a scan, reporting the
+  number of unfolded deltas; `db.repair_fts_stats()` reseeds any index that
+  disagrees.
+
+Records are trusted only if nothing else wrote to the store since the last clean
+close: the engine records RocksDB's sequence number at close and compares it at
+the next enable. After a crash, a restore, or a write by an engine without this
+feature, the records are ignored until reseeded. Index build and reindex also
+leave the index unseeded. Off unless enabled; no storage version change. Rust API
+only for now.
+
 ### Candidate-scoped FTS (0.17.0)
 
 Use `candidates:` when retrieval must rank only within an explicit allowlist of

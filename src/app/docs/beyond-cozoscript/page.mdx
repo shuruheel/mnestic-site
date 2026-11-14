@@ -283,10 +283,41 @@ for the ownership and join-on-error pattern.
   transaction state. The API does not activate host admission policies on its own.
 </Callout>
 
-The existing transaction API remains available. Python exposure of this new
-client/worker API is not included in 0.19. Both APIs reject commit after an
+The existing transaction API remains available. Python exposure arrived in 0.19.3
+(see [below](#governed-transactions-from-python-0193)). Both APIs reject commit after an
 incomplete HNSW mutation; abort that explicit transaction even if a later
 statement succeeds. See [HNSW recovery](/docs/proximity-search#hnsw-mutation-recovery-0190).
+
+### Governed transactions from Python (0.19.3)
+
+<Callout type="fork">Specific to mnestic 0.19.3</Callout>
+
+`db.governed_transact(write, timeout=..., idle_timeout=5.0, mem_limit=None)`
+exposes the same governed multi-transactions to Python. Each transaction gets one
+deadline, a bounded wait between statements, an optional per-statement memory
+limit, and rollback on any error. It returns a `GovernedTx` with `run_script`,
+`commit`, `abort` and `cancel`; as a context manager, a clean exit commits and an
+exception aborts. Each transaction runs on its own named worker thread, which
+never takes the GIL, and invalid arguments raise `ValueError`.
+
+```python
+with db.governed_transact(True, timeout=10.0) as tx:
+    tx.run_script("?[k, v] <- [[1, 'a']] :put kv {k => v}")
+```
+
+`db.run_governed(fn, write=True, timeout=30.0, max_attempts=3)` runs `fn` with a
+fresh transaction and retries `retryable` errors with jittered exponential
+backoff inside one overall timeout. It never retries an ambiguous commit:
+`MnesticError.maybe_committed` is true when `commit()` failed and the commit may
+have completed (a timeout, cancellation or storage error during the commit), is
+false on every other error, and is never true together with `retryable`.
+Reconcile such an outcome with your application's idempotency contract.
+
+`db.close()` cancels the handle's open governed transactions; legacy
+`multi_transact` transactions are unaffected. On SQLite, while a governed write
+from a handle is open, other calls on that handle raise
+`transaction::governed_write_open` (`kind` "conflict", `retryable` false) rather
+than waiting on the store lock.
 
 ### Change callbacks
 
