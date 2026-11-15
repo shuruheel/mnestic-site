@@ -289,6 +289,12 @@ const capabilities = [
 
 const forkItems = [
   {
+    ver: "0.19.4",
+    t: "A stale index entry no longer fails the search",
+    d: "A full-text search reads the row behind every ranked hit, and one index entry whose row was gone failed the whole query with a corrupted-index error. The search now skips that hit, returns the next-best one in its place, and records a warning that names the repair. Such entries date from releases through 0.12.0 or from bulk-import deletes; a reindex removes them.",
+    metric: "fix release · no storage change · mnestic-rocks stays 0.1.13",
+  },
+  {
     ver: "0.19.3",
     t: "Exact BM25 totals without the scan, governed transactions from Python",
     d: "A full-text search after opening a database, or one overlapping a write, rescanned every posting to rebuild its corpus totals. Opt in on RocksDB and the totals persist as per-transaction deltas that writers never contend on; a read sums them for its snapshot, exactly. Python gains governed transactions with deadlines, cancellation and a retry helper that never retries an ambiguous commit.",
@@ -534,7 +540,7 @@ export default function Home() {
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
               <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.19.3
+                a maintained fork of CozoDB · v0.19.4
               </span>
             </div>
 
@@ -808,7 +814,7 @@ export default function Home() {
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
               Full release history →
             </a>{" "}
-            — every fork release, 0.8.0 through 0.19.3.
+            — every fork release, 0.8.0 through 0.19.4.
           </p>
         </section>
 
