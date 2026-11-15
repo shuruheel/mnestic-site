@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Release history",
   description:
-    "mnestic fork release notes (0.8.0–0.19.3) and pointers to the upstream CozoDB release history.",
+    "mnestic fork release notes (0.8.0–0.19.4) and pointers to the upstream CozoDB release history.",
 };
 
 # Release history
@@ -9,6 +9,27 @@ export const metadata = {
 This page summarizes the **mnestic fork** releases. The authoritative,
 fully-detailed log lives in
 [`CHANGELOG-FORK.md`](https://github.com/shuruheel/mnestic/blob/main/CHANGELOG-FORK.md).
+
+## 0.19.4
+
+**2026-11-15 — a full-text search no longer fails on a posting whose row is gone.**
+No storage version change; mnestic-rocks stays 0.1.13.
+
+### Fixed
+
+- **A full-text posting with no row no longer fails the search.** A search reads
+  the row of every ranked hit, and a missing row raised `corrupted index`, so one
+  stale posting failed every query that ranked it. The search now skips the hit
+  and returns the next-best one in its place. Each search that skips a hit records
+  an `fts.dangling_posting` warning (`::warnings`), and
+  `cozo::fts_dangling_postings_skipped()` returns the process-wide count for a
+  health metric.
+
+  **Who has such postings.** A relation with only a full-text index that was
+  updated in place by a release through 0.12.0 and never rebuilt: the leaked
+  postings of a row's old text outlive the row once it is removed. A bulk-import
+  delete strands postings the same way. `::reindex <relation>` removes them; the
+  skip keeps searches working until it runs.
 
 ## 0.19.3
 

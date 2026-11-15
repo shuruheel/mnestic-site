@@ -28,6 +28,16 @@ The version was bumped to **0.8.0** to mark the fork's identity rather than
 
 ## Highlights by release
 
+### 0.19.4 — a stale index entry no longer fails the search
+
+A full-text search reads the row of every ranked hit, and a posting whose row
+was gone raised `corrupted index`, failing every query that ranked it. The search
+now skips the hit, returns the next-best one in its place, and records an
+`fts.dangling_posting` warning (`::warnings`). `::reindex <relation>` removes
+such postings. No storage version change; mnestic-rocks stays 0.1.13.
+
+→ [Release notes](/docs/release-notes#0194)
+
 ### 0.19.3 — persisted BM25 totals and governed transactions from Python
 
 Opt in on RocksDB and each full-text index stores its corpus totals as a base
