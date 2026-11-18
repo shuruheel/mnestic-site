@@ -25,7 +25,7 @@ export const viewport: Viewport = {
 };
 
 const description =
-  "mnestic is an independently maintained fork of CozoDB — a transactional relational-graph-vector database that speaks Datalog, tuned as a substrate for agentic memory. Embedded, performant, and built for machine recall.";
+  "mnestic is a maintained fork of CozoDB: an embedded, transactional Datalog database for relations, graphs, and vectors, tuned for agent memory.";
 
 export const metadata: Metadata = {
   title: {
