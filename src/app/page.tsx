@@ -99,7 +99,7 @@ function Code({
 }) {
   const lines = code.split("\n");
   return (
-    <div className="overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-ink-2)]/90 backdrop-blur-sm">
+    <div className="overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-ink-2)]">
       <div className="flex items-center justify-between border-b border-[var(--color-line)] px-4 py-2.5">
         <div className="flex items-center gap-2">
           <span className="h-2.5 w-2.5 rounded-full bg-[var(--color-synapse)]/80" />
@@ -179,15 +179,6 @@ function Constellation() {
           <circle
             cx={x}
             cy={y}
-            r={9}
-            fill="var(--color-synapse)"
-            opacity={0.08}
-            className="pulse-node"
-            style={{ animationDelay: `${i * 0.5}s` }}
-          />
-          <circle
-            cx={x}
-            cy={y}
             r={3}
             fill={i % 3 === 0 ? "var(--color-synapse)" : "var(--color-slate)"}
           />
@@ -216,11 +207,10 @@ recall[to] := recall[via], *recalls{ from: via, to }
 const BITEMP_CODE = `# opt in: valid time + an engine-stamped transaction time
 :create beliefs {claim, vld: Validity, tt: TxTime => conf: Float}
 
-# writes are stamped by a crash-safe commit clock — tt is never user-set
+# the engine stamps tt at commit; callers never set it
 ?[c, v, conf] <- [['q3 pipeline is healthy', '2026-09-01', 0.35]]
 :put beliefs {c, v => conf}
 
-# time travel on BOTH axes:
 # what did we believe on June 30 about September?
 ?[conf] := *beliefs{claim: 'q3 pipeline is healthy', conf
                     @ (vt: '2026-09-01', tt: '2026-06-30')}
@@ -230,8 +220,8 @@ const BITEMP_CODE = `# opt in: valid time + an engine-stamped transaction time
 
 const HYBRID_CODE = `use cozo::{DbInstance, GraphLeg, HybridSearch, MmrParams};
 
-// One typed call: HNSW + FTS + graph proximity, fused natively
-// with Reciprocal Rank Fusion, then MMR-diversified.
+// HNSW + full-text + graph proximity in one call,
+// fused with reciprocal rank fusion, then MMR.
 let recalls = db.hybrid_search(&HybridSearch {
     relation:     "memory".into(),
     vector_index: "embedding".into(),
@@ -242,7 +232,7 @@ let recalls = db.hybrid_search(&HybridSearch {
     query_text:   "pricing decision",
     fts_k:        24,
     // graph leg: expand 2 hops from a seed over *recalls,
-    // rank by min hop distance — fused in the same call.
+    // ranked by hop distance and fused in the same call.
     graph_legs:   vec![GraphLeg {
         edge_relation: "recalls".into(),
         seeds:         vec![seed.into()],
@@ -256,233 +246,132 @@ let recalls = db.hybrid_search(&HybridSearch {
 
 const capabilities = [
   {
-    k: "01",
     t: "Datalog, not SQL",
-    d: "Queries compose piece by piece. Recursion is first-class, and runs faster than the SQL equivalent. A safe subset of aggregations is allowed inside recursion.",
+    d: "Queries compose rule by rule, and recursion is built in. A safe subset of aggregations works inside recursion.",
   },
   {
-    k: "02",
-    t: "Relational · graph · vector",
-    d: "One engine, one model. The relational algebra handles graph structure implicit several levels deep, with no shoehorning your data into a labelled-property graph.",
+    t: "Relational, graph, and vector",
+    d: "One data model covers all three. Graph structure is just relations and rules, so there is no separate property-graph schema to maintain.",
   },
   {
-    k: "03",
-    t: "Embeddable like SQLite",
-    d: "Runs in-process (no server, no setup), yet scales to large data and high concurrency, and can also run client-server when you want it to.",
+    t: "Embedded like SQLite",
+    d: "Runs in your process with no server and no setup. It can also run as a server when you need one.",
   },
   {
-    k: "04",
-    t: "Vector search (HNSW)",
-    d: "Disk-resident HNSW indices unify with Datalog: search by meaning inside a recursive query, filter with the rest of your rules, all in one pass.",
+    t: "Vector search",
+    d: "Disk-resident HNSW indexes join Datalog directly, so a nearest-neighbour search can sit inside a recursive query and be filtered by any other rule.",
   },
   {
-    k: "05",
-    t: "Full-text & near-dup",
-    d: "Built-in full-text search and MinHash-LSH for near-duplicate detection: the keyword and dedup legs of retrieval, native to the engine.",
+    t: "Full-text and near-duplicates",
+    d: "BM25 full-text search and MinHash-LSH near-duplicate detection are part of the engine, not extensions.",
   },
   {
-    k: "06",
-    t: "Bitemporal time travel",
-    d: "Relations carry valid time and, since 0.10.0, an engine-stamped transaction time. Query the graph as it was, or as it was believed, at any point: memory you can rewind and audit, not just overwrite.",
+    t: "History on two time axes",
+    d: "A relation can record when a fact was true and when the database learned it. Query either axis, or both.",
   },
 ];
 
+/* Highlights from the fork's release history. The full list lives at
+   /docs/release-notes; this section is not a changelog and does not get a
+   new entry per release. */
 const forkItems = [
   {
-    ver: "0.19.4",
-    t: "A stale index entry no longer fails the search",
-    d: "A full-text search reads the row behind every ranked hit, and one index entry whose row was gone failed the whole query with a corrupted-index error. The search now skips that hit, returns the next-best one in its place, and records a warning that names the repair. Such entries date from releases through 0.12.0 or from bulk-import deletes; a reindex removes them.",
-    metric: "fix release · no storage change · mnestic-rocks stays 0.1.13",
-  },
-  {
-    ver: "0.19.3",
-    t: "Exact BM25 totals without the scan, governed transactions from Python",
-    d: "A full-text search after opening a database, or one overlapping a write, rescanned every posting to rebuild its corpus totals. Opt in on RocksDB and the totals persist as per-transaction deltas that writers never contend on; a read sums them for its snapshot, exactly. Python gains governed transactions with deadlines, cancellation and a retry helper that never retries an ambiguous commit.",
-    metric: "1,168 ms to a snapshot sum at 40,000 documents (122 ms warm) · opt-in · mnestic-rocks 0.1.13",
-  },
-  {
-    ver: "0.19.2",
-    t: "Faster writes, complete filtered search, no unreachable vectors",
-    d: "SQLite moves to a write-ahead log with a larger cache, the first write after reopening no longer scans the full-text corpus, and edits skip index work for fields that did not change. A selective filter now returns the true top k instead of a partial result, HNSW fallbacks never strand a vector, and Python errors carry a stable code, kind and retryable flag.",
-    metric: "update p50 300 → 20 ms · first write after reopen 7.8 s → 0.03 s · filtered recall 0.18 → 1.0 (SQLite, 40,000 rows)",
-  },
-  {
-    ver: "0.19.1",
-    t: "HNSW repair limits no longer fail writes",
-    d: "0.19.0 rejected a write when its HNSW repair exceeded the work bounds, up to about 20% of writes under sustained churn. The repair now falls back to a bounded step and records an hnsw.repair_fallback warning, so every write lands and recall holds.",
-    metric: "0 of 2,000 writes rejected over ten churn rounds · recall@10 1.000",
-  },
-  {
-    ver: "0.19.0",
-    t: "Govern transactions, preserve search indexes through mutations",
-    d: "Native Rust hosts gain governed transactions with deadlines, cooperative cancellation and worker-owned admission. Full-text scores follow the transaction snapshot; HNSW deletion and replacement preserve surviving paths or reject the mutation. Rebuild pre-0.19 HNSW indexes before relying on the repair.",
-    metric: "native Rust governance · transactional FTS · explicit HNSW rebuild",
-  },
-  {
-    ver: "0.18.0",
-    t: "Predictable strings, consistent JSON, normalized text prefixes",
-    d: "Double-quoted escapes now decode and raw strings retain their contents. Nested JSON uses the same UUID and byte representations as top-level results. Full-text prefixes apply case and ASCII normalization, and integer boosts no longer panic. Existing stored data stays unchanged; audit scripts and typed JSON fields before upgrading.",
-    metric: "string and JSON migration notes · query-side FTS fixes · no storage-format migration",
-  },
-  {
-    ver: "0.17.0",
-    t: "Copy columnar data in atomically, scope full-text before top-k",
-    d: "A host can copy one local Parquet or Arrow IPC file into an existing relation with explicit resource ceilings and one all-or-nothing transaction. Full-text atoms can independently take a primary-key allowlist, applying eligibility before ranking and top-k while preserving corpus-global BM25 scores.",
-    metric: "Parquet + Arrow IPC file/stream · atomic put semantics · candidate-aware FTS · mnestic-rocks 0.1.12",
-  },
-  {
-    ver: "0.16.0",
-    t: "Name a query once, reuse it everywhere",
-    d: "Persistent stored queries turn repeated read logic into composable, typed building blocks. Invoke one directly by name or use it like a rule inside a larger Datalog query; every run stays fresh against the current transaction snapshot, with no materialized result or cache to invalidate.",
-    metric: "::query create · typed parameters + defaults · hygienic rule composition · no storage migration",
-  },
-  {
-    ver: "0.15.0",
-    t: "Bound the memory of queries and every RocksDB instance",
-    d: "A query can now carry a byte budget that aborts cleanly before commit, while every RocksDB database in a process can join one shared block-cache/write-buffer envelope. The same release adds relational RDF intake/export and a runnable JSON-LD/tree modeling guide: interchange at the edge, Datalog inside.",
-    metric: "typed eval::mem_budget_exceeded · one process-wide RocksDB envelope · mnestic-rocks 0.1.11",
-  },
-  {
-    ver: "0.14.0",
-    t: "Make every indirect read obey the same authorization boundary",
-    d: "Stored-relation ACLs now cover indexes, negation, fixed rules, exports, history, and cached graph projections. The release also made script-controlled file/network readers opt-in for Rust, added exact-phrase FTS with matched spans and snippets, and exposed typed query warnings.",
-    metric: "one checked relation resolver · exact phrase positions · warnings with stable codes",
-  },
-  {
     ver: "0.13.1",
-    t: "Counting a join without building it, by default",
-    d: "The factorized count() rewrite has been opt-in since 0.10.5 while the planner-regression suite was built out. Its gate — a nightly soak against LDBC's own count oracle — has run green every night, so it now ships on. An eligible count()-over-a-join is counted without materializing the join; answers are identical by construction, and any query the pass cannot prove exact is left byte-identical. Flipping it also exposed a hole in its own gate: the nightly arm covered one of the two queries the rewrite fires on, so the tier now covers every firing query.",
-    metric: "LSQB sf0.1 · q1 72.4 s → 1.05 s (~69×) · q6 42.1 s → 0.31 s (~134×) · counts match the published oracle on both paths",
+    t: "Counts a join without building it",
+    metric: "LSQB q1 72.4 s → 1.05 s, q6 42.1 s → 0.31 s, same answers",
   },
   {
-    ver: "0.13.0",
-    t: "The RocksDB options you set are the ones RocksDB now uses",
-    d: "Every BlockBasedTableOptions a host configured — block cache, block size, index/filter caching — was default-constructed away on each open, silently. The read cache reverted to RocksDB's 8 MB default and block_size to 4 KB; block_cache_size was ignored outright. Inherited from upstream, latent since the options-file path was introduced. Fixed in mnestic-rocks 0.1.10 — and it means every read-path benchmark run before it, ours included, measured a slower engine than mnestic actually is.",
-    metric: "block_size 4 KB → configured 16 KB · index/filter blocks now cached · the read cache was 8 MB, not what you asked for",
-  },
-  {
-    ver: "0.12.2",
-    t: "A float in a validity is now an error",
-    d: "Validity timestamps are integer microseconds; now() and parse_timestamp() return float seconds. The engine coerced one into the other silently, so a fact meant for 2024 was written — permanently — at 1970, visible only under time travel. Three of the four sites are verbatim upstream code, write path included: the bug is as old as Cozo's time travel. The one caller of the broken idiom we found was upstream's own test.",
-    metric: "the write path stored 1970 and returned Ok · reads returned zero rows and no error",
-  },
-  {
-    ver: "0.12.1",
-    t: "Six inherited bugs, found and named",
-    d: "A line-by-line audit of the inherited engine found full-text postings leaking on every in-place update, a transaction API that reported success for a failed commit, and change events fired for writes that never landed. All predate the fork. ::reindex is the repair path.",
-    metric: "55% BM25 score error, fixed · 200 {\"ok\": true} on a failed commit, fixed",
-  },
-  {
-    ver: "0.12.0",
-    t: "Fill a context window straight from the graph",
-    d: "BudgetedTraversal expands cheapest-first from what search found, under a hard budget of distinct nodes — deterministic, gated mid-expansion, interruptible. One call replaces a host-side BFS loop.",
-    metric: "2–4× vs a production host-side BFS · one call replaces ~2·depth round-trips",
+    ver: "0.10.5",
+    t: "Reorders naive joins before running them",
+    metric: "54.5× on the reported query, results unchanged",
   },
   {
     ver: "0.11.0",
-    t: "Cache a graph once, reuse it across queries",
-    d: "::graph create names an in-memory adjacency that twelve graph algorithms reuse instead of rebuilding it on every call — always fresh, never stale under write churn.",
-    metric: "400k edges: ConnectedComponents 16× · PageRank 15× · ClusteringCoefficients 3×",
+    t: "Caches a graph once for twelve algorithms",
+    metric: "PageRank 15× and connected components 16× at 400k edges",
   },
   {
-    ver: "0.10.5",
-    t: "Naive join order stops being pathological",
-    d: "A deterministic greedy pre-pass reorders join atoms by fewest new variables before evaluation — exactly the shape an LLM agent tends to author. Results are unchanged; hand-tuned plans stay byte-identical.",
-    metric: "54.5× on the repro · N³ → N² · default on, results unchanged",
+    ver: "0.19.2",
+    t: "Faster writes and complete filtered vector search",
+    metric: "update p50 300 → 20 ms; filtered recall 0.18 → 1.0 (SQLite, 40,000 rows)",
   },
   {
-    ver: "0.10.5",
-    t: "Queries you can always stop",
-    d: "::kill and :timeout now interrupt a query that's genuinely stuck, checked every 4096 pulls inside even a long single-rule join.",
-    metric: "::kill / :timeout interrupt mid-join · deadline = min of the budgets set",
+    ver: "0.12.0",
+    t: "Fills a context window from the graph in one call",
+    metric: "cheapest-first expansion under a hard node budget, 2–4× faster than a host-side loop",
   },
   {
     ver: "0.10.0",
-    t: "Answers that carry their evidence",
-    d: "Provenance-semiring aggregates return the k best derivations per answer, each with its exact evidence chain. :reconcile keeps derived results consistent when base facts are retracted.",
-    metric: "min_cost_k top-k proofs · register_custom_aggr · :reconcile belief revision",
+    t: "Returns the evidence behind each answer",
+    metric: "the k best derivations per result, each with its chain of facts",
   },
   {
-    ver: "0.8.3",
-    t: "Full-text search that ranks correctly",
-    d: "Keyword search now scores with Okapi BM25, the ranking standard behind modern search engines, instead of raw term counts.",
-    metric: "fused recall climbs 0.75 → 0.954 on a 40k-chunk corpus",
-  },
-  {
-    ver: "0.8.0",
-    t: "Key lookups skip the full scan",
-    d: "Filtering by an exact key now compiles to a direct keyed seek instead of scanning every row — constant-time instead of a full table walk.",
-    metric: "~28× faster single-row primary-key lookups",
+    ver: "0.12.1–0.13.0",
+    t: "Fixes bugs inherited from upstream",
+    metric:
+      "a failed commit reported as success, full-text postings leaking on update, timestamps silently stored as 1970, RocksDB options ignored on open",
   },
 ];
 
-const benches = [
-  { v: "100K+", u: "QPS", d: "mixed read / write / update transactions" },
-  { v: "250K+", u: "QPS", d: "read-only queries" },
-  { v: "<1 ms", u: "2-hop", d: "on a 1.6M-vertex, 31M-edge graph" },
-  { v: "~50 MB", u: "peak RAM", d: "at OLTP load" },
-];
-
-/* Hybrid-recall benchmark — small scale (40k chunks), 1,000 queries, k=10.
+/* Hybrid-recall benchmark: small scale (40k chunks), 1,000 queries, k=10.
    Single run 2026-05-31, macOS arm64, SQLite-backed wheel, synthetic
-   embeddings. Source: mnestic-benchmarks. Numbers are hardware-specific.
-   The story is capability + recall parity, not raw latency: latency is in
-   the cards below, framed native-vs-native. */
+   embeddings. Source: mnestic-benchmarks. Numbers are hardware-specific. */
 const recallBench = [
-  { e: "mnestic", recall: "0.954", signals: "vec · FTS · graph", locus: "native · one call", ryw: "100%", us: true },
-  { e: "duckdb 1.5.3", recall: "0.957", signals: "vec · FTS · graph", locus: "app-side glue", ryw: "0% full-text †" },
-  { e: "sqlite 0.1.9", recall: "1.000*", signals: "vec · FTS · graph", locus: "app-side glue", ryw: "100%" },
-  { e: "lancedb 0.33", recall: "0.501", signals: "vec · FTS", locus: "native · no graph", ryw: "n/a — no graph" },
+  { e: "mnestic", recall: "0.954", signals: "vector, full-text, graph", locus: "in the engine, one call", ryw: "100%", us: true },
+  { e: "duckdb 1.5.3", recall: "0.957", signals: "vector, full-text, graph", locus: "in app code", ryw: "0% full-text †" },
+  { e: "sqlite 0.1.9", recall: "1.000*", signals: "vector, full-text, graph", locus: "in app code", ryw: "100%" },
+  { e: "lancedb 0.33", recall: "0.501", signals: "vector, full-text", locus: "in the engine, no graph", ryw: "n/a, no graph" },
 ];
 
 const comparisonRows = [
   {
     dim: "Where it runs",
-    pg: "Needs a separate database server",
-    dd: "Runs inside your app — but has no way to follow relationships",
-    neo: "Needs a separate server (built on Java)",
-    us: "Runs inside your app, no server needed (though it can run as one, too)",
+    pg: "Separate server",
+    dd: "In your process",
+    neo: "Separate server (JVM)",
+    us: "In your process, or as a server",
   },
   {
-    dim: "Following chains of connections",
-    pg: "Possible, but limited and slow once the chains get long",
-    dd: "Not supported at all",
-    neo: "Good at direct connections, weaker at general looping logic",
-    us: "Built in, and stays fast even on long, looping chains",
+    dim: "Long chains of links",
+    pg: "Recursive CTEs, slow as chains grow",
+    dd: "Not supported",
+    neo: "Good for paths, weaker for general recursive rules",
+    us: "Recursive Datalog rules",
   },
   {
-    dim: "Search by meaning + keyword + connections, together",
-    pg: "Bolt-on add-ons (for meaning, for keyword) you wire together yourself",
-    dd: "Similar bolt-on add-ons — and no relationship search at all",
-    neo: "Has meaning-based search, but you still combine it with the rest yourself",
-    us: "One built-in request that combines all three and ranks the results for you",
+    dim: "Meaning, keyword, and link search in one request",
+    pg: "pgvector and full-text, combined by you",
+    dd: "Vector and full-text extensions, no graph",
+    neo: "Vector index, combined with the rest by you",
+    us: "One call, fused and ranked by the engine",
   },
   {
-    dim: "Remembering what used to be true",
-    pg: "Not built in — you'd have to build this yourself",
-    dd: "Not built in",
-    neo: "Not built in",
-    us: "Built in — ask what it believed at any past moment, and see every correction it ever made",
+    dim: "What used to be true",
+    pg: "Build it yourself",
+    dd: "Build it yourself",
+    neo: "Build it yourself",
+    us: "Built in, on two time axes",
   },
 ];
 
 const useCases = [
   {
-    n: "01",
-    t: "Agent memory that survives the session",
-    d: "An AI agent has a conversation, then a week later needs to remember what was decided — by the gist of it, by exact keywords, and by what it's connected to. Normally that means juggling several databases and stitching the results together by hand, and the combination goes stale the moment something new comes in. With mnestic, that's a single request — the one shown above — that runs against everything the agent has ever stored, including what it wrote a second ago.",
+    t: "Agent memory across sessions",
+    d: "An agent needs to recall last week's decision by meaning, by exact words, and by what it is linked to. In mnestic that is the single query in the hero, and it sees writes from a second ago.",
   },
   {
-    n: "02",
-    t: "An audit trail you can actually trust",
-    d: "Say a system judged a transaction \"low risk\" back in June, but by September that call looks wrong. Was the system mistaken, or did the facts change after the fact? Postgres, DuckDB, and Neo4j have no built-in way to answer that — you'd have to build your own history-tracking on top. mnestic keeps a permanent record of both what was true and when the database learned it, so the query above can replay exactly what it knew and when, and nobody can quietly rewrite that history.",
+    t: "Audit trails",
+    d: "A transaction was rated low risk in June and looks wrong in September. With transaction time you can replay exactly what the system knew in June, and nobody can backdate it.",
   },
   {
-    n: "03",
-    t: "Relationship graphs without a second database",
-    d: "Fraud rings share things — a device, an address, a payment method — often several steps removed from the account that got flagged. Finding those hidden connections is a job for a graph database. But running Neo4j alongside your main database means keeping two systems in sync. mnestic finds those same multi-step connections inside the database that already holds the rest of your data — nothing extra to install, sync, or maintain.",
+    t: "Graphs without a second database",
+    d: "Fraud rings share devices, addresses, and cards several hops from the flagged account. Recursive rules find those links in the same database that holds the rest of your data.",
   },
 ];
+
+const H2 = "font-serif text-4xl font-medium leading-tight tracking-tight md:text-5xl";
+const LEAD = "max-w-2xl text-lg leading-relaxed text-[var(--color-paper-dim)]";
+const NOTE = "font-mono text-xs leading-relaxed text-[var(--color-paper-faint)]";
 
 export default function Home() {
   return (
@@ -491,7 +380,7 @@ export default function Home() {
       <div className="grain" />
 
       {/* ── Nav ─────────────────────────────────────────── */}
-      <header className="sticky top-0 z-50 border-b border-[var(--color-line)]/60 bg-[var(--color-ink)]/70 backdrop-blur-md">
+      <header className="sticky top-0 z-50 border-b border-[var(--color-line)]/60 bg-[var(--color-ink)]">
         <nav className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <a href="#top" className="transition-opacity hover:opacity-80">
             <Logo />
@@ -500,20 +389,11 @@ export default function Home() {
             <a href="#compare" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
               Compare
             </a>
-            <a href="#capabilities" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
-              Engine
-            </a>
-            <a href="#perf" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
-              Speed
-            </a>
             <a href="#fork" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
-              The Fork
+              The fork
             </a>
             <a href="#bench" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
-              Benchmarks
-            </a>
-            <a href="#use-cases" className="label link-grow hidden md:inline-block hover:text-[var(--color-paper)]">
-              Use Cases
+              Benchmark
             </a>
             <a href={DOCS} className="label link-grow hover:text-[var(--color-paper)]">
               Docs
@@ -534,69 +414,45 @@ export default function Home() {
         {/* ── Hero ──────────────────────────────────────── */}
         <section className="relative grid grid-cols-1 gap-12 pt-20 pb-24 lg:grid-cols-[1.05fr_0.95fr] lg:gap-10 lg:pt-28">
           <div>
-            <div
-              className="rise mb-7 inline-flex items-center gap-2.5 rounded-full border border-[var(--color-line-bright)] bg-[var(--color-ink-2)] px-3.5 py-1.5"
-              style={{ animationDelay: "0s" }}
-            >
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-synapse)]" />
-              <span className="font-mono text-[0.7rem] text-[var(--color-paper-dim)]">
-                a maintained fork of CozoDB · v0.19.4
-              </span>
-            </div>
+            <p className="rise mb-7 font-mono text-[0.75rem] text-[var(--color-paper-dim)]" style={{ animationDelay: "0s" }}>
+              a maintained fork of CozoDB · v0.19.4
+            </p>
 
             <h1
               className="rise font-serif text-[clamp(2.7rem,6.5vw,4.7rem)] font-medium leading-[0.98] tracking-[-0.02em]"
               style={{ animationDelay: "0.08s" }}
             >
-              embedded Datalog.
-              <br />
-              performant graphs.
-              <br />
-              <span className="italic text-[var(--color-synapse)]">
-                a substrate for
-              </span>{" "}
-              <span className="italic">machine memory.</span>
+              An embedded Datalog database for agent memory.
             </h1>
 
             <p
               className="rise mt-7 max-w-xl text-lg leading-relaxed text-[var(--color-paper-dim)]"
               style={{ animationDelay: "0.16s" }}
             >
-              <span className="text-[var(--color-paper)]">mnestic</span> is a
-              transactional{" "}
-              <span className="text-[var(--color-paper)]">
-                relational–graph–vector
-              </span>{" "}
-              database that speaks Datalog, the same engine that called itself
-              “the hippocampus for AI,” now actively maintained and tuned as the
-              recall layer for agents.
+              mnestic stores relations, graphs, and vectors in one transactional engine that runs inside your
+              process. It continues CozoDB, which called itself &ldquo;the hippocampus for AI,&rdquo; and is tuned
+              for recall: search by meaning, keyword, and link in one query, and keep the history of every fact if you want it.
             </p>
 
-            <div
-              className="rise mt-9 flex flex-wrap items-center gap-4"
-              style={{ animationDelay: "0.24s" }}
-            >
+            <div className="rise mt-9 flex flex-wrap items-center gap-4" style={{ animationDelay: "0.24s" }}>
+              <a
+                href={DOCS}
+                className="rounded-md bg-[var(--color-synapse)] px-6 py-3 font-mono text-sm font-medium text-[var(--color-ink)] transition-colors hover:opacity-90"
+              >
+                Read the docs
+              </a>
               <a
                 href={GITHUB}
                 target="_blank"
                 rel="noreferrer"
-                className="synapse-glow rounded-md bg-[var(--color-synapse)] px-6 py-3 font-mono text-sm font-medium text-[var(--color-ink)] transition-transform hover:-translate-y-0.5"
-              >
-                Explore the source →
-              </a>
-              <a
-                href={DOCS}
                 className="rounded-md border border-[var(--color-line-bright)] px-6 py-3 font-mono text-sm text-[var(--color-paper)] transition-colors hover:border-[var(--color-paper-dim)]"
               >
-                Read the docs →
+                View on GitHub
               </a>
             </div>
 
-            <p
-              className="rise mt-6 font-mono text-xs text-[var(--color-paper-faint)]"
-              style={{ animationDelay: "0.3s" }}
-            >
-              MPL-2.0 · Rust · RocksDB / SQLite / in-memory backends
+            <p className="rise mt-6 font-mono text-xs text-[var(--color-paper-faint)]" style={{ animationDelay: "0.3s" }}>
+              MPL-2.0 · Rust and Python · RocksDB, SQLite, or in-memory storage
             </p>
           </div>
 
@@ -605,30 +461,21 @@ export default function Home() {
             <div className="pointer-events-none absolute -top-10 right-0 h-56 w-full max-w-md opacity-90 lg:-right-6">
               <Constellation />
             </div>
-            <div
-              className="rise relative mt-28 lg:mt-36"
-              style={{ animationDelay: "0.36s" }}
-            >
-              <Code code={HERO_CODE} lang="cozo" title="recall.cozo — graph ∩ vector, one query" />
+            <div className="rise relative mt-28 lg:mt-36" style={{ animationDelay: "0.36s" }}>
+              <Code code={HERO_CODE} lang="cozo" title="recall.cozo · graph and vector in one query" />
             </div>
           </div>
         </section>
 
         <div className="rule" />
 
-        {/* ── Provenance note ───────────────────────────── */}
+        {/* ── Why a fork ────────────────────────────────── */}
         <section className="grid grid-cols-1 gap-8 py-16 md:grid-cols-[auto_1fr] md:gap-14">
           <p className="label pt-1">Why a fork</p>
           <p className="max-w-3xl font-serif text-2xl leading-snug text-[var(--color-paper-dim)] md:text-[1.7rem]">
-            CozoDB went quiet after{" "}
-            <span className="text-[var(--color-paper)]">December 2024</span>. The
-            design is too good to let drift. So we forked it,{" "}
-            <span className="text-[var(--color-paper)]">openly, under MPL-2.0</span>,{" "}
-            and pointed it at one job:{" "}
-            <span className="italic text-[var(--color-synapse)]">
-              being the memory an agent can trust.
-            </span>{" "}
-            Every divergence is documented, every original copyright preserved.
+            CozoDB has had no release since <span className="text-[var(--color-paper)]">December 2024</span>. We
+            forked it under the same MPL-2.0 license to keep it maintained and to tune it for agent memory. Every
+            change from upstream is documented, and every original copyright is kept.
           </p>
         </section>
 
@@ -636,28 +483,17 @@ export default function Home() {
 
         {/* ── Comparison: Postgres / DuckDB / Neo4j ─────── */}
         <section id="compare" className="py-20">
-          <div className="mb-3 flex items-center gap-3">
-            <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-synapse)]" />
-            <span className="label">Why not what you already have</span>
-          </div>
-          <h2 className="mb-5 max-w-3xl font-serif text-4xl font-medium leading-tight tracking-tight md:text-5xl">
-            Where Postgres, DuckDB, and Neo4j{" "}
-            <span className="italic text-[var(--color-synapse)]">hit a wall</span>.
-          </h2>
-          <p className="mb-10 max-w-2xl text-lg leading-relaxed text-[var(--color-paper-dim)]">
-            Each of these is a great database — for its job. None of them do
-            this job: search by meaning, keyword, and relationship in one
-            request; follow long chains of connections without slowing down;
-            and remember what used to be true, not just what&apos;s true now
-            — all inside one lightweight engine you can embed straight into
-            your app.
+          <h2 className={`mb-5 max-w-3xl ${H2}`}>Compared with Postgres, DuckDB, and Neo4j.</h2>
+          <p className={`mb-10 ${LEAD}`}>
+            Each is good at its own job. None of them does all of this inside your process: one request that
+            searches by meaning, keyword, and link; long recursive chains; and a record of what used to be true.
           </p>
 
           <div className="overflow-x-auto rounded-xl border border-[var(--color-line)]">
             <table className="w-full border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-[var(--color-line)] bg-[var(--color-ink-2)]">
-                  <th className="label px-5 py-3 font-normal">What matters</th>
+                  <th className="label px-5 py-3 font-normal"></th>
                   <th className="label px-5 py-3 font-normal">Postgres</th>
                   <th className="label px-5 py-3 font-normal">DuckDB</th>
                   <th className="label px-5 py-3 font-normal">Neo4j</th>
@@ -666,221 +502,90 @@ export default function Home() {
               </thead>
               <tbody className="text-[0.82rem]">
                 {comparisonRows.map((r) => (
-                  <tr
-                    key={r.dim}
-                    className="border-b border-[var(--color-line)] last:border-0"
-                  >
-                    <td className="px-5 py-4 font-medium text-[var(--color-paper)]">
-                      {r.dim}
-                    </td>
-                    <td className="px-5 py-4 text-[var(--color-paper-dim)]">
-                      {r.pg}
-                    </td>
-                    <td className="px-5 py-4 text-[var(--color-paper-dim)]">
-                      {r.dd}
-                    </td>
-                    <td className="px-5 py-4 text-[var(--color-paper-dim)]">
-                      {r.neo}
-                    </td>
-                    <td className="bg-[var(--color-synapse)]/5 px-5 py-4 font-medium text-[var(--color-synapse)]">
-                      {r.us}
-                    </td>
+                  <tr key={r.dim} className="border-b border-[var(--color-line)] last:border-0">
+                    <td className="px-5 py-4 font-medium text-[var(--color-paper)]">{r.dim}</td>
+                    <td className="px-5 py-4 text-[var(--color-paper-dim)]">{r.pg}</td>
+                    <td className="px-5 py-4 text-[var(--color-paper-dim)]">{r.dd}</td>
+                    <td className="px-5 py-4 text-[var(--color-paper-dim)]">{r.neo}</td>
+                    <td className="bg-[var(--color-synapse)]/5 px-5 py-4 font-medium text-[var(--color-paper)]">{r.us}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <p className="mt-5 font-mono text-xs leading-relaxed text-[var(--color-paper-faint)]">
-            These are structural differences, not a speed test — see the
-            measured recall numbers further down for real benchmarks. Each
-            column reflects that database&apos;s own built-in and
-            official tooling (Postgres: pgvector + full-text search; DuckDB:
-            its vector and full-text extensions; Neo4j: its native Cypher
-            and vector index).
+          <p className={`mt-5 ${NOTE}`}>
+            Structural differences, not a speed test. Each column uses that database&apos;s official tooling:
+            pgvector and full-text search for Postgres, the vector and full-text extensions for DuckDB, Cypher and
+            the vector index for Neo4j.
           </p>
         </section>
 
         <div className="rule" />
 
-        {/* ── Capabilities ──────────────────────────────── */}
+        {/* ── What you inherit from CozoDB ──────────────── */}
         <section id="capabilities" className="py-20">
-          <div className="mb-12 flex items-end justify-between">
-            <h2 className="font-serif text-4xl font-medium tracking-tight md:text-5xl">
-              The engine you inherit
-            </h2>
-            <p className="label hidden text-right sm:block">
-              from CozoDB
-              <br />
-              unchanged unless noted
-            </p>
-          </div>
-          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] md:grid-cols-2 lg:grid-cols-3">
+          <h2 className={`mb-12 ${H2}`}>What you get from CozoDB.</h2>
+          <dl className="grid grid-cols-1 gap-x-12 gap-y-8 md:grid-cols-2 lg:grid-cols-3">
             {capabilities.map((c) => (
-              <div
-                key={c.k}
-                className="group bg-[var(--color-ink)] p-7 transition-colors hover:bg-[var(--color-ink-2)]"
-              >
-                <div className="mb-5 flex items-center justify-between">
-                  <span className="font-mono text-xs text-[var(--color-synapse)]">
-                    {c.k}
-                  </span>
-                  <span className="h-px w-10 bg-[var(--color-line-bright)] transition-all group-hover:w-16 group-hover:bg-[var(--color-synapse)]" />
-                </div>
-                <h3 className="mb-3 font-serif text-xl font-medium">{c.t}</h3>
-                <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
-                  {c.d}
-                </p>
+              <div key={c.t} className="border-t border-[var(--color-line)] pt-5">
+                <dt className="mb-2 font-serif text-xl font-medium">{c.t}</dt>
+                <dd className="text-sm leading-relaxed text-[var(--color-paper-dim)]">{c.d}</dd>
               </div>
             ))}
-          </div>
-        </section>
-
-        {/* ── Performance ───────────────────────────────── */}
-        <section id="perf" className="py-20">
-          <div className="mb-12 flex flex-wrap items-end justify-between gap-4">
-            <h2 className="font-serif text-4xl font-medium tracking-tight md:text-5xl">
-              Built to be fast
-            </h2>
-            <p className="label max-w-xs text-right">
-              upstream figures · 2020 Mac mini · RocksDB backend
-            </p>
-          </div>
-          <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] lg:grid-cols-4">
-            {benches.map((b) => (
-              <div key={b.d} className="bg-[var(--color-ink)] p-7">
-                <div className="font-serif text-[2.6rem] font-medium leading-none tracking-tight text-[var(--color-paper)]">
-                  {b.v}
-                </div>
-                <div className="mt-1 font-mono text-xs uppercase tracking-widest text-[var(--color-synapse)]">
-                  {b.u}
-                </div>
-                <p className="mt-4 text-xs leading-relaxed text-[var(--color-paper-dim)]">
-                  {b.d}
-                </p>
-              </div>
-            ))}
-          </div>
-          <p className="mt-5 font-mono text-xs text-[var(--color-paper-faint)]">
-            Backup ≈ 1M rows/s · restore ≈ 400K rows/s · PageRank on 1.6M
-            vertices ≈ 30 s. mnestic keeps these and adds the recall-focused
-            wins below.
+          </dl>
+          <p className={`mt-10 ${NOTE}`}>
+            Upstream measured 100K+ QPS on mixed read and write transactions, 250K+ QPS read-only, and under 1 ms for
+            a two-hop query on a graph of 1.6M vertices and 31M edges (2020 Mac mini, RocksDB).
           </p>
         </section>
 
         <div className="rule" />
 
-        {/* ── The Fork (the emphasis) ───────────────────── */}
+        {/* ── The fork ──────────────────────────────────── */}
         <section id="fork" className="py-20">
-          <div className="mb-3 flex items-center gap-3">
-            <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-synapse)]" />
-            <span className="label">What mnestic adds</span>
-          </div>
-          <h2 className="mb-5 max-w-3xl font-serif text-4xl font-medium leading-tight tracking-tight md:text-5xl">
-            Faster, safer, and built for{" "}
-            <span className="italic text-[var(--color-synapse)]">recall</span>.
-          </h2>
-          <p className="mb-12 max-w-2xl text-lg leading-relaxed text-[var(--color-paper-dim)]">
-            The query language and semantics are unchanged. What changed is the
-            stuff that bites you in production (lock contention, full scans,
-            seven-rule retrieval pipelines) and the things agents actually need.
+          <h2 className={`mb-5 max-w-3xl ${H2}`}>What the fork adds.</h2>
+          <p className={`mb-12 ${LEAD}`}>
+            The query language is unchanged. The work has gone into query speed, correctness, and the operations
+            agent memory needs. A few of the measured changes:
           </p>
 
-          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] md:grid-cols-2">
-            {forkItems.map((f, i) => (
-              <div
-                key={i}
-                className={`flex flex-col bg-[var(--color-ink)] p-7 transition-colors hover:bg-[var(--color-ink-2)] ${
-                  i === 0 ? "md:col-span-2" : ""
-                }`}
+          <ul className="border-t border-[var(--color-line)]">
+            {forkItems.map((f) => (
+              <li
+                key={f.ver}
+                className="grid grid-cols-1 gap-2 border-b border-[var(--color-line)] py-5 md:grid-cols-[8rem_1fr_1.2fr] md:gap-8"
               >
-                <div className="mb-4 flex items-center gap-3">
-                  <span className="rounded border border-[var(--color-synapse)]/30 bg-[var(--color-synapse)]/10 px-2 py-0.5 font-mono text-[0.68rem] text-[var(--color-synapse)]">
-                    {f.ver}
-                  </span>
-                </div>
-                <h3 className="mb-3 font-serif text-2xl font-medium leading-tight">
-                  {f.t}
-                </h3>
-                <p className="mb-5 flex-1 text-sm leading-relaxed text-[var(--color-paper-dim)]">
-                  {f.d}
-                </p>
-                <p className="border-t border-[var(--color-line)] pt-4 font-mono text-xs leading-relaxed text-[var(--color-slate)]">
-                  → {f.metric}
-                </p>
-              </div>
+                <span className="font-mono text-xs text-[var(--color-synapse)]">{f.ver}</span>
+                <span className="font-serif text-lg font-medium leading-snug">{f.t}</span>
+                <span className="font-mono text-xs leading-relaxed text-[var(--color-paper-dim)]">{f.metric}</span>
+              </li>
             ))}
-          </div>
-          <p className="mt-6 font-mono text-xs text-[var(--color-paper-faint)]">
+          </ul>
+          <p className={`mt-6 ${NOTE}`}>
             <a href="/docs/release-notes" className="link-grow text-[var(--color-paper-dim)]">
-              Full release history →
-            </a>{" "}
-            — every fork release, 0.8.0 through 0.19.4.
+              Every fork release since 0.8.0
+            </a>
           </p>
-        </section>
-
-        {/* ── Marquee feature: bitemporality ────────────── */}
-        <section className="grid grid-cols-1 items-center gap-12 py-20 lg:grid-cols-[0.9fr_1.1fr]">
-          <div>
-            <span className="label">The headline feature · 0.10.0</span>
-            <h2 className="mt-4 font-serif text-4xl font-medium leading-tight tracking-tight md:text-[2.9rem]">
-              What did we believe
-              <br />
-              <span className="italic text-[var(--color-synapse)]">
-                at time T
-              </span>{" "}
-              about period Y?
-            </h2>
-            <p className="mt-6 text-lg leading-relaxed text-[var(--color-paper-dim)]">
-              Valid time says when a fact is true in the world. Transaction time
-              says when the database <em>learned</em> it — and 0.10.0 adds it
-              in-engine, stamped at commit by a crash-safe monotonic clock.
-              Reproduce last Tuesday&apos;s answer exactly. Audit every
-              correction. Tell &ldquo;the world changed&rdquo; apart from
-              &ldquo;we were wrong.&rdquo; No other embedded engine serves this
-              natively.
-            </p>
-            <ul className="mt-7 space-y-3">
-              {[
-                "tt is engine-assigned, never user-set — nobody can backdate what the system knew",
-                "::history / ::history_gc / ::evict manage the record's lifecycle; GC keeps as-of reads exact behind a persisted floor",
-                "Current-belief reads measured within ~4–12% of a single-axis relation; opt-in, zero cost if unused",
-              ].map((li) => (
-                <li key={li} className="flex gap-3 text-sm text-[var(--color-paper-dim)]">
-                  <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-[var(--color-synapse)]" />
-                  {li}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <Code code={BITEMP_CODE} lang="cozo" title="bitemporality — belief, versioned" />
         </section>
 
         <div className="rule" />
 
-        {/* ── Marquee feature: hybrid_search ────────────── */}
+        {/* ── Bitemporality ─────────────────────────────── */}
         <section className="grid grid-cols-1 items-center gap-12 py-20 lg:grid-cols-[0.9fr_1.1fr]">
           <div>
-            <span className="label">Native hybrid retrieval</span>
-            <h2 className="mt-4 font-serif text-4xl font-medium leading-tight tracking-tight md:text-[2.9rem]">
-              Hybrid retrieval,
-              <br />
-              <span className="italic text-[var(--color-synapse)]">
-                one typed call.
-              </span>
+            <h2 className="font-serif text-4xl font-medium leading-tight tracking-tight md:text-[2.9rem]">
+              What did we believe in June about September?
             </h2>
             <p className="mt-6 text-lg leading-relaxed text-[var(--color-paper-dim)]">
-              Vector similarity, keyword match, and graph proximity are three
-              different signals about <em>“what should I remember right now.”</em>{" "}
-              As of 0.8.3 mnestic fuses all three <em>natively</em>: a typed{" "}
-              graph leg joins the vector and keyword legs in one call, combined by
-              Reciprocal Rank Fusion and de-duplicated by Maximal Marginal
-              Relevance.
+              Valid time is when a fact holds in the world. Transaction time is when the database learned it, and
+              the engine stamps it at commit. With both, you can reproduce an old answer exactly and tell a change in
+              the world apart from a correction.
             </p>
             <ul className="mt-7 space-y-3">
               {[
-                "Graph proximity is a typed GraphLeg: bounded-hop, ranked by min distance",
-                "Query vector, text & seeds passed as params, never string-interpolated",
-                "One call, one transaction; generated CozoScript inspectable via hybrid_search_script",
+                "Transaction time is set by the engine, never by the caller, so history cannot be backdated.",
+                "::history, ::history_gc and ::evict manage the record; garbage collection keeps as-of reads exact.",
+                "Opt-in per relation. Current-value reads run within about 4–12% of a plain relation.",
               ].map((li) => (
                 <li key={li} className="flex gap-3 text-sm text-[var(--color-paper-dim)]">
                   <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-[var(--color-synapse)]" />
@@ -889,47 +594,35 @@ export default function Home() {
               ))}
             </ul>
           </div>
-          <Code code={HYBRID_CODE} lang="rust" title="hybrid recall — RRF + MMR in one call" />
+          <Code code={BITEMP_CODE} lang="cozo" title="beliefs.cozo · two time axes" />
+        </section>
+
+        <div className="rule" />
+
+        {/* ── Hybrid search ─────────────────────────────── */}
+        <section className="grid grid-cols-1 items-center gap-12 py-20 lg:grid-cols-[0.9fr_1.1fr]">
+          <div>
+            <h2 className="font-serif text-4xl font-medium leading-tight tracking-tight md:text-[2.9rem]">
+              Vector, keyword, and graph search in one call.
+            </h2>
+            <p className="mt-6 text-lg leading-relaxed text-[var(--color-paper-dim)]">
+              <code className="font-mono text-base text-[var(--color-paper)]">hybrid_search</code> runs all three
+              searches in one transaction, merges them with reciprocal rank fusion, and can drop near-duplicates with
+              MMR. Query vectors, text, and seeds go in as parameters, never as interpolated strings.
+            </p>
+          </div>
+          <Code code={HYBRID_CODE} lang="rust" title="main.rs · hybrid_search" />
         </section>
 
         <div className="rule" />
 
         {/* ── Hybrid-recall benchmark ───────────────────── */}
         <section id="bench" className="py-20">
-          <div className="mb-3 flex items-center gap-3">
-            <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-synapse)]" />
-            <span className="label">Hybrid recall, measured</span>
-          </div>
-          <h2 className="mb-5 max-w-3xl font-serif text-4xl font-medium leading-tight tracking-tight md:text-5xl">
-            One engine for all three{" "}
-            <span className="italic text-[var(--color-synapse)]">signals</span>.
-          </h2>
-          <p className="mb-10 max-w-2xl text-lg leading-relaxed text-[var(--color-paper-dim)]">
-            The task is fusing vector, keyword, <em>and</em> graph proximity into
-            one ranking. Raw latency isn&apos;t what separates the field at this
-            scale. Three structural things are, and mnestic is the only embedded
-            engine here that gets all three right.
-          </p>
-
-          <ul className="mb-12 max-w-2xl space-y-3">
-            {[
-              "Graph proximity is the single largest effect in the run: the graph-less LanceDB lands far below on recall alone.",
-              "mnestic fuses all three signals from one embedded store in a single transactional call; SQLite, DuckDB and Kuzu fuse in app code, and LanceDB still needs a second system for graph.",
-              "mnestic's indexes update in the same transaction as the write, so a new memory is recallable on every signal immediately. DuckDB's full-text index is a build-time snapshot, unsearchable by keyword until rebuilt.",
-            ].map((li) => (
-              <li key={li} className="flex gap-3 text-sm text-[var(--color-paper-dim)]">
-                <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-[var(--color-synapse)]" />
-                {li}
-              </li>
-            ))}
-          </ul>
-
-          <p className="mb-6 max-w-2xl text-base leading-relaxed text-[var(--color-paper-dim)]">
-            On quality, mnestic hits{" "}
-            <strong className="text-[var(--color-paper)]">recall@10 of 0.954</strong>,
-            level with DuckDB&apos;s 0.957 and far above the graph-less LanceDB
-            (0.501). It&apos;s the only engine here that fuses all three signals in
-            one transaction:
+          <h2 className={`mb-5 max-w-3xl ${H2}`}>Recall, measured.</h2>
+          <p className={`mb-10 ${LEAD}`}>
+            On 40,000 chunks and 1,000 queries, mnestic&apos;s recall@10 is 0.954, level with DuckDB and far above
+            LanceDB, which has no graph signal. The difference is where the work happens: mnestic fuses all three
+            signals in one call, so a new memory is searchable on every signal the moment it is written.
           </p>
 
           <div className="overflow-x-auto rounded-xl border border-[var(--color-line)]">
@@ -940,79 +633,48 @@ export default function Home() {
                   <th className="label px-5 py-3 text-right font-normal">recall@10</th>
                   <th className="label px-5 py-3 font-normal">Signals</th>
                   <th className="label px-5 py-3 font-normal">Fusion</th>
-                  <th className="label px-5 py-3 font-normal">Fused read-your-writes</th>
+                  <th className="label px-5 py-3 font-normal">Searchable right after a write</th>
                 </tr>
               </thead>
               <tbody className="font-mono text-[0.82rem]">
                 {recallBench.map((r) => (
                   <tr
                     key={r.e}
-                    className={`border-b border-[var(--color-line)] last:border-0 ${
-                      r.us ? "bg-[var(--color-synapse)]/5" : ""
-                    }`}
+                    className={`border-b border-[var(--color-line)] last:border-0 ${r.us ? "bg-[var(--color-synapse)]/5" : ""}`}
                   >
-                    <td
-                      className={`px-5 py-3 ${
-                        r.us
-                          ? "font-medium text-[var(--color-synapse)]"
-                          : "text-[var(--color-paper)]"
-                      }`}
-                    >
+                    <td className={`px-5 py-3 ${r.us ? "font-medium text-[var(--color-synapse)]" : "text-[var(--color-paper)]"}`}>
                       {r.e}
                     </td>
-                    <td className="px-5 py-3 text-right text-[var(--color-paper)]">
-                      {r.recall}
-                    </td>
-                    <td className="px-5 py-3 text-[var(--color-paper-dim)]">
-                      {r.signals}
-                    </td>
-                    <td className="px-5 py-3 text-[var(--color-paper-dim)]">
-                      {r.locus}
-                    </td>
-                    <td className="px-5 py-3 text-[var(--color-paper-dim)]">
-                      {r.ryw}
-                    </td>
+                    <td className="px-5 py-3 text-right text-[var(--color-paper)]">{r.recall}</td>
+                    <td className="px-5 py-3 text-[var(--color-paper-dim)]">{r.signals}</td>
+                    <td className="px-5 py-3 text-[var(--color-paper-dim)]">{r.locus}</td>
+                    <td className="px-5 py-3 text-[var(--color-paper-dim)]">{r.ryw}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
 
-          <div className="mt-8 rounded-xl border border-[var(--color-line)] bg-[var(--color-ink)] p-7">
-            <h3 className="mb-3 font-serif text-xl font-medium">
-              The native call, in context
-            </h3>
-            <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
-              mnestic&apos;s one-call 3-way fusion runs at{" "}
-              <span className="font-mono text-[var(--color-paper)]">~42 ms p50</span>,
-              about 4× faster than hand-decomposing the same query, and it&apos;s the
-              only call here fusing three signals at once; LanceDB&apos;s native call
-              covers just two. It isn&apos;t the lowest absolute latency at this
-              scale, but re-measured on the RocksDB backend it actually runs, with
-              real sentence-transformer embeddings, the tail improves (p99{" "}
-              <span className="font-mono text-[var(--color-paper)]">181 ms</span>{" "}
-              vs 258 on the test wheel) — matching the best indexed engine on
-              quality while fusing a signal the others can&apos;t.
-            </p>
-          </div>
+          <p className="mt-6 max-w-2xl text-sm leading-relaxed text-[var(--color-paper-dim)]">
+            The fused call takes about <span className="font-mono text-[var(--color-paper)]">42 ms</span> at p50,
+            roughly 4× faster than running the same three searches separately. It is not the lowest latency in the
+            table.
+          </p>
 
-          <p className="mt-5 font-mono text-xs leading-relaxed text-[var(--color-paper-faint)]">
-            † DuckDB&apos;s full-text index is a build-time snapshot: 0% fused
-            read-your-writes on the keyword leg until a rebuild. *SQLite&apos;s
-            recall reflects an exact brute-force scan, not an indexed ANN search.
-            Small scale (40k chunks, 1,000 queries, k=10, 2-hop graph), 2026-05-31,
-            macOS arm64; numbers are hardware-specific. Recall@10 uses synthetic
-            embeddings on the SQLite wheel; latency is separately validated on the
-            RocksDB backend with real sentence-transformer embeddings. Kuzu is
-            excluded: its extension host has been offline since the project&apos;s
-            Oct-2025 archival.{" "}
+          <p className={`mt-5 ${NOTE}`}>
+            † DuckDB&apos;s full-text index is built once and misses new rows until it is rebuilt. *SQLite&apos;s
+            recall comes from an exact brute-force scan, not an approximate index. 40k chunks, 1,000 queries, k=10,
+            two-hop graph; 2026-05-31, macOS arm64; numbers are hardware-specific. Recall uses synthetic embeddings
+            on the SQLite build; latency was checked separately on RocksDB with real sentence-transformer
+            embeddings. Kùzu is excluded because its extension host has been offline since the project was archived
+            in October 2025.{" "}
             <a
               href={`${BENCHMARKS}/blob/main/docs/METHODOLOGY.md`}
               target="_blank"
               rel="noreferrer"
               className="link-grow text-[var(--color-paper-dim)]"
             >
-              Full methodology
+              Methodology
             </a>{" "}
             ·{" "}
             <a
@@ -1023,7 +685,6 @@ export default function Home() {
             >
               raw results
             </a>
-            .
           </p>
         </section>
 
@@ -1031,52 +692,32 @@ export default function Home() {
 
         {/* ── Use cases ──────────────────────────────────── */}
         <section id="use-cases" className="py-20">
-          <div className="mb-3 flex items-center gap-3">
-            <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-synapse)]" />
-            <span className="label">From capability to application</span>
-          </div>
-          <h2 className="mb-5 max-w-3xl font-serif text-4xl font-medium leading-tight tracking-tight md:text-5xl">
-            What people build with it.
-          </h2>
-          <p className="mb-10 max-w-2xl text-lg leading-relaxed text-[var(--color-paper-dim)]">
-            The queries above aren&apos;t syntax demos — they&apos;re the
-            core of three problems people run into once their app needs
-            more than a single database can offer.
-          </p>
-          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-line)] md:grid-cols-3">
+          <h2 className={`mb-12 ${H2}`}>What it&apos;s for.</h2>
+          <dl className="grid grid-cols-1 gap-x-12 gap-y-8 md:grid-cols-3">
             {useCases.map((u) => (
-              <div key={u.n} className="bg-[var(--color-ink)] p-7">
-                <span className="font-mono text-xs text-[var(--color-synapse)]">
-                  {u.n}
-                </span>
-                <h3 className="mb-3 mt-4 font-serif text-lg font-medium leading-snug">
-                  {u.t}
-                </h3>
-                <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">
-                  {u.d}
-                </p>
+              <div key={u.t} className="border-t border-[var(--color-line)] pt-5">
+                <dt className="mb-3 font-serif text-lg font-medium leading-snug">{u.t}</dt>
+                <dd className="text-sm leading-relaxed text-[var(--color-paper-dim)]">{u.d}</dd>
               </div>
             ))}
-          </div>
+          </dl>
         </section>
 
         <div className="rule" />
 
         {/* ── Get started ───────────────────────────────── */}
         <section className="py-20">
-          <h2 className="mb-10 font-serif text-4xl font-medium tracking-tight md:text-5xl">
-            Add it to your project
-          </h2>
+          <h2 className={`mb-10 ${H2}`}>Add it to your project.</h2>
           <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_1fr]">
             <div className="space-y-4">
               <Code
                 lang="rust"
-                title="Cargo.toml — the importable name stays cozo"
-                code={`# default = in-memory + SQLite backends
+                title="Cargo.toml"
+                code={`# default: in-memory and SQLite storage
 cargo add mnestic
 
-# or, with the RocksDB backend:
-# mnestic = { version = "0.19.0", features = ["storage-rocksdb"] }`}
+# or, with RocksDB storage:
+# mnestic = { version = "0.19", features = ["storage-rocksdb"] }`}
               />
               <Code
                 lang="rust"
@@ -1088,31 +729,25 @@ db.run_default("?[x] := x in [1, 2, 3]")?;`}
               />
               <Code
                 lang="python"
-                title="Python — with LangChain & LlamaIndex adapters"
+                title="Python, with LangChain and LlamaIndex adapters"
                 code={`pip install mnestic                          # the engine (abi3 wheels)
 pip install langchain-mnestic               # LangChain vector store
 pip install llama-index-vector-stores-mnestic`}
               />
             </div>
             <div className="flex flex-col justify-center rounded-xl border border-[var(--color-line)] bg-[var(--color-ink-2)] p-8">
-              <p className="label mb-4">Naming, on purpose</p>
-              <p className="text-[var(--color-paper-dim)] leading-relaxed">
-                The published crate is{" "}
-                <a
-                  href={CRATE}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="link-grow text-[var(--color-paper)]"
-                >
+              <p className="label mb-4">The import name is still cozo</p>
+              <p className="leading-relaxed text-[var(--color-paper-dim)]">
+                The crate is published as{" "}
+                <a href={CRATE} target="_blank" rel="noreferrer" className="link-grow text-[var(--color-paper)]">
                   mnestic
                 </a>
-                , but the importable library name stays{" "}
+                , but the library name is still{" "}
                 <code className="rounded bg-[var(--color-ink)] px-1.5 py-0.5 font-mono text-sm text-[var(--color-synapse)]">
                   cozo
                 </code>
-                . Every <code className="font-mono text-sm text-[var(--color-paper)]">use cozo::…</code>{" "}
-                in your existing code, and in downstream crates, keeps working
-                unchanged. A drop-in, not a rewrite.
+                , so existing <code className="font-mono text-sm text-[var(--color-paper)]">use cozo::…</code> code
+                and downstream crates compile without changes.
               </p>
             </div>
           </div>
@@ -1123,12 +758,10 @@ pip install llama-index-vector-stores-mnestic`}
         {/* ── Attribution ───────────────────────────────── */}
         <section className="py-20">
           <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-ink-2)] p-8 md:p-12">
-            <p className="label mb-5">Credit where it’s due</p>
+            <p className="label mb-5">Attribution</p>
             <p className="max-w-3xl font-serif text-2xl leading-snug text-[var(--color-paper-dim)] md:text-[1.7rem]">
-              mnestic is <span className="text-[var(--color-paper)]">not</span> the
-              official CozoDB and is not affiliated with or endorsed by its
-              authors. All credit for the original design belongs to{" "}
-              <span className="text-[var(--color-paper)]">Ziyang Hu</span> and the{" "}
+              mnestic is not the official CozoDB and is not affiliated with or endorsed by its authors. The original
+              design is the work of <span className="text-[var(--color-paper)]">Ziyang Hu</span> and the{" "}
               <span className="text-[var(--color-paper)]">Cozo Project Authors</span>.
             </p>
             <div className="mt-8 flex flex-wrap gap-x-8 gap-y-3">
@@ -1136,10 +769,10 @@ pip install llama-index-vector-stores-mnestic`}
                 Original project ↗
               </a>
               <a href={`${GITHUB}/blob/main/FORK.md`} target="_blank" rel="noreferrer" className="label link-grow hover:text-[var(--color-paper)]">
-                FORK.md — provenance & licensing ↗
+                FORK.md: provenance and licensing ↗
               </a>
               <a href={`${GITHUB}/blob/main/CHANGELOG-FORK.md`} target="_blank" rel="noreferrer" className="label link-grow hover:text-[var(--color-paper)]">
-                Full changelog of divergences ↗
+                Changelog of divergences ↗
               </a>
             </div>
           </div>
@@ -1170,9 +803,8 @@ pip install llama-index-vector-stores-mnestic`}
           </div>
         </div>
         <p className="mx-auto max-w-6xl px-6 pb-10 font-mono text-[0.68rem] leading-relaxed text-[var(--color-paper-faint)]">
-          Documentation adapted from the original CozoDB docs (CC-BY-SA-4.0),
-          with original pages for the fork&apos;s additions. The query language is
-          unchanged.
+          Documentation adapted from the original CozoDB docs (CC-BY-SA-4.0), with original pages for the fork&apos;s
+          additions. The query language is unchanged.
         </p>
       </footer>
     </>
